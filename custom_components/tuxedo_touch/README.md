@@ -38,8 +38,14 @@ writeup on why, plus every other quirk discovered while building this.
   thermostat, door lock, scene, and garage door control - untested and unimplemented here,
   though they should follow the same request-signing pattern.
 - The panel intermittently reports `"Not available"` as its status even on a
-  successfully-decrypted response. The integration automatically re-authenticates when this
-  happens; if it persists, check the panel's own touchscreen - it usually means the Tuxedo
-  module has lost sync with the Vista panel, not a problem with this integration.
+  successfully-decrypted response - on at least one unit this was observed to be
+  persistent, not intermittent, while arm/disarm commands kept working correctly. The
+  integration works around this by treating `"Not available"` as "no new information"
+  (ignoring it rather than overwriting known-good status) and by optimistically updating
+  the entity's state immediately after a successful arm/disarm rather than waiting on the
+  next poll. This means the entity reflects the last command *you* sent, but can't detect
+  state changes from the physical keypad or another integration while the panel's status
+  feed is down. If you have a working ECP-bus alarm integration (Envisalink,
+  esphome-vistaECP, etc.) on the same panel, prefer that one for status.
 - Verified against firmware `TUXW_V5.3.21.0_VA`. Older firmware may behave differently
   (see the docs) - not tested here.

@@ -138,6 +138,32 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
   `_call()` does this automatically on a 401/302, but a persistent "Not available" after
   that likely means the Tuxedo module itself has lost sync with the Vista panel and needs
   attention outside of software (check the panel's own touchscreen for its actual status).
+
+  **On at least one unit this is not intermittent - it's permanent.** `GetSecurityStatus`
+  returned `"Not available"` on every single poll across an entire testing session,
+  including immediately after successful arm and disarm commands. This was confirmed to be
+  a status-reporting problem specific to the Tuxedo module, not a failure of the commands
+  themselves: a separate ECP-bus-based alarm integration on the same physical panel (e.g.
+  Envisalink) correctly tracked the panel flipping between armed/disarmed in real time, at
+  the same moments `GetSecurityStatus` kept reporting "Not available". In other words, the
+  Tuxedo Touch's command path and its status-reporting path can be independently broken -
+  don't assume a stuck "Not available" means arm/disarm aren't working, and don't assume
+  arm/disarm working means status will start reporting correctly.
+
+  **Integration workaround** (see `TuxedoTouchCoordinator._async_update_data` in
+  `__init__.py` and `TuxedoAlarmPanel._set_optimistic_status` in
+  `alarm_control_panel.py`): the coordinator now treats a polled `"Not available"` as "no
+  new information" and keeps whatever status it last knew, instead of overwriting good data
+  with the placeholder every 30-second poll. Separately, each arm/disarm call immediately
+  pushes the *requested* status into the coordinator via `async_set_updated_data()` right
+  after the command succeeds, rather than waiting on (and trusting) the next poll. If the
+  panel's status feed is genuinely dead, the entity will now reflect the last command you
+  sent rather than sitting on "Not available"/`Unknown` forever - it just can't detect
+  arming/disarming triggered from the physical keypad or another integration while the feed
+  is down. If a real status ever does come back, it overrides the optimistic value normally.
+  If you have a working ECP-bus alarm integration (Envisalink, esphome-vistaECP, etc.) on
+  the same panel, prefer that one for status - this integration's status reporting is only
+  as good as the Tuxedo module's own connection to the panel.
 - A GET to any endpoint (including the raw API endpoints, unauthenticated) redirects to
   `https://<ip>:443/tuxedoapi.html` regardless of the port/scheme requested when HTTPS
   access is enabled on the unit.

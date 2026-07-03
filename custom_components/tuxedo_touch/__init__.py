@@ -10,7 +10,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import TuxedoStatus, TuxedoTouchAuthError, TuxedoTouchClient, TuxedoTouchError
-from .const import CONF_PARTITION, CONF_USE_HTTPS, DEFAULT_PARTITION, DOMAIN, SCAN_INTERVAL
+from .const import (
+    CONF_PARTITION,
+    CONF_USE_HTTPS,
+    DEFAULT_PARTITION,
+    DOMAIN,
+    SCAN_INTERVAL,
+    STATUS_NOT_AVAILABLE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,11 +49,31 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
 
     async def _async_update_data(self) -> TuxedoStatus:
         try:
-            return await self.client.get_status(self.partition)
+            status = await self.client.get_status(self.partition)
         except TuxedoTouchAuthError as err:
             raise UpdateFailed(f"Authentication failed: {err}") from err
         except TuxedoTouchError as err:
             raise UpdateFailed(str(err)) from err
+
+        # Quirk workaround: this firmware intermittently - and on at least one
+        # unit, persistently - reports "Not available" from GetSecurityStatus
+        # even though arm/disarm commands are still reaching the panel fine
+        # (confirmed by comparing against a separate ECP-bus-based alarm
+        # integration on the same panel, which tracked the real state
+        # correctly while this endpoint stayed stuck). Treat "Not available"
+        # as "no new information" rather than a real status: keep whatever we
+        # last knew (including optimistic updates set immediately after a
+        # successful arm/disarm - see alarm_control_panel.py) instead of
+        # clobbering good data with this placeholder every poll.
+        if status.status == STATUS_NOT_AVAILABLE and self.data is not None:
+            _LOGGER.debug(
+                "GetSecurityStatus returned 'Not available' - keeping last "
+                "known status (%s) instead of overwriting it",
+                self.data.status,
+            )
+            return self.data
+
+        return status
 
     async def async_close(self) -> None:
         await self.session.close()

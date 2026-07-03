@@ -17,6 +17,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import TuxedoTouchCoordinator
+from .api import TuxedoStatus
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -102,24 +103,37 @@ class TuxedoAlarmPanel(CoordinatorEntity[TuxedoTouchCoordinator], AlarmControlPa
             raise ValueError("No code provided and none configured")
         return resolved
 
+    def _set_optimistic_status(self, status: str) -> None:
+        """Push a locally-known status immediately after a command succeeds.
+
+        Works around the GetSecurityStatus "Not available" quirk (see
+        _async_update_data in __init__.py): rather than waiting on a poll
+        that may never report the real state, reflect the command we just
+        successfully sent right away. async_set_updated_data also reschedules
+        the next automatic poll, which will still correct this if the panel
+        ever reports something conflicting.
+        """
+        color = self.coordinator.data.color if self.coordinator.data else None
+        self.coordinator.async_set_updated_data(TuxedoStatus(status=status, color=color))
+
     async def async_alarm_disarm(self, code: str | None = None) -> None:
         await self.coordinator.client.disarm(self._resolve_code(code), self.coordinator.partition)
-        await self.coordinator.async_request_refresh()
+        self._set_optimistic_status("Ready To Arm")
 
     async def async_alarm_arm_home(self, code: str | None = None) -> None:
         await self.coordinator.client.arm(
             "STAY", self._resolve_code(code), self.coordinator.partition
         )
-        await self.coordinator.async_request_refresh()
+        self._set_optimistic_status("Armed Stay")
 
     async def async_alarm_arm_away(self, code: str | None = None) -> None:
         await self.coordinator.client.arm(
             "AWAY", self._resolve_code(code), self.coordinator.partition
         )
-        await self.coordinator.async_request_refresh()
+        self._set_optimistic_status("Armed Away")
 
     async def async_alarm_arm_night(self, code: str | None = None) -> None:
         await self.coordinator.client.arm(
             "NIGHT", self._resolve_code(code), self.coordinator.partition
         )
-        await self.coordinator.async_request_refresh()
+        self._set_optimistic_status("Armed Night")
