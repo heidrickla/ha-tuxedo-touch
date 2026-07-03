@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Tuxedo Touch",
+        "description": "Enter the panel's web login credentials (not your 4-digit keypad user code, unless your installer set them to match). The code below is the keypad user code used to arm/disarm.",
+        "data": {
+          "host": "IP address",
+          "port": "Port",
+          "use_https": "Use HTTPS (required if 'Secured Web Server Access' is enabled on the unit)",
+          "username": "Web login username",
+          "password": "Web login password",
+          "code": "Keypad user code (optional, used as default arm/disarm code)",
+          "partition": "Partition number"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid username or password",
+      "cannot_connect": "Failed to connect - check the IP/port and that the unit is reachable",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This panel/partition is already configured"
+    }
+  }
+}
