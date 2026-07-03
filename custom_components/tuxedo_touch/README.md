@@ -18,8 +18,8 @@ and Disarm.
 ## Installation
 
 1. Copy `custom_components/tuxedo_touch` into your Home Assistant `custom_components`
-   directory (or install via HACS as a custom repository pointing at
-   `heidrickla/HomeAssistant`).
+   directory (or install via HACS - search for "Honeywell Tuxedo Touch", or add
+   `heidrickla/ha-tuxedo-touch` as a custom repository if it's not yet in the default list).
 2. Restart Home Assistant.
 3. Settings -> Devices & Services -> Add Integration -> "Honeywell Tuxedo Touch".
 4. Enter the panel's IP, port, whether to use HTTPS, the web login username/password, and
