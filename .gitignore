@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .vscode/
 .idea/
+
+# Local Claude orientation doc - keep out of the repo
+CLAUDE.md
