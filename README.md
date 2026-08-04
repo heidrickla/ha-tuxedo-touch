@@ -1,5 +1,12 @@
 # Honeywell Tuxedo Touch for Home Assistant
 
+[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+[![GitHub Release](https://img.shields.io/github/release/heidrickla/ha-tuxedo-touch.svg)](https://github.com/heidrickla/ha-tuxedo-touch/releases)
+[![License](https://img.shields.io/github/license/heidrickla/ha-tuxedo-touch.svg)](LICENSE)
+[![Validate](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/validate.yml/badge.svg)](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/validate.yml)
+
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=heidrickla&repository=ha-tuxedo-touch&category=integration)
+
 Local (no cloud) Home Assistant custom integration for the Honeywell Tuxedo Touch WIFI
 security/home automation controller (TUXWIFIS/TUXWIFIW), talking to it entirely over your
 local network - no Total Connect Comfort cloud account involved. Ported from the
