@@ -1,14 +1,22 @@
 """Config flow for Honeywell Tuxedo Touch."""
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.const import (
+    CONF_CODE,
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_USERNAME,
+)
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .api import (
     TuxedoTouchAuthError,
@@ -16,7 +24,6 @@ from .api import (
     TuxedoTouchConnectionError,
 )
 from .const import (
-    CONF_CODE,
     CONF_PARTITION,
     CONF_USE_HTTPS,
     DEFAULT_PARTITION,
@@ -39,10 +46,18 @@ STEP_USER_SCHEMA = vol.Schema(
     }
 )
 
+STEP_REAUTH_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_USERNAME): str,
+        vol.Required(CONF_PASSWORD): str,
+    }
+)
+
 
 async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     """Attempt a real login against the panel; raises on failure."""
-    async with aiohttp.ClientSession() as session:
+    session = async_create_clientsession(hass, auto_cleanup=False)
+    try:
         client = TuxedoTouchClient(
             session=session,
             host=data[CONF_HOST],
@@ -52,12 +67,30 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
             password=data[CONF_PASSWORD],
         )
         await client.login()
+    finally:
+        # detach(), not close(): helper-created sessions share HA's connector
+        # pool, so HA replaces close() with a warn-and-no-op wrapper. detach()
+        # releases the session without touching the shared connector.
+        session.detach()
 
 
 class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Honeywell Tuxedo Touch."""
 
     VERSION = 1
+
+    async def _async_validate(self, data: dict[str, Any]) -> dict[str, str]:
+        """Validate credentials against the panel, returning form errors."""
+        try:
+            await _validate_input(self.hass, data)
+        except TuxedoTouchAuthError:
+            return {"base": "invalid_auth"}
+        except TuxedoTouchConnectionError:
+            return {"base": "cannot_connect"}
+        except Exception:
+            _LOGGER.exception("Unexpected error validating Tuxedo Touch connection")
+            return {"base": "unknown"}
+        return {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -69,20 +102,37 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             )
             self._abort_if_unique_id_configured()
 
-            try:
-                await _validate_input(self.hass, user_input)
-            except TuxedoTouchAuthError:
-                errors["base"] = "invalid_auth"
-            except TuxedoTouchConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected error validating Tuxedo Touch connection")
-                errors["base"] = "unknown"
-            else:
+            errors = await self._async_validate(user_input)
+            if not errors:
                 return self.async_create_entry(
                     title=f"Tuxedo Touch ({user_input[CONF_HOST]})", data=user_input
                 )
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
+        )
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle reauth after the panel rejected the stored credentials."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        reauth_entry = self._get_reauth_entry()
+        if user_input is not None:
+            errors = await self._async_validate({**reauth_entry.data, **user_input})
+            if not errors:
+                return self.async_update_reload_and_abort(
+                    reauth_entry, data_updates=user_input
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=STEP_REAUTH_SCHEMA,
+            description_placeholders={"host": reauth_entry.data[CONF_HOST]},
+            errors=errors,
         )

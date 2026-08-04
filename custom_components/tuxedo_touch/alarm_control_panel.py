@@ -1,7 +1,9 @@
 """Alarm control panel platform for Honeywell Tuxedo Touch."""
+
 from __future__ import annotations
 
-import logging
+from collections.abc import Coroutine
+from typing import Any
 
 from homeassistant.components.alarm_control_panel import (
     AlarmControlPanelEntity,
@@ -9,18 +11,22 @@ from homeassistant.components.alarm_control_panel import (
     AlarmControlPanelState,
     CodeFormat,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST
+from homeassistant.const import CONF_CODE
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import TuxedoTouchCoordinator
-from .api import TuxedoStatus
+from . import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
+from .api import TuxedoTouchError
 from .const import DOMAIN
 
-_LOGGER = logging.getLogger(__name__)
+# The panel is a fragile embedded web server with per-session crypto state;
+# serialize entity service calls so concurrent arm/disarm from automations
+# can't interleave against it (coordinator polling is already centralized,
+# and the API client additionally locks its login sequence).
+PARALLEL_UPDATES = 1
 
 # Status strings observed from GetSecurityStatus. Panel-reported "Secs
 # Remaining"/countdown variants and anything unrecognized fall back to None
@@ -47,13 +53,16 @@ STATUS_MAP: dict[str, AlarmControlPanelState] = {
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: TuxedoTouchConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    coordinator: TuxedoTouchCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([TuxedoAlarmPanel(coordinator, entry)])
+    async_add_entities([TuxedoAlarmPanel(entry.runtime_data, entry)])
 
 
-class TuxedoAlarmPanel(CoordinatorEntity[TuxedoTouchCoordinator], AlarmControlPanelEntity):
+class TuxedoAlarmPanel(
+    CoordinatorEntity[TuxedoTouchCoordinator], AlarmControlPanelEntity
+):
     """Represents one Tuxedo Touch partition."""
 
     _attr_has_entity_name = True
@@ -65,22 +74,21 @@ class TuxedoAlarmPanel(CoordinatorEntity[TuxedoTouchCoordinator], AlarmControlPa
         | AlarmControlPanelEntityFeature.ARM_NIGHT
     )
 
-    def __init__(self, coordinator: TuxedoTouchCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: TuxedoTouchCoordinator, entry: TuxedoTouchConfigEntry
+    ) -> None:
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_partition_{coordinator.partition}"
         # A code is required unless one is stored in config for automations
         # to use without prompting.
-        self._attr_code_arm_required = not bool(entry.data.get("code"))
+        self._attr_code_arm_required = not bool(entry.data.get(CONF_CODE))
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name="Honeywell Tuxedo Touch",
             manufacturer="Honeywell",
             model="Tuxedo Touch WIFI",
-            configuration_url=(
-                f"{'https' if entry.data.get('use_https') else 'http'}"
-                f"://{entry.data[CONF_HOST]}"
-            ),
+            configuration_url=coordinator.client.base_url,
         )
 
     @property
@@ -98,42 +106,54 @@ class TuxedoAlarmPanel(CoordinatorEntity[TuxedoTouchCoordinator], AlarmControlPa
         return {"tuxedo_status": status.status, "tuxedo_color": status.color}
 
     def _resolve_code(self, code: str | None) -> str:
-        resolved = code or self._entry.data.get("code")
+        resolved = code or self._entry.data.get(CONF_CODE)
         if not resolved:
-            raise ValueError("No code provided and none configured")
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key="no_code"
+            )
         return resolved
 
-    def _set_optimistic_status(self, status: str) -> None:
-        """Push a locally-known status immediately after a command succeeds.
+    async def _async_command(
+        self, command: Coroutine[Any, Any, dict], optimistic_status: str
+    ) -> None:
+        """Run one panel command, then reflect it in the entity immediately.
 
-        Works around the GetSecurityStatus "Not available" quirk (see
-        _async_update_data in __init__.py): rather than waiting on a poll
-        that may never report the real state, reflect the command we just
-        successfully sent right away. async_set_updated_data also reschedules
-        the next automatic poll, which will still correct this if the panel
-        ever reports something conflicting.
+        The optimistic update works around the GetSecurityStatus
+        "Not available" quirk - see TuxedoTouchCoordinator.set_optimistic_status.
         """
-        color = self.coordinator.data.color if self.coordinator.data else None
-        self.coordinator.async_set_updated_data(TuxedoStatus(status=status, color=color))
+        try:
+            await command
+        except TuxedoTouchError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        self.coordinator.set_optimistic_status(optimistic_status)
+
+    async def _async_arm(
+        self, mode: str, optimistic_status: str, code: str | None
+    ) -> None:
+        await self._async_command(
+            self.coordinator.client.arm(
+                mode, self._resolve_code(code), self.coordinator.partition
+            ),
+            optimistic_status,
+        )
 
     async def async_alarm_disarm(self, code: str | None = None) -> None:
-        await self.coordinator.client.disarm(self._resolve_code(code), self.coordinator.partition)
-        self._set_optimistic_status("Ready To Arm")
+        await self._async_command(
+            self.coordinator.client.disarm(
+                self._resolve_code(code), self.coordinator.partition
+            ),
+            "Ready To Arm",
+        )
 
     async def async_alarm_arm_home(self, code: str | None = None) -> None:
-        await self.coordinator.client.arm(
-            "STAY", self._resolve_code(code), self.coordinator.partition
-        )
-        self._set_optimistic_status("Armed Stay")
+        await self._async_arm("STAY", "Armed Stay", code)
 
     async def async_alarm_arm_away(self, code: str | None = None) -> None:
-        await self.coordinator.client.arm(
-            "AWAY", self._resolve_code(code), self.coordinator.partition
-        )
-        self._set_optimistic_status("Armed Away")
+        await self._async_arm("AWAY", "Armed Away", code)
 
     async def async_alarm_arm_night(self, code: str | None = None) -> None:
-        await self.coordinator.client.arm(
-            "NIGHT", self._resolve_code(code), self.coordinator.partition
-        )
-        self._set_optimistic_status("Armed Night")
+        await self._async_arm("NIGHT", "Armed Night", code)

@@ -57,10 +57,13 @@ renegotiation**. Modern TLS stacks reject this by default:
   `ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT` and `ctx.set_ciphers("DEFAULT@SECLEVEL=0")`
   on a `SSLContext` with `verify_mode = ssl.CERT_NONE` - no external config file needed.
   This is exactly what `api.py`'s `_legacy_ssl_context()` does, and it's been confirmed
-  against real hardware with CPython 3.13 / OpenSSL 3.x. Since this differs from the
-  connection's default SSL handling, the integration opens its **own dedicated
-  `aiohttp.ClientSession`** per config entry rather than reusing Home Assistant's shared
-  session, so this custom `SSLContext` can be attached per-request.
+  against real hardware with CPython 3.13 / OpenSSL 3.x. The custom `SSLContext` is
+  attached per-request (`ssl=` on each call), which aiohttp supports on any session. The
+  integration still opens its **own dedicated `aiohttp.ClientSession`** per config entry
+  rather than reusing Home Assistant's shared session, but for different reasons: cookie
+  isolation (the panel sets a session cookie with a random name per login) and so the
+  connector's keep-alive can be tuned to outlive the poll interval (aiohttp's default 15s
+  keep-alive would otherwise force a fresh TCP + legacy-TLS handshake on every 30s poll).
 
 ## Login flow (session-cookie auth)
 
@@ -150,9 +153,9 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
   don't assume a stuck "Not available" means arm/disarm aren't working, and don't assume
   arm/disarm working means status will start reporting correctly.
 
-  **Integration workaround** (see `TuxedoTouchCoordinator._async_update_data` in
-  `__init__.py` and `TuxedoAlarmPanel._set_optimistic_status` in
-  `alarm_control_panel.py`): the coordinator now treats a polled `"Not available"` as "no
+  **Integration workaround** (see `TuxedoTouchCoordinator._async_update_data` and
+  `TuxedoTouchCoordinator.set_optimistic_status` in
+  `__init__.py`): the coordinator now treats a polled `"Not available"` as "no
   new information" and keeps whatever status it last knew, instead of overwriting good data
   with the placeholder every 30-second poll. Separately, each arm/disarm call immediately
   pushes the *requested* status into the coordinator via `async_set_updated_data()` right

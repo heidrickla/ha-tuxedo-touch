@@ -1,14 +1,13 @@
 """Constants for the Honeywell Tuxedo Touch integration."""
+
 from datetime import timedelta
 
 DOMAIN = "tuxedo_touch"
 
 CONF_PARTITION = "partition"
 CONF_USE_HTTPS = "use_https"
-CONF_CODE = "code"
 
 DEFAULT_PARTITION = 1
-DEFAULT_PORT_HTTP = 80
 DEFAULT_PORT_HTTPS = 443
 # Even when the login/tuxedoapi.html pages tolerate plain HTTP, the actual
 # /system_http_api/API_REV01/... command endpoints get 302-redirected to
@@ -28,4 +27,3 @@ SCAN_INTERVAL = timedelta(seconds=30)
 # See ../../../docs/tuxedo_touch_api_notes.md for the full list observed and
 # where this list came from.
 STATUS_NOT_AVAILABLE = "Not available"
-STATUS_ERROR = "Error"

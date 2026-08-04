@@ -11,8 +11,10 @@ See ../../../docs/tuxedo_touch_api_notes.md for the full reverse-engineering
 writeup this implementation is based on (login flow, HMAC/AES quirks, TLS
 gotchas, known device bugs).
 """
+
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -33,6 +35,11 @@ from .const import API_BASE_PATH, KEYS_PATH, LOGIN_PATH
 _LOGGER = logging.getLogger(__name__)
 
 READIT_RE = re.compile(r'id=["\']readit["\'][^>]*value=["\']([0-9a-fA-F]+)["\']')
+
+# The panel is a slow embedded device, but anything beyond this budget
+# indicates a hang, not a slow success. aiohttp raises TimeoutError (not a
+# ClientError) when this expires - see the except clauses below.
+_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
 class TuxedoTouchError(Exception):
@@ -94,6 +101,10 @@ class TuxedoTouchClient:
         self._session_cookie: str | None = None
         self._key_hex: str | None = None
         self._iv_hex: str | None = None
+        self._key: bytes | None = None
+        self._iv: bytes | None = None
+        self._authtokens: dict[str, str] = {}
+        self._login_lock = asyncio.Lock()
 
         self._ssl_ctx = _legacy_ssl_context() if use_https else None
 
@@ -126,7 +137,7 @@ class TuxedoTouchClient:
 
         try:
             async with self._session.get(
-                login_url, ssl=self._ssl_ctx, timeout=aiohttp.ClientTimeout(total=15)
+                login_url, ssl=self._ssl_ctx, timeout=_TIMEOUT
             ) as resp:
                 if resp.status != 200:
                     raise TuxedoTouchConnectionError(
@@ -135,7 +146,7 @@ class TuxedoTouchClient:
                 challenge = resp.headers.get("Random")
                 random_id = resp.headers.get("RandomID")
                 zfl_cookie = resp.cookies.get("_zFL")
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise TuxedoTouchConnectionError(str(err)) from err
 
         if not challenge or not random_id:
@@ -159,7 +170,7 @@ class TuxedoTouchClient:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 cookies=cookies,
                 ssl=self._ssl_ctx,
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=_TIMEOUT,
                 allow_redirects=False,
             ) as resp:
                 if resp.status not in (200, 302):
@@ -172,7 +183,7 @@ class TuxedoTouchClient:
                         continue
                     session_cookie = f"{name}={morsel.value}"
                     break
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise TuxedoTouchConnectionError(str(err)) from err
 
         if not session_cookie:
@@ -199,15 +210,17 @@ class TuxedoTouchClient:
         headers = {"Cookie": self._session_cookie}
         try:
             async with self._session.get(
-                url, headers=headers, ssl=self._ssl_ctx,
-                timeout=aiohttp.ClientTimeout(total=15),
+                url,
+                headers=headers,
+                ssl=self._ssl_ctx,
+                timeout=_TIMEOUT,
             ) as resp:
                 if resp.status != 200:
                     raise TuxedoTouchAuthError(
                         f"Key fetch returned HTTP {resp.status} - session may be invalid"
                     )
                 body = await resp.text()
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise TuxedoTouchConnectionError(str(err)) from err
 
         match = READIT_RE.search(body)
@@ -218,11 +231,40 @@ class TuxedoTouchClient:
             )
         blob = match.group(1)
         if len(blob) < 96:
-            raise TuxedoTouchError(f"Key blob shorter than expected ({len(blob)} chars)")
+            raise TuxedoTouchError(
+                f"Key blob shorter than expected ({len(blob)} chars)"
+            )
 
         self._key_hex = blob[0:64]
         self._iv_hex = blob[64:96]
+        self._key = bytes.fromhex(self._key_hex)
+        self._iv = bytes.fromhex(self._iv_hex)
+        self._authtokens.clear()
         _LOGGER.debug("Tuxedo Touch API keys retrieved")
+
+    def _invalidate_session(self) -> None:
+        self._session_cookie = None
+        self._key_hex = None
+        self._iv_hex = None
+        self._key = None
+        self._iv = None
+        self._authtokens.clear()
+
+    async def _ensure_authenticated(self) -> None:
+        """Log in (once) if there is no usable session.
+
+        Serialized with a lock so a status poll and a user command that both
+        notice a missing/expired session don't race two logins: the session
+        cookie and the AES key/IV are per-session values set in two steps, and
+        interleaved logins can pair the cookie from one login with the keys
+        from the other, silently invalidating every subsequent authtoken.
+        Whoever loses the lock race finds the state already restored and
+        piggybacks on the winner's login.
+        """
+        async with self._login_lock:
+            if self._session_cookie and self._key:
+                return
+            await self.login()
 
     # ------------------------------------------------------------------
     # Crypto helpers
@@ -239,18 +281,30 @@ class TuxedoTouchClient:
             key_hex_text.encode("utf-8"), message.encode("utf-8"), digestmod
         ).hexdigest()
 
-    def _aes_encrypt(self, plaintext: str) -> str:
-        key = bytes.fromhex(self._key_hex)
-        iv = bytes.fromhex(self._iv_hex)
+    def _authtoken(self, endpoint_path: str) -> str:
+        # The token depends only on the key and endpoint path, so it is
+        # stable between logins - cache per endpoint, cleared on re-login.
+        token = self._authtokens.get(endpoint_path)
+        if token is None:
+            header = f"MACID:Browser,Path:API_REV01{endpoint_path}"
+            token = self._hmac_hex(self._key_hex, header, hashlib.sha1)
+            self._authtokens[endpoint_path] = token
+        return token
+
+    # Key/IV are passed explicitly rather than read from self so that _call
+    # can snapshot them at request-build time: a concurrent caller may
+    # invalidate and re-login mid-flight, and a response must be decrypted
+    # with the key of the session it was actually sent under.
+    @staticmethod
+    def _aes_encrypt(plaintext: str, key: bytes, iv: bytes) -> str:
         padder = padding.PKCS7(128).padder()
         padded = padder.update(plaintext.encode("utf-8")) + padder.finalize()
         encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
         ct = encryptor.update(padded) + encryptor.finalize()
         return base64.b64encode(ct).decode("ascii")
 
-    def _aes_decrypt(self, ciphertext_b64: str) -> str:
-        key = bytes.fromhex(self._key_hex)
-        iv = bytes.fromhex(self._iv_hex)
+    @staticmethod
+    def _aes_decrypt(ciphertext_b64: str, key: bytes, iv: bytes) -> str:
         ct = base64.b64decode(ciphertext_b64)
         decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
         padded = decryptor.update(ct) + decryptor.finalize()
@@ -268,13 +322,20 @@ class TuxedoTouchClient:
     # Note the signed path omits the "/system_http_api" prefix even though
     # the request URL includes it, and uses the literal device id "Browser".
     # ------------------------------------------------------------------
-    async def _call(self, endpoint_path: str, plain_params: str, retry: bool = True) -> dict:
-        if not self._session_cookie or not self._key_hex:
-            await self.login()
+    async def _call(
+        self, endpoint_path: str, plain_params: str, retry: bool = True
+    ) -> dict:
+        await self._ensure_authenticated()
+        # Snapshot the whole session state this request runs under: a
+        # concurrent caller hitting a 401 can invalidate and re-login while
+        # our request is in flight, and decrypting the response with the NEW
+        # key would garble it (the key/IV are per-session values).
+        cookie_used = self._session_cookie
+        key_used = self._key
+        iv_used = self._iv
+        iv_hex_used = self._iv_hex
 
-        header = f"MACID:Browser,Path:API_REV01{endpoint_path}"
-        authtoken = self._hmac_hex(self._key_hex, header, hashlib.sha1)
-        enc_data = self._aes_encrypt(plain_params)
+        enc_data = self._aes_encrypt(plain_params, key_used, iv_used)
         body = (
             f"param={quote(enc_data, safe='')}"
             f"&len={len(enc_data)}"
@@ -284,42 +345,75 @@ class TuxedoTouchClient:
         url = f"{self.base_url}{API_BASE_PATH}{endpoint_path}"
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
-            "authtoken": authtoken,
-            "identity": self._iv_hex,
-            "Cookie": self._session_cookie,
+            "authtoken": self._authtoken(endpoint_path),
+            "identity": iv_hex_used,
+            "Cookie": cookie_used,
         }
 
         try:
             async with self._session.post(
-                url, data=body, headers=headers, ssl=self._ssl_ctx,
-                timeout=aiohttp.ClientTimeout(total=15),
+                url,
+                data=body,
+                headers=headers,
+                ssl=self._ssl_ctx,
+                timeout=_TIMEOUT,
                 allow_redirects=False,
             ) as resp:
+                if resp.status == 302:
+                    location = resp.headers.get("Location", "")
+                    if self._scheme == "http" and location.startswith("https:"):
+                        # Persistent condition, not an expired session: with
+                        # "Secured Web Server Access" enabled the API endpoints
+                        # redirect every plain-HTTP request to HTTPS (see
+                        # docs/tuxedo_touch_api_notes.md). Re-logging-in can
+                        # never fix this, so fail with something actionable
+                        # instead of burning a full login per attempt.
+                        raise TuxedoTouchError(
+                            "Panel redirected the API call to HTTPS - "
+                            "reconfigure the integration with 'Use HTTPS' enabled"
+                        )
                 if resp.status in (401, 302) and retry:
                     _LOGGER.debug("Session expired, re-authenticating")
-                    self._session_cookie = None
-                    self._key_hex = None
-                    self._iv_hex = None
+                    # Only wipe state that is still the state this request was
+                    # built from - a concurrent caller may have re-logged-in
+                    # since, and clearing its fresh session would force yet
+                    # another login.
+                    if self._session_cookie == cookie_used:
+                        self._invalidate_session()
                     return await self._call(endpoint_path, plain_params, retry=False)
                 if resp.status != 200:
                     raise TuxedoTouchError(f"API call returned HTTP {resp.status}")
                 payload = await resp.json(content_type=None)
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise TuxedoTouchConnectionError(str(err)) from err
 
         result_b64 = payload.get("Result")
         if result_b64 is None:
             raise TuxedoTouchError(f"Unexpected API response shape: {payload}")
 
-        decrypted = self._aes_decrypt(result_b64)
-        return json.loads(decrypted)
+        try:
+            decrypted = self._aes_decrypt(result_b64, key_used, iv_used)
+            return json.loads(decrypted)
+        except (ValueError, TypeError) as err:
+            # Bad padding / undecodable bytes / non-JSON plaintext - keep it
+            # inside the client's error hierarchy so callers see one cleanly
+            # failed call instead of a raw traceback.
+            raise TuxedoTouchError(f"Could not decrypt API response: {err}") from err
 
     # ------------------------------------------------------------------
     # Public operations
     # ------------------------------------------------------------------
-    async def get_status(self, partition: int = 1) -> TuxedoStatus:
+    async def get_status(self) -> TuxedoStatus:
+        """Fetch the panel's current status.
+
+        GetSecurityStatus takes no partition parameter on this firmware - the
+        plaintext body is just "operation=get", unlike arm/disarm which do
+        send a pID (see docs/tuxedo_touch_api_notes.md).
+        """
         result = await self._call("/GetSecurityStatus", "operation=get")
-        return TuxedoStatus(status=result.get("Status", "Unknown"), color=result.get("Color"))
+        return TuxedoStatus(
+            status=result.get("Status", "Unknown"), color=result.get("Color")
+        )
 
     async def arm(self, mode: str, code: str, partition: int = 1) -> dict:
         """mode is one of STAY, AWAY, NIGHT."""
