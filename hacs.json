@@ -1,5 +1,4 @@
 {
-  "name": "HomeAssistant custom integrations",
-  "content_in_root": false,
-  "render_readme": true
+  "name": "Honeywell Tuxedo Touch",
+  "homeassistant": "2025.3.0"
 }

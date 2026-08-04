@@ -28,7 +28,32 @@ jobs:
     name: HACS validation
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - name: Run HACS validation
         uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
         with:
           category: integration
+          # TODO: remove once the home-assistant/brands submission for
+          # tuxedo_touch (source images in brand/) is merged - until then the
+          # brands check cannot pass.
+          ignore: brands
+
+  lint:
+    name: Ruff lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install ruff
+        # Pinned so a new ruff release changing the default rule set can't
+        # turn CI red without a repo change (same philosophy as the SHA pins).
+        run: pipx install ruff==0.16.1
+
+      - name: Ruff check
+        run: ruff check custom_components
+
+      - name: Ruff format check
+        run: ruff format --check custom_components

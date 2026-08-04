@@ -1,7 +1,14 @@
 __pycache__/
 *.pyc
+.venv/
+venv/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
 .vscode/
 .idea/
+Thumbs.db
+.DS_Store
 
 # Local Claude orientation doc - keep out of the repo
 CLAUDE.md

@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Keep the SHA-pinned actions in validate.yml from silently rotting -
+  # hassfest/HACS validation rules evolve with HA releases, so stale pins
+  # defeat the daily scheduled run's purpose.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
