@@ -12,3 +12,6 @@ Thumbs.db
 
 # Local Claude orientation doc - keep out of the repo
 CLAUDE.md
+
+# Local hardware-test credentials - never commit
+.test_credentials.env
