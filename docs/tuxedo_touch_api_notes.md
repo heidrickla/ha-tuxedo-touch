@@ -129,6 +129,12 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
   JSON, e.g. `{"Status":"Ready To Arm","Color":"Green"}` for a status query, or
   `{"Status":"Sucess","Result":{"Response":"Command sent sucessfully"}}` for arm/disarm
   (that's the device's own spelling - don't "fix" it when matching response text).
+  Confirmed live: disarm nests its message under `Result.Result` while arm uses
+  `Result.Response` - don't rely on the inner key name. During the exit delay after an
+  arm command, `GetSecurityStatus` reports a countdown like `"59  Secs Remaining"`
+  (double space, `Color: "Red"`), then the final armed status once the delay ends. The
+  login challenge's `Random` header was also observed at 31 hex chars (not always 32) -
+  treat it as opaque text.
 
 ## Known device quirks
 

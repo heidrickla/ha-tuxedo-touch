@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Coroutine
 from typing import Any
 
@@ -28,9 +29,9 @@ from .const import DOMAIN
 # and the API client additionally locks its login sequence).
 PARALLEL_UPDATES = 1
 
-# Status strings observed from GetSecurityStatus. Panel-reported "Secs
-# Remaining"/countdown variants and anything unrecognized fall back to None
-# (unknown) rather than guessing.
+# Status strings observed from GetSecurityStatus. The exit-delay countdown
+# is matched separately below (SECS_REMAINING_RE); anything else
+# unrecognized falls back to None (unknown) rather than guessing.
 STATUS_MAP: dict[str, AlarmControlPanelState] = {
     "Ready To Arm": AlarmControlPanelState.DISARMED,
     "Ready Fault": AlarmControlPanelState.DISARMED,
@@ -50,6 +51,11 @@ STATUS_MAP: dict[str, AlarmControlPanelState] = {
     "Armed Night Alarm": AlarmControlPanelState.TRIGGERED,
     "Armed Away Alarm": AlarmControlPanelState.TRIGGERED,
 }
+
+# Exit-delay countdown while arming, e.g. "59  Secs Remaining" (note the
+# double space - format confirmed against real hardware polling through a
+# full Arm Stay exit delay).
+SECS_REMAINING_RE = re.compile(r"^\d+\s+Secs Remaining$")
 
 
 async def async_setup_entry(
@@ -96,7 +102,11 @@ class TuxedoAlarmPanel(
         status = self.coordinator.data
         if status is None:
             return None
-        return STATUS_MAP.get(status.status)
+        if (state := STATUS_MAP.get(status.status)) is not None:
+            return state
+        if SECS_REMAINING_RE.match(status.status.strip()):
+            return AlarmControlPanelState.ARMING
+        return None
 
     @property
     def extra_state_attributes(self) -> dict:
