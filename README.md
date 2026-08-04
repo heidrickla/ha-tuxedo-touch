@@ -11,7 +11,9 @@ and Disarm, using the same reverse-engineered login/encryption flow documented i
 
 ## Requirements
 
-- Home Assistant 2025.3 or newer.
+- Home Assistant 2025.3 or newer. (On 2026.3+ the integration's icon/logo are
+  served locally via the Brands Proxy API from the bundled `brand/` folder; on
+  older versions they simply don't display.)
 - A Tuxedo Touch WIFI unit reachable on your LAN. Give it a **static IP or DHCP
   reservation** - the integration identifies the panel by its address, so a changing
   IP breaks duplicate detection and the stored connection.

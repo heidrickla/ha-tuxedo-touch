@@ -35,10 +35,6 @@ jobs:
         uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
         with:
           category: integration
-          # TODO: remove once the home-assistant/brands submission for
-          # tuxedo_touch (source images in brand/) is merged - until then the
-          # brands check cannot pass.
-          ignore: brands
 
   lint:
     name: Ruff lint and format

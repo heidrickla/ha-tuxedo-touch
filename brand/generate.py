@@ -4,10 +4,12 @@ Touch wall-mount touchscreen keypad.
 Renders at 4x and downsamples (LANCZOS) for crisp edges. Needs only Pillow.
 
     python generate.py                 # contact sheet into ./preview for review
-    python generate.py --final grid    # write the real PNGs into this directory
+    python generate.py --final grid    # write the PNGs into the integration's
+                                       # brand/ dir (served by HA 2026.3+'s
+                                       # Brands Proxy API)
 
-Sizes follow home-assistant/brands rules: icon 256/512 square; logo shortest
-side 256 (512 for @2x), trimmed; dark_logo variants carry white text.
+Sizes follow the Home Assistant brand rules: icon 256/512 square; logo
+shortest side 256 (512 for @2x), trimmed; dark_ variants carry white text.
 """
 
 from __future__ import annotations
@@ -261,7 +263,10 @@ def contact_sheet():
 if __name__ == "__main__":
     if "--final" in sys.argv:
         variant = sys.argv[sys.argv.index("--final") + 1]
-        dest = HERE
+        dest = os.path.normpath(
+            os.path.join(HERE, "..", "custom_components", "tuxedo_touch", "brand")
+        )
+        os.makedirs(dest, exist_ok=True)
         icon = make_icon(variant)
         print("icon@2x:", save_scaled(icon, dest + r"\icon@2x.png", 512))
         print("icon:", save_scaled(icon, dest + r"\icon.png", 256))
