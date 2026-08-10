@@ -22,6 +22,7 @@ from .api import (
     TuxedoTouchAuthError,
     TuxedoTouchClient,
     TuxedoTouchConnectionError,
+    TuxedoTouchError,
 )
 from .const import (
     CONF_PARTITION,
@@ -87,6 +88,14 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             return {"base": "invalid_auth"}
         except TuxedoTouchConnectionError:
             return {"base": "cannot_connect"}
+        except TuxedoTouchError as err:
+            # The panel answered, but not usefully - e.g. the login page came
+            # back without the Random/RandomID headers, or the key blob was
+            # short. That is neither "wrong password" nor "unreachable", and
+            # lumping it into "unknown" hides a diagnosable condition: the
+            # message itself names the problem, so surface it.
+            _LOGGER.error("Tuxedo Touch setup failed: %s", err)
+            return {"base": "panel_error"}
         except Exception:
             _LOGGER.exception("Unexpected error validating Tuxedo Touch connection")
             return {"base": "unknown"}
