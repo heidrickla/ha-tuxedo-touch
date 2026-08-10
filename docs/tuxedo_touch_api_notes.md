@@ -177,6 +177,39 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
   `https://<ip>:443/tuxedoapi.html` regardless of the port/scheme requested when HTTPS
   access is enabled on the unit.
 
+- **The unit serves ONE connection at a time.** This is the single most misleading property
+  of the device, because contention presents as a **hang, not a refusal**: a second client
+  gets a completed TCP handshake and then silence, indefinitely. With the integration
+  polling every 30s, anything else touching the panel - a browser tab left open on its web
+  UI, a `curl` from a shell, another HA instance - will intermittently starve the poll and
+  make a perfectly healthy panel look dead.
+
+  Observed signature while contended (from a machine that was *not* the one holding the
+  slot):
+
+  ```
+  ICMP            replies normally, <1ms
+  TCP 80 / 443    connection ACCEPTED
+  TCP 8080/8443   cleanly refused        <- the TCP stack is alive and selective
+  HTTP request    "Request completely sent off", then nothing, until timeout
+  TLS ClientHello sent, no ServerHello, handshake times out
+  ```
+
+  Every layer looks healthy except the application, which is exactly what a crashed web
+  server looks like too - so this is easy to misdiagnose as a dead unit. Repeated retries
+  make it worse rather than better, and prolonged contention can leave the unit refusing
+  new connections with RST until it is reset. **Before concluding the panel is broken,
+  close every other client and test once.**
+
+- **A panel reset disables web access per user; it does not delete the accounts.** After
+  resetting the unit, existing users survive but each one's web-access flag comes back
+  **off**, and the web UI shows: *"Web access has been deactivated. Go to your Tuxedo's
+  login setup to create an user account or reactivate an account."* Re-enable it on the
+  touchscreen under **Setup -> Account**, pressing `Enable` for each user that needs it.
+  Note the login *page* still serves normally in this state, complete with valid
+  `Random`/`RandomID` headers - only authentication fails - so this looks like a credential
+  problem rather than a settings one.
+
 ## Manual testing recipe (outside Home Assistant)
 
 ```python
