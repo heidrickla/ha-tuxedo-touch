@@ -23,8 +23,13 @@ concurrency:
   group: validate-${{ github.ref }}
   cancel-in-progress: true
 
+# Gitea's act_runner also picks up .github/workflows, so every job here is
+# gated to GitHub. On the gitea forge these skip and
+# .gitea/workflows/validate.yml is the one that runs - the runner is shared
+# with capacity 1 and duplicate jobs queue behind each other.
 jobs:
   hassfest: # https://developers.home-assistant.io/blog/2020/04/16/hassfest
+    if: github.server_url == 'https://github.com'
     name: Hassfest validation
     runs-on: ubuntu-latest
     steps:
@@ -35,6 +40,7 @@ jobs:
         uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb # master
 
   hacs: # https://github.com/hacs/action
+    if: github.server_url == 'https://github.com'
     name: HACS validation
     runs-on: ubuntu-latest
     steps:
@@ -47,6 +53,7 @@ jobs:
           category: integration
 
   lint:
+    if: github.server_url == 'https://github.com'
     name: Ruff lint and format
     runs-on: ubuntu-latest
     steps:
@@ -76,6 +83,7 @@ jobs:
   # four checks, and dropping the authtoken clear from _invalidate_session on one. A
   # gate never seen red is an assumption, not a gate.
   tests:
+    if: github.server_url == 'https://github.com'
     name: Unit tests and secret guard
     runs-on: ubuntu-latest
     steps:
