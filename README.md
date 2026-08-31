@@ -21,9 +21,11 @@ and Disarm, using the same reverse-engineered login/encryption flow documented i
 - Home Assistant 2025.3 or newer. (On 2026.3+ the integration's icon/logo are
   served locally via the Brands Proxy API from the bundled `brand/` folder; on
   older versions they simply don't display.)
-- A Tuxedo Touch WIFI unit reachable on your LAN. Give it a **static IP or DHCP
-  reservation** - the integration identifies the panel by its address, so a changing
-  IP breaks duplicate detection and the stored connection.
+- A Tuxedo Touch WIFI unit reachable on your LAN. A **static IP or DHCP
+  reservation** is still worth setting: the integration reaches the panel at the
+  address you give it, so a changed lease means no polling until you correct it
+  under Settings -> Devices & Services -> Configure. It is no longer an *identity*
+  problem, though - see "How the panel is identified" below.
 - Its **web login username and password** (Settings on the touchscreen -> Login settings).
   This is different from the 4-digit keypad user code used to arm/disarm.
 - The 4-digit keypad user code, entered either at setup (used as the default arm/disarm
@@ -64,5 +66,12 @@ for the full writeup on why, plus every other quirk discovered while building th
 - Status is polled without a partition parameter (the firmware's `GetSecurityStatus`
   doesn't take one), so on multi-partition panels the reported status is whatever the
   Tuxedo module itself reports; arm/disarm do target the configured partition.
+- **How the panel is identified.** It reports no serial and no MAC of its own
+  (`Registration/AddDeviceMAC` enrolls a *client's* MAC, not the unit's), so the
+  integration resolves the MAC from your network with an ARP lookup and keys the
+  config entry on it. That only answers when Home Assistant shares a layer 2
+  segment with the panel; a routed or VLAN-separated install falls back to
+  identifying it by address, where changing the panel's IP does read as a
+  different panel. Existing entries adopt the MAC on their next start.
 - Verified against firmware `TUXW_V5.3.21.0_VA`. Older firmware may behave differently
   (see the docs) - not tested here.
