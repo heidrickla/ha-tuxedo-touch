@@ -4,6 +4,7 @@ from datetime import timedelta
 
 DOMAIN = "tuxedo_touch"
 
+CONF_MAC = "mac"
 CONF_PARTITION = "partition"
 CONF_USE_HTTPS = "use_https"
 

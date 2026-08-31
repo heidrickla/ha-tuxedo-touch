@@ -25,6 +25,7 @@ from .api import (
     TuxedoTouchError,
 )
 from .const import (
+    CONF_MAC,
     CONF_PARTITION,
     CONF_USE_HTTPS,
     DEFAULT_PARTITION,
@@ -32,6 +33,7 @@ from .const import (
     DEFAULT_USE_HTTPS,
     DOMAIN,
 )
+from .identity import async_panel_mac, build_unique_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -103,20 +105,36 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg
             return {"base": "unknown"}
         return {}
 
+    async def _with_identity(self, user_input: dict[str, Any]) -> dict[str, Any]:
+        """The submitted data plus the panel's MAC, when the network knows it."""
+        data = dict(user_input)
+        mac = await async_panel_mac(self.hass, user_input[CONF_HOST])
+        if mac:
+            data[CONF_MAC] = mac
+        return data
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            await self.async_set_unique_id(
-                f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}:{user_input[CONF_PARTITION]}"
-            )
-            self._abort_if_unique_id_configured()
-
+            # Validate first: the login populates the ARP entry the MAC lookup
+            # then reads. Ordering it the other way leaves a fresh host
+            # unresolvable and silently falls back to an address identity.
             errors = await self._async_validate(user_input)
             if not errors:
+                data = await self._with_identity(user_input)
+                await self.async_set_unique_id(
+                    build_unique_id(
+                        data.get(CONF_MAC),
+                        user_input[CONF_HOST],
+                        user_input[CONF_PORT],
+                        user_input[CONF_PARTITION],
+                    )
+                )
+                self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=f"Tuxedo Touch ({user_input[CONF_HOST]})", data=user_input
+                    title=f"Tuxedo Touch ({user_input[CONF_HOST]})", data=data
                 )
 
         return self.async_show_form(
@@ -132,22 +150,32 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg
         if user_input is not None:
             errors = await self._async_validate(user_input)
             if not errors:
-                unique_id = (
-                    f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
-                    f":{user_input[CONF_PARTITION]}"
+                data = await self._with_identity(user_input)
+                mac = data.get(CONF_MAC)
+                known = entry.data.get(CONF_MAC)
+                # Only the MAC says which panel this is. Comparing whole unique
+                # ids would reject an address change - the thing this step
+                # exists to do - and a partition change, which is ordinary
+                # reconfiguration rather than a different device.
+                if mac and known and mac != known:
+                    return self.async_abort(reason="another_panel")
+                if not mac and known:
+                    # The lookup failed this time. Keep the identity we already
+                    # proved rather than quietly demoting to an address.
+                    data[CONF_MAC] = known
+                unique_id = build_unique_id(
+                    data.get(CONF_MAC),
+                    user_input[CONF_HOST],
+                    user_input[CONF_PORT],
+                    user_input[CONF_PARTITION],
                 )
-                # The unique id is built from the address because the panel
-                # reports no serial, so a moved panel changes it legitimately.
-                # Comparing it against this entry's own previous id would
-                # reject every address change - the thing this step exists to
-                # do. Only a clash with a DIFFERENT entry is a real problem.
                 if any(
                     other.entry_id != entry.entry_id and other.unique_id == unique_id
                     for other in self._async_current_entries()
                 ):
                     return self.async_abort(reason="already_configured")
                 return self.async_update_reload_and_abort(
-                    entry, data=user_input, unique_id=unique_id
+                    entry, data=data, unique_id=unique_id
                 )
 
         return self.async_show_form(

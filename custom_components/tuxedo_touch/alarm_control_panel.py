@@ -15,13 +15,16 @@ from homeassistant.components.alarm_control_panel.const import (
 from homeassistant.const import CONF_CODE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import (
+    CONNECTION_NETWORK_MAC,
+    DeviceInfo,
+)
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
 from .api import TuxedoTouchError
-from .const import DOMAIN
+from .const import CONF_MAC, DOMAIN
 
 # The panel is a fragile embedded web server with per-session crypto state;
 # serialize entity service calls so concurrent arm/disarm from automations
@@ -89,8 +92,12 @@ class TuxedoAlarmPanel(
         # A code is required unless one is stored in config for automations
         # to use without prompting.
         self._attr_code_arm_required = not bool(entry.data.get(CONF_CODE))
+        mac = entry.data.get(CONF_MAC)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
+            # Ties the panel to the same device the router reports, so it does
+            # not appear twice in the device list.
+            connections={(CONNECTION_NETWORK_MAC, mac)} if mac else set(),
             name="Honeywell Tuxedo Touch",
             manufacturer="Honeywell",
             model="Tuxedo Touch WIFI",

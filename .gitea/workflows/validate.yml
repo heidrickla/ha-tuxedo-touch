@@ -96,7 +96,8 @@ jobs:
           python -m pip install --quiet --upgrade pip
           python -m pip install --quiet \
             pytest pytest-asyncio "mypy==1.18.2" \
-            pytest-homeassistant-custom-component
+            pytest-homeassistant-custom-component \
+            "getmac==0.9.5"
 
       - name: Unit tests
         run: |
