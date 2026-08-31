@@ -86,9 +86,7 @@ rules:
     comment: |
       A single main entity carrying the device's name, so it sets
       `_attr_name = None` rather than a translation key.
-  exception-translations:
-    status: todo
-    comment: Service validation errors are still plain strings.
+  exception-translations: done
   icon-translations:
     status: exempt
     comment: The alarm panel uses the device class icon.
