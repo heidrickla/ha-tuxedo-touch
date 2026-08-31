@@ -20,6 +20,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import TuxedoStatus, TuxedoTouchAuthError, TuxedoTouchClient, TuxedoTouchError
 from .const import (
+    CONF_MAC,
     CONF_PARTITION,
     CONF_USE_HTTPS,
     DEFAULT_PARTITION,
@@ -27,6 +28,7 @@ from .const import (
     SCAN_INTERVAL,
     STATUS_NOT_AVAILABLE,
 )
+from .identity import async_panel_mac, build_unique_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -152,8 +154,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: TuxedoTouchConfigEntry) 
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
+    await _async_adopt_mac_identity(hass, entry, coordinator.partition)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def _async_adopt_mac_identity(
+    hass: HomeAssistant, entry: TuxedoTouchConfigEntry, partition: int
+) -> None:
+    """Upgrade an entry that predates MAC identity, once, in place.
+
+    Runs after the first refresh so the ARP entry is warm. Entities key off
+    `entry_id`, not this id, so nothing is orphaned by the change. A routed
+    install never resolves a MAC and simply keeps its address identity.
+    """
+    if entry.data.get(CONF_MAC):
+        return
+    mac = await async_panel_mac(hass, entry.data[CONF_HOST])
+    if not mac:
+        return
+    hass.config_entries.async_update_entry(
+        entry,
+        data={**entry.data, CONF_MAC: mac},
+        unique_id=build_unique_id(
+            mac, entry.data[CONF_HOST], entry.data[CONF_PORT], partition
+        ),
+    )
+    _LOGGER.debug("Panel identity is now its MAC rather than %s", entry.data[CONF_HOST])
 
 
 async def async_unload_entry(

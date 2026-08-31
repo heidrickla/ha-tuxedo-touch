@@ -12,7 +12,12 @@ rules:
       The config flow is covered by hand testing against the panel, not by
       automated tests.
   config-flow: done
-  dependency-transparency: done
+  dependency-transparency:
+    status: done
+    comment: |
+      One dependency, `getmac==0.9.5` - open source, on PyPI, pinned, and the
+      same pin five core integrations use. It resolves the panel's MAC so the
+      config entry's identity survives a DHCP address change.
   docs-actions:
     status: exempt
     comment: This integration does not provide actions.

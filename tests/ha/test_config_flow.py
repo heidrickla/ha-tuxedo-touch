@@ -18,9 +18,9 @@ from custom_components.tuxedo_touch.api import (
     TuxedoTouchConnectionError,
     TuxedoTouchError,
 )
-from custom_components.tuxedo_touch.const import CONF_PARTITION, DOMAIN
+from custom_components.tuxedo_touch.const import CONF_MAC, CONF_PARTITION, DOMAIN
 
-from .conftest import ENTRY_DATA, HOST, PORT
+from .conftest import ENTRY_DATA, HOST, MAC, PORT
 
 LOGIN = "custom_components.tuxedo_touch.api.TuxedoTouchClient.login"
 
@@ -195,3 +195,92 @@ async def test_reauth_reports_a_still_wrong_password(hass, config_entry):
     assert again["type"] is FlowResultType.FORM
     assert again["errors"] == {"base": "invalid_auth"}
     assert config_entry.data[CONF_PASSWORD] == "secret"
+
+
+MAC_LOOKUP = "custom_components.tuxedo_touch.config_flow.async_panel_mac"
+
+
+async def test_the_mac_becomes_the_identity_when_the_network_knows_it(hass):
+    """An address is a lease, not an identity."""
+    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=MAC):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["result"].unique_id == f"{MAC}_1"
+    assert result["data"][CONF_MAC] == MAC
+
+
+async def test_a_routed_panel_falls_back_to_its_address(hass):
+    """ARP only answers on the same segment. That is ordinary, not a failure."""
+    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=None):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["result"].unique_id == f"{HOST}:{PORT}:1"
+    assert CONF_MAC not in result["data"]
+
+
+async def test_the_same_panel_at_a_new_address_keeps_its_identity(
+    hass, config_entry_with_mac
+):
+    """The reason for all of this: a DHCP lease change must be a reconfigure,
+    not a delete-and-re-add."""
+    config_entry_with_mac.add_to_hass(hass)
+    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=MAC):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": "reconfigure",
+                "entry_id": config_entry_with_mac.entry_id,
+            },
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry_with_mac.unique_id == f"{MAC}_1"
+
+
+async def test_a_different_panel_at_that_address_is_refused(
+    hass, config_entry_with_mac
+):
+    """Now a real check rather than a circular one: the panel that answered
+    reports a different MAC than the one this entry was set up for."""
+    config_entry_with_mac.add_to_hass(hass)
+    with (
+        patch(LOGIN, return_value=None),
+        patch(MAC_LOOKUP, return_value="11:22:33:44:55:66"),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": "reconfigure",
+                "entry_id": config_entry_with_mac.entry_id,
+            },
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "another_panel"
+    assert config_entry_with_mac.data[CONF_HOST] == HOST
+
+
+async def test_a_failed_lookup_does_not_demote_a_known_identity(
+    hass, config_entry_with_mac
+):
+    """One unlucky ARP miss must not silently revert the entry to an address."""
+    config_entry_with_mac.add_to_hass(hass)
+    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=None):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": "reconfigure",
+                "entry_id": config_entry_with_mac.entry_id,
+            },
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry_with_mac.data[CONF_MAC] == MAC
+    assert config_entry_with_mac.unique_id == f"{MAC}_1"
