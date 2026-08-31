@@ -1,12 +1,14 @@
 {
   "domain": "tuxedo_touch",
   "name": "Honeywell Tuxedo Touch",
-  "codeowners": ["@heidrickla"],
+  "codeowners": [
+    "@heidrickla"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/heidrickla/ha-tuxedo-touch",
   "integration_type": "hub",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/heidrickla/ha-tuxedo-touch/issues",
   "requirements": [],
-  "version": "0.2.1"
+  "version": "0.3.0"
 }

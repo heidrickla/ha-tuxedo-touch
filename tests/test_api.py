@@ -118,9 +118,14 @@ check(
     c._authtoken("/GetSecurityStatus") == c._authtoken("/AdvancedSecurity/ArmWithCode"),
     False,
 )
-check("token is cached per endpoint", sorted(c._authtokens), [
-    "/AdvancedSecurity/ArmWithCode", "/GetSecurityStatus",
-])
+check(
+    "token is cached per endpoint",
+    sorted(c._authtokens),
+    [
+        "/AdvancedSecurity/ArmWithCode",
+        "/GetSecurityStatus",
+    ],
+)
 
 print()
 print("=== AES-CBC round trip, and why _call snapshots the key ===")
@@ -140,7 +145,7 @@ other_key = bytes.fromhex("ff" * 32)
 try:
     got = api.TuxedoTouchClient._aes_decrypt(ct, other_key, IV)
     rt = got == plain
-except Exception:  # noqa: BLE001 - any failure is the acceptable outcome here
+except Exception:
     rt = False
 check("decrypting with the wrong key does not round trip", rt, False)
 
@@ -203,11 +208,21 @@ check(
 
 print()
 print("=== error hierarchy (callers catch the base class) ===")
-check("auth error is a TuxedoTouchError",
-      issubclass(api.TuxedoTouchAuthError, api.TuxedoTouchError), True)
-check("connection error is a TuxedoTouchError",
-      issubclass(api.TuxedoTouchConnectionError, api.TuxedoTouchError), True)
-check("status defaults colour to None", api.TuxedoStatus(status="Ready To Arm").color, None)
+check(
+    "auth error is a TuxedoTouchError",
+    issubclass(api.TuxedoTouchAuthError, api.TuxedoTouchError),
+    True,
+)
+check(
+    "connection error is a TuxedoTouchError",
+    issubclass(api.TuxedoTouchConnectionError, api.TuxedoTouchError),
+    True,
+)
+check(
+    "status defaults colour to None",
+    api.TuxedoStatus(status="Ready To Arm").color,
+    None,
+)
 
 print()
 if FAILURES:

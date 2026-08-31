@@ -75,7 +75,9 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
         session.detach()
 
 
-class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
+# `domain=` is real on Home Assistant's ConfigFlow; it only looks wrong when
+# HA is absent and the base class degrades to `object`.
+class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
     """Handle a config flow for Honeywell Tuxedo Touch."""
 
     VERSION = 1
@@ -119,6 +121,30 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change the panel's address or partition without re-adding the entry."""
+        errors: dict[str, str] = {}
+        entry = self._get_reconfigure_entry()
+        if user_input is not None:
+            errors = await self._async_validate(user_input)
+            if not errors:
+                await self.async_set_unique_id(
+                    f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
+                    f":{user_input[CONF_PARTITION]}"
+                )
+                self._abort_if_unique_id_mismatch(reason="another_panel")
+                return self.async_update_reload_and_abort(entry, data=user_input)
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self.add_suggested_values_to_schema(
+                STEP_USER_SCHEMA, {**entry.data, **(user_input or {})}
+            ),
+            errors=errors,
         )
 
     async def async_step_reauth(

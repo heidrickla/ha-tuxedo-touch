@@ -109,7 +109,7 @@ class TuxedoAlarmPanel(
         return None
 
     @property
-    def extra_state_attributes(self) -> dict:
+    def extra_state_attributes(self) -> dict[str, Any]:
         status = self.coordinator.data
         if status is None:
             return {}
@@ -124,7 +124,7 @@ class TuxedoAlarmPanel(
         return resolved
 
     async def _async_command(
-        self, command: Coroutine[Any, Any, dict], optimistic_status: str
+        self, command: Coroutine[Any, Any, dict[str, Any]], optimistic_status: str
     ) -> None:
         """Run one panel command, then reflect it in the entity immediately.
 
