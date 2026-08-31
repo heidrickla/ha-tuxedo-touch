@@ -18,7 +18,7 @@ PLATFORMS: list[Platform] = [Platform.ALARM_CONTROL_PANEL]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: TuxedoTouchConfigEntry) -> bool:
-    _migrate_entity_unique_ids(hass, entry)
+    await _migrate_entity_unique_ids(hass, entry)
     coordinator = TuxedoTouchCoordinator(hass, entry)
     # Registered before the first refresh: if it raises ConfigEntryNotReady
     # (panel unreachable at HA start) or ConfigEntryAuthFailed, HA still runs
@@ -33,7 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: TuxedoTouchConfigEntry) 
     return True
 
 
-def _migrate_entity_unique_ids(
+async def _migrate_entity_unique_ids(
     hass: HomeAssistant, entry: TuxedoTouchConfigEntry
 ) -> None:
     """One-time move off the old `<entry_id>_partition_N` unique id.
@@ -49,7 +49,7 @@ def _migrate_entity_unique_ids(
             return {"new_unique_id": entry.entry_id}
         return None
 
-    er.async_migrate_entries(hass, entry.entry_id, _migrate)
+    await er.async_migrate_entries(hass, entry.entry_id, _migrate)
 
 
 async def _async_adopt_mac_identity(
