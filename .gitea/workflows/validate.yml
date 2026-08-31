@@ -104,6 +104,9 @@ jobs:
             echo "-- $t"; python "$t" || exit 1
           done
 
+      - name: Home Assistant layer tests
+        run: python -m pytest tests/ha -q
+
       - name: mypy strict
         run: python -m mypy custom_components/tuxedo_touch
 
