@@ -132,12 +132,23 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg
         if user_input is not None:
             errors = await self._async_validate(user_input)
             if not errors:
-                await self.async_set_unique_id(
+                unique_id = (
                     f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
                     f":{user_input[CONF_PARTITION]}"
                 )
-                self._abort_if_unique_id_mismatch(reason="another_panel")
-                return self.async_update_reload_and_abort(entry, data=user_input)
+                # The unique id is built from the address because the panel
+                # reports no serial, so a moved panel changes it legitimately.
+                # Comparing it against this entry's own previous id would
+                # reject every address change - the thing this step exists to
+                # do. Only a clash with a DIFFERENT entry is a real problem.
+                if any(
+                    other.entry_id != entry.entry_id and other.unique_id == unique_id
+                    for other in self._async_current_entries()
+                ):
+                    return self.async_abort(reason="already_configured")
+                return self.async_update_reload_and_abort(
+                    entry, data=user_input, unique_id=unique_id
+                )
 
         return self.async_show_form(
             step_id="reconfigure",

@@ -4,12 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.components.alarm_control_panel import DOMAIN as ALARM_DOMAIN
-from homeassistant.const import ATTR_ENTITY_ID, CONF_CODE
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.tuxedo_touch.api import TuxedoStatus, TuxedoTouchError
-
-from .conftest import ENTRY_DATA
 
 STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"
 ARM = "custom_components.tuxedo_touch.api.TuxedoTouchClient.arm"
@@ -94,10 +92,9 @@ async def test_a_code_given_in_the_call_beats_the_stored_one(hass, config_entry)
     arm.assert_awaited_once_with("AWAY", "9999", 1)
 
 
-async def test_no_code_anywhere_is_a_validation_error(hass, config_entry):
+async def test_no_code_anywhere_is_a_validation_error(hass, config_entry_no_code):
     """Wrong error class here shows the user a traceback instead of a reason."""
-    config_entry.data = {k: v for k, v in ENTRY_DATA.items() if k != CONF_CODE}
-    await _setup(hass, config_entry)
+    await _setup(hass, config_entry_no_code)
 
     with (
         patch(ARM, AsyncMock(return_value={})),
@@ -135,9 +132,8 @@ async def test_a_stored_code_means_the_user_is_not_prompted(hass, config_entry):
     assert hass.states.get(PANEL).attributes["code_arm_required"] is False
 
 
-async def test_without_a_stored_code_the_user_is_prompted(hass, config_entry):
-    config_entry.data = {k: v for k, v in ENTRY_DATA.items() if k != CONF_CODE}
-    await _setup(hass, config_entry)
+async def test_without_a_stored_code_the_user_is_prompted(hass, config_entry_no_code):
+    await _setup(hass, config_entry_no_code)
     assert hass.states.get(PANEL).attributes["code_arm_required"] is True
 
 

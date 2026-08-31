@@ -11,6 +11,7 @@ import pytest
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.tuxedo_touch.api import (
     TuxedoTouchAuthError,
@@ -112,10 +113,11 @@ async def test_reconfigure_moves_the_panel_to_a_new_address(hass, config_entry):
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert config_entry.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry.unique_id == f"10.10.52.61:{PORT}:1"
 
 
-async def test_reconfigure_refuses_to_point_at_a_different_panel(hass, config_entry):
-    """Repointing an entry at another partition would silently rebind entities."""
+async def test_reconfigure_can_change_the_partition(hass, config_entry):
+    """The unique id carries the partition, so this changes it too."""
     config_entry.add_to_hass(hass)
     with patch(LOGIN, return_value=None):
         result = await hass.config_entries.flow.async_init(
@@ -124,7 +126,30 @@ async def test_reconfigure_refuses_to_point_at_a_different_panel(hass, config_en
             data={**ENTRY_DATA, CONF_PARTITION: 3},
         )
     assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "another_panel"
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry.unique_id == f"{HOST}:{PORT}:3"
+
+
+async def test_reconfigure_refuses_to_collide_with_another_entry(hass, config_entry):
+    """Two entries on the same panel and partition would double every entity."""
+    config_entry.add_to_hass(hass)
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        title="Tuxedo Touch (other)",
+        unique_id=f"{HOST}:{PORT}:2",
+        data={**ENTRY_DATA, CONF_PARTITION: 2},
+    )
+    other.add_to_hass(hass)
+
+    with patch(LOGIN, return_value=None):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data={**ENTRY_DATA, CONF_PARTITION: 2},
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert config_entry.data[CONF_PARTITION] == 1
 
 
 async def test_reconfigure_shows_the_error_rather_than_saving(hass, config_entry):

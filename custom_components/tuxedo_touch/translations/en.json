@@ -61,7 +61,6 @@
     "abort": {
       "already_configured": "This panel/partition is already configured",
       "reauth_successful": "Re-authentication was successful",
-      "another_panel": "That address belongs to a different panel. Add it as a new entry instead.",
       "reconfigure_successful": "Tuxedo Touch has been reconfigured."
     }
   },

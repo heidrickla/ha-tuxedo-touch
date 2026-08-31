@@ -59,3 +59,14 @@ def config_entry():
 def ready():
     """A panel reporting the disarmed-and-ready status."""
     return TuxedoStatus(status="Ready To Arm", color="green")
+
+
+@pytest.fixture
+def config_entry_no_code():
+    """An entry with no stored code, so the user is prompted to type one."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title=f"Tuxedo Touch ({HOST})",
+        unique_id=f"{HOST}:{PORT}:1",
+        data={k: v for k, v in ENTRY_DATA.items() if k != CONF_CODE},
+    )
