@@ -7,10 +7,14 @@ rules:
   brands: done
   common-modules: done
   config-flow-test-coverage:
-    status: todo
+    status: done
     comment: |
-      The config flow is covered by hand testing against the panel, not by
-      automated tests.
+      tests/ha/test_config_flow.py covers the user step, all four error
+      mappings, retry after a failure, the duplicate abort, a second partition,
+      reconfigure (address change, partition change, the another_panel guard
+      and the collision guard), MAC identity and its address fallback, and
+      reauth. Run by the `Home Assistant layer` job of
+      .gitea/workflows/validate.yml on the self-hosted runner.
   config-flow: done
   dependency-transparency:
     status: done
@@ -53,10 +57,14 @@ rules:
   parallel-updates: done
   reauthentication-flow: done
   test-coverage:
-    status: todo
+    status: done
     comment: |
-      The API session layer has unit tests. The entity and coordinator layers
-      do not.
+      The API session layer has unit tests that run on a bare interpreter.
+      tests/ha/ adds the Home Assistant layer: setup, an unreachable panel,
+      rejected credentials starting reauth, session closure on both a failed
+      setup and unload, the "Not available" firmware quirk, MAC adoption on an
+      existing entry, and the panel entity's status map, codes, optimistic
+      updates and refusals. 49 tests, run in CI.
 
   # Gold
   devices: done
