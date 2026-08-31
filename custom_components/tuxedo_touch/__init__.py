@@ -114,7 +114,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 status.status,
                 self.data.status,
             )
-            return self.data
+            held: TuxedoStatus = self.data
+            return held
 
         # Quirk workaround: this firmware intermittently - and on at least one
         # unit, persistently - reports "Not available" from GetSecurityStatus
@@ -132,7 +133,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 "known status (%s) instead of overwriting it",
                 self.data.status,
             )
-            return self.data
+            kept: TuxedoStatus = self.data
+            return kept
 
         return status
 
@@ -159,4 +161,5 @@ async def async_unload_entry(
 ) -> bool:
     # The session is closed by the async_on_unload callback registered in
     # async_setup_entry, which HA runs after the platforms unload.
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded: bool = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    return unloaded

@@ -23,7 +23,9 @@ import logging
 import re
 import ssl
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import quote
 
 import aiohttp
@@ -106,7 +108,9 @@ class TuxedoTouchClient:
         self._authtokens: dict[str, str] = {}
         self._login_lock = asyncio.Lock()
 
-        self._ssl_ctx = _legacy_ssl_context() if use_https else None
+        self._ssl_ctx: ssl.SSLContext | None = (
+            _legacy_ssl_context() if use_https else None
+        )
 
     @property
     def base_url(self) -> str:
@@ -137,7 +141,7 @@ class TuxedoTouchClient:
 
         try:
             async with self._session.get(
-                login_url, ssl=self._ssl_ctx, timeout=_TIMEOUT
+                login_url, ssl=self._ssl_ctx or True, timeout=_TIMEOUT
             ) as resp:
                 if resp.status != 200:
                     raise TuxedoTouchConnectionError(
@@ -169,7 +173,7 @@ class TuxedoTouchClient:
                 data=body,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 cookies=cookies,
-                ssl=self._ssl_ctx,
+                ssl=self._ssl_ctx or True,
                 timeout=_TIMEOUT,
                 allow_redirects=False,
             ) as resp:
@@ -212,12 +216,13 @@ class TuxedoTouchClient:
             async with self._session.get(
                 url,
                 headers=headers,
-                ssl=self._ssl_ctx,
+                ssl=self._ssl_ctx or True,
                 timeout=_TIMEOUT,
             ) as resp:
                 if resp.status != 200:
                     raise TuxedoTouchAuthError(
-                        f"Key fetch returned HTTP {resp.status} - session may be invalid"
+                        f"Key fetch returned HTTP {resp.status} - "
+                        "session may be invalid"
                     )
                 body = await resp.text()
         except (aiohttp.ClientError, TimeoutError) as err:
@@ -276,7 +281,7 @@ class TuxedoTouchClient:
     # raw bytes.
     # ------------------------------------------------------------------
     @staticmethod
-    def _hmac_hex(key_hex_text: str, message: str, digestmod) -> str:
+    def _hmac_hex(key_hex_text: str, message: str, digestmod: Callable[[], Any]) -> str:
         return hmac.new(
             key_hex_text.encode("utf-8"), message.encode("utf-8"), digestmod
         ).hexdigest()
@@ -286,6 +291,8 @@ class TuxedoTouchClient:
         # stable between logins - cache per endpoint, cleared on re-login.
         token = self._authtokens.get(endpoint_path)
         if token is None:
+            if self._key_hex is None:
+                raise TuxedoTouchError("no session key after authenticating")
             header = f"MACID:Browser,Path:API_REV01{endpoint_path}"
             token = self._hmac_hex(self._key_hex, header, hashlib.sha1)
             self._authtokens[endpoint_path] = token
@@ -324,7 +331,7 @@ class TuxedoTouchClient:
     # ------------------------------------------------------------------
     async def _call(
         self, endpoint_path: str, plain_params: str, retry: bool = True
-    ) -> dict:
+    ) -> dict[str, Any]:
         await self._ensure_authenticated()
         # Snapshot the whole session state this request runs under: a
         # concurrent caller hitting a 401 can invalidate and re-login while
@@ -334,6 +341,8 @@ class TuxedoTouchClient:
         key_used = self._key
         iv_used = self._iv
         iv_hex_used = self._iv_hex
+        if key_used is None or iv_used is None or iv_hex_used is None:
+            raise TuxedoTouchError("no session key after authenticating")
 
         enc_data = self._aes_encrypt(plain_params, key_used, iv_used)
         body = (
@@ -347,15 +356,16 @@ class TuxedoTouchClient:
             "Content-Type": "application/x-www-form-urlencoded",
             "authtoken": self._authtoken(endpoint_path),
             "identity": iv_hex_used,
-            "Cookie": cookie_used,
         }
+        if cookie_used is not None:
+            headers["Cookie"] = cookie_used
 
         try:
             async with self._session.post(
                 url,
                 data=body,
                 headers=headers,
-                ssl=self._ssl_ctx,
+                ssl=self._ssl_ctx or True,
                 timeout=_TIMEOUT,
                 allow_redirects=False,
             ) as resp:
@@ -393,7 +403,8 @@ class TuxedoTouchClient:
 
         try:
             decrypted = self._aes_decrypt(result_b64, key_used, iv_used)
-            return json.loads(decrypted)
+            parsed: dict[str, Any] = json.loads(decrypted)
+            return parsed
         except (ValueError, TypeError) as err:
             # Bad padding / undecodable bytes / non-JSON plaintext - keep it
             # inside the client's error hierarchy so callers see one cleanly
@@ -415,11 +426,11 @@ class TuxedoTouchClient:
             status=result.get("Status", "Unknown"), color=result.get("Color")
         )
 
-    async def arm(self, mode: str, code: str, partition: int = 1) -> dict:
+    async def arm(self, mode: str, code: str, partition: int = 1) -> dict[str, Any]:
         """mode is one of STAY, AWAY, NIGHT."""
         params = f"arming={mode}&pID={partition}&ucode={code}&operation=set"
         return await self._call("/AdvancedSecurity/ArmWithCode", params)
 
-    async def disarm(self, code: str, partition: int = 1) -> dict:
+    async def disarm(self, code: str, partition: int = 1) -> dict[str, Any]:
         params = f"pID={partition}&ucode={code}&operation=set"
         return await self._call("/AdvancedSecurity/DisarmWithCode", params)

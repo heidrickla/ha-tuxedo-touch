@@ -1,0 +1,116 @@
+rules:
+  # Bronze
+  action-setup:
+    status: exempt
+    comment: This integration does not provide actions.
+  appropriate-polling: done
+  brands: done
+  common-modules: done
+  config-flow-test-coverage:
+    status: todo
+    comment: |
+      The config flow is covered by hand testing against the panel, not by
+      automated tests.
+  config-flow: done
+  dependency-transparency: done
+  docs-actions:
+    status: exempt
+    comment: This integration does not provide actions.
+  docs-conditions:
+    status: exempt
+    comment: This integration does not provide conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: This integration does not provide triggers.
+  entity-event-setup:
+    status: exempt
+    comment: The entity does not subscribe to events of its own.
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  test-before-setup: done
+  unique-config-entry: done
+
+  # Silver
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters:
+    status: exempt
+    comment: No options flow; the connection details are edited by reconfigure.
+  docs-installation-parameters: done
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable: done
+  parallel-updates: done
+  reauthentication-flow: done
+  test-coverage:
+    status: todo
+    comment: |
+      The API session layer has unit tests. The entity and coordinator layers
+      do not.
+
+  # Gold
+  devices: done
+  diagnostics: done
+  discovery:
+    status: exempt
+    comment: |
+      The panel announces nothing on the network. Its address is entered by
+      the user.
+  discovery-update-info:
+    status: exempt
+    comment: Nothing to discover, so no discovery data to update from.
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices: done
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  dynamic-devices:
+    status: exempt
+    comment: A panel is a single fixed device.
+  entity-category:
+    status: exempt
+    comment: The alarm panel is the integration's primary entity.
+  entity-device-class: done
+  entity-disabled-by-default:
+    status: exempt
+    comment: One entity, and it is the reason to install this.
+  entity-translations:
+    status: exempt
+    comment: |
+      A single main entity carrying the device's name, so it sets
+      `_attr_name = None` rather than a translation key.
+  exception-translations:
+    status: todo
+    comment: Service validation errors are still plain strings.
+  icon-translations:
+    status: exempt
+    comment: The alarm panel uses the device class icon.
+  reconfiguration-flow: done
+  repair-issues:
+    status: exempt
+    comment: |
+      Authentication failure raises a reauth flow. No other condition needs
+      user intervention.
+  stale-devices:
+    status: exempt
+    comment: A panel is a single fixed device, removed with the entry.
+
+  # Platinum
+  async-dependency:
+    status: exempt
+    comment: |
+      No external dependency; the panel is spoken to over aiohttp directly.
+  inject-websession:
+    status: exempt
+    comment: |
+      A dedicated session is required. The panel sets a session cookie with a
+      random name per login, so sharing Home Assistant's session would leak
+      cookies between integrations.
+  strict-typing: done
