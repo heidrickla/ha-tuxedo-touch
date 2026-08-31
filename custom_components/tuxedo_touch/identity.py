@@ -8,6 +8,7 @@ network already holds.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from functools import partial
 
@@ -36,8 +37,20 @@ async def async_panel_mac(hass: HomeAssistant, host: str) -> str | None:
         _LOGGER.debug("getmac is unavailable, so the panel keeps an address identity")
         return None
 
+    # getmac treats ip= as a literal IPv4 to find in ARP tables; hostnames
+    # must go through hostname= (which resolves first) and IPv6 through ip6=.
+    # A hostname in ip= matches nothing and returns None - no error, just the
+    # silent fallback to address identity.
     try:
-        mac = await hass.async_add_executor_job(partial(get_mac_address, ip=host))
+        kind = ipaddress.ip_address(host)
+    except ValueError:
+        lookup = partial(get_mac_address, hostname=host)
+    else:
+        lookup = partial(
+            get_mac_address, **{"ip6" if kind.version == 6 else "ip": host}
+        )
+    try:
+        mac = await hass.async_add_executor_job(lookup)
     except Exception:
         _LOGGER.debug("MAC lookup for %s failed", host, exc_info=True)
         return None

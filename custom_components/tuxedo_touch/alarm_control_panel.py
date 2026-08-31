@@ -22,9 +22,9 @@ from homeassistant.helpers.device_registry import (
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
 from .api import TuxedoTouchError
 from .const import CONF_MAC, DOMAIN
+from .coordinator import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
 
 # The panel is a fragile embedded web server with per-session crypto state;
 # serialize entity service calls so concurrent arm/disarm from automations
@@ -48,6 +48,7 @@ STATUS_MAP: dict[str, AlarmControlPanelState] = {
     "Armed Night Fault": AlarmControlPanelState.ARMED_NIGHT,
     "Armed Instant": AlarmControlPanelState.ARMED_NIGHT,
     "Armed Instant Fault": AlarmControlPanelState.ARMED_NIGHT,
+    "Armed Instant Alarm": AlarmControlPanelState.TRIGGERED,
     "Entry Delay Active": AlarmControlPanelState.PENDING,
     "Not Ready Alarm": AlarmControlPanelState.TRIGGERED,
     "Armed Stay Alarm": AlarmControlPanelState.TRIGGERED,
@@ -76,7 +77,6 @@ class TuxedoAlarmPanel(
 
     _attr_has_entity_name = True
     _attr_name = None
-    _attr_code_format = CodeFormat.NUMBER
     _attr_supported_features = (
         AlarmControlPanelEntityFeature.ARM_HOME
         | AlarmControlPanelEntityFeature.ARM_AWAY
@@ -88,10 +88,16 @@ class TuxedoAlarmPanel(
     ) -> None:
         super().__init__(coordinator)
         self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_partition_{coordinator.partition}"
+        # No partition suffix: the entry's OWN unique id already carries the
+        # partition, and a partition change is a reconfigure of the same entry
+        # - a suffix here orphaned the registry row on every such change.
+        self._attr_unique_id = entry.entry_id
         # A code is required unless one is stored in config for automations
-        # to use without prompting.
-        self._attr_code_arm_required = not bool(entry.data.get(CONF_CODE))
+        # to use without prompting. code_format follows the same logic: with a
+        # stored code the dashboard must not demand one for disarm either.
+        stored_code = bool(entry.data.get(CONF_CODE))
+        self._attr_code_arm_required = not stored_code
+        self._attr_code_format = None if stored_code else CodeFormat.NUMBER
         mac = entry.data.get(CONF_MAC)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},

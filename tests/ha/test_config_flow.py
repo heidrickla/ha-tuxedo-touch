@@ -284,3 +284,18 @@ async def test_a_failed_lookup_does_not_demote_a_known_identity(
     assert result["reason"] == "reconfigure_successful"
     assert config_entry_with_mac.data[CONF_MAC] == MAC
     assert config_entry_with_mac.unique_id == f"{MAC}_1"
+
+
+async def test_a_duplicate_re_add_heals_the_stored_address(hass, config_entry_with_mac):
+    """Adding the same panel again at its new address is how a user tells us
+    it moved; the abort now carries the correction instead of discarding it."""
+    config_entry_with_mac.add_to_hass(hass)
+    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=MAC):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"

@@ -118,6 +118,17 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
+            # Unique ids are a mixed namespace (MAC-based and address-based),
+            # so string equality alone misses a same-panel re-add when only
+            # one side has a resolved MAC. Matching on the stored connection
+            # data closes that hole before any network traffic.
+            self._async_abort_entries_match(
+                {
+                    CONF_HOST: user_input[CONF_HOST],
+                    CONF_PORT: user_input[CONF_PORT],
+                    CONF_PARTITION: user_input[CONF_PARTITION],
+                }
+            )
             # Validate first: the login populates the ARP entry the MAC lookup
             # then reads. Ordering it the other way leaves a fresh host
             # unresolvable and silently falls back to an address identity.
@@ -132,7 +143,16 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg
                         user_input[CONF_PARTITION],
                     )
                 )
-                self._abort_if_unique_id_configured()
+                # A re-add of a known panel at a fresh address heals the
+                # existing entry instead of silently doing nothing - the MAC
+                # identity exists precisely so a moved panel is recognised.
+                self._abort_if_unique_id_configured(
+                    updates={
+                        CONF_HOST: user_input[CONF_HOST],
+                        CONF_PORT: user_input[CONF_PORT],
+                        CONF_USE_HTTPS: user_input[CONF_USE_HTTPS],
+                    }
+                )
                 return self.async_create_entry(
                     title=f"Tuxedo Touch ({user_input[CONF_HOST]})", data=data
                 )

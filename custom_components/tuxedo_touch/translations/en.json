@@ -19,7 +19,8 @@
           "username": "The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code.",
           "password": "The unit's web login password.",
           "code": "Optional. Used as the default arm/disarm code so automations can arm without prompting.",
-          "partition": "The panel partition this entry controls."
+          "partition": "The panel partition this entry controls.",
+          "port": "The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without."
         }
       },
       "reauth_confirm": {
@@ -28,6 +29,10 @@
         "data": {
           "username": "Web login username",
           "password": "Web login password"
+        },
+        "data_description": {
+          "username": "The web login username from the touchscreen's Login settings.",
+          "password": "The web login password for that account."
         }
       },
       "reconfigure": {
@@ -48,7 +53,8 @@
           "username": "The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code.",
           "password": "The unit's web login password.",
           "code": "Optional. Used as the default arm/disarm code so automations can arm without prompting.",
-          "partition": "The panel partition this entry controls."
+          "partition": "The panel partition this entry controls.",
+          "port": "The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without."
         }
       }
     },

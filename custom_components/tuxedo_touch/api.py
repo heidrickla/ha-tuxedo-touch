@@ -26,7 +26,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
 
 import aiohttp
 from cryptography.hazmat.primitives import padding
@@ -164,14 +163,13 @@ class TuxedoTouchClient:
         log1_val = self._hmac_hex(
             challenge, username_lower + self._password, hashlib.sha512
         )
-        body = f"log={log_val}&log1={log1_val}&identity={random_id}"
+        body = {"log": log_val, "log1": log1_val, "identity": random_id}
 
         cookies = {"_zFL": zfl_cookie.value} if zfl_cookie else {}
         try:
             async with self._session.post(
                 login_url,
                 data=body,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
                 cookies=cookies,
                 ssl=self._ssl_ctx or True,
                 timeout=_TIMEOUT,
@@ -345,15 +343,15 @@ class TuxedoTouchClient:
             raise TuxedoTouchError("no session key after authenticating")
 
         enc_data = self._aes_encrypt(plain_params, key_used, iv_used)
-        body = (
-            f"param={quote(enc_data, safe='')}"
-            f"&len={len(enc_data)}"
-            f"&tstamp={int(time.time() * 1000)}"
-        )
+        # len is the RAW ciphertext length, measured before any url-encoding.
+        body = {
+            "param": enc_data,
+            "len": str(len(enc_data)),
+            "tstamp": str(int(time.time() * 1000)),
+        }
 
         url = f"{self.base_url}{API_BASE_PATH}{endpoint_path}"
         headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
             "authtoken": self._authtoken(endpoint_path),
             "identity": iv_hex_used,
         }
@@ -393,10 +391,19 @@ class TuxedoTouchClient:
                     return await self._call(endpoint_path, plain_params, retry=False)
                 if resp.status != 200:
                     raise TuxedoTouchError(f"API call returned HTTP {resp.status}")
-                payload = await resp.json(content_type=None)
+                try:
+                    payload = await resp.json(content_type=None)
+                except ValueError as err:
+                    # An embedded server answering 200 with an HTML error page
+                    # must not escape as a raw JSONDecodeError.
+                    raise TuxedoTouchError(
+                        f"API answered 200 with a non-JSON body: {err}"
+                    ) from err
         except (aiohttp.ClientError, TimeoutError) as err:
             raise TuxedoTouchConnectionError(str(err)) from err
 
+        if not isinstance(payload, dict):
+            raise TuxedoTouchError(f"Unexpected API response shape: {payload!r}")
         result_b64 = payload.get("Result")
         if result_b64 is None:
             raise TuxedoTouchError(f"Unexpected API response shape: {payload}")
