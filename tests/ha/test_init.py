@@ -5,13 +5,13 @@ from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntryState
 
-from custom_components.tuxedo_touch import TuxedoTouchCoordinator
 from custom_components.tuxedo_touch.api import (
     TuxedoStatus,
     TuxedoTouchAuthError,
     TuxedoTouchError,
 )
 from custom_components.tuxedo_touch.const import CONF_MAC, DOMAIN
+from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
 
 from .conftest import MAC
 
@@ -167,3 +167,20 @@ async def test_a_routed_entry_keeps_its_address_identity(hass, config_entry, rea
     assert config_entry.state is ConfigEntryState.LOADED
     assert CONF_MAC not in config_entry.data
     assert config_entry.unique_id == before
+
+
+async def test_mac_adoption_refuses_a_unique_id_another_entry_holds(
+    hass, config_entry, config_entry_with_mac, ready
+):
+    """Two entries reaching the same panel: the second must not corrupt the
+    unique-id index by adopting an id the first already owns."""
+    config_entry_with_mac.add_to_hass(hass)
+    config_entry.add_to_hass(hass)
+    before = config_entry.unique_id
+
+    with patch(STATUS, return_value=ready), patch(MAC_LOOKUP, return_value=MAC):
+        await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert config_entry.unique_id == before
+    assert CONF_MAC not in config_entry.data

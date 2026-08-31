@@ -8,10 +8,11 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
-from . import TuxedoTouchConfigEntry
+from .const import CONF_MAC
+from .coordinator import TuxedoTouchConfigEntry
 
 # The host is on the user's LAN and the credentials open their alarm panel.
-REDACT = {CONF_PASSWORD, CONF_USERNAME, CONF_HOST, "code"}
+REDACT = {CONF_PASSWORD, CONF_USERNAME, CONF_HOST, CONF_MAC, "code"}
 
 
 async def async_get_config_entry_diagnostics(

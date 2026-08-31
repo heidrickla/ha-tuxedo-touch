@@ -35,6 +35,7 @@ async def _setup(hass, entry, status="Ready To Arm"):
         ("Armed Instant", "armed_night"),
         ("Entry Delay Active", "pending"),
         ("Armed Away Alarm", "triggered"),
+        ("Armed Instant Alarm", "triggered"),
         ("59  Secs Remaining", "arming"),
         ("1  Secs Remaining", "arming"),
         ("something the firmware never documented", "unknown"),
@@ -137,9 +138,49 @@ async def test_without_a_stored_code_the_user_is_prompted(hass, config_entry_no_
     assert hass.states.get(PANEL).attributes["code_arm_required"] is True
 
 
-async def test_the_entity_is_unique_per_partition(hass, config_entry):
+async def test_the_entity_unique_id_is_the_entry_id(hass, config_entry):
+    """No partition suffix: the entry's own unique id carries the partition,
+    and a suffix orphaned the registry row on every partition reconfigure."""
     await _setup(hass, config_entry)
     from homeassistant.helpers import entity_registry as er
 
     entity = er.async_get(hass).async_get(PANEL)
-    assert entity.unique_id == f"{config_entry.entry_id}_partition_1"
+    assert entity.unique_id == config_entry.entry_id
+
+
+async def test_an_old_partition_suffixed_unique_id_is_migrated(hass, config_entry):
+    """An install from before the format change keeps its entity."""
+    from homeassistant.helpers import entity_registry as er
+
+    config_entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    row = registry.async_get_or_create(
+        "alarm_control_panel",
+        "tuxedo_touch",
+        f"{config_entry.entry_id}_partition_1",
+        config_entry=config_entry,
+        suggested_object_id="honeywell_tuxedo_touch",
+    )
+    with patch(STATUS, return_value=TuxedoStatus(status="Ready To Arm", color=None)):
+        await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    migrated = registry.async_get(row.entity_id)
+    assert migrated.unique_id == config_entry.entry_id
+    # One entity, not a stale row plus a freshly minted `_2`.
+    assert hass.states.get(PANEL) is not None
+    assert hass.states.get(f"{PANEL}_2") is None
+
+
+async def test_a_stored_code_disables_the_code_prompt_entirely(hass, config_entry):
+    """code_arm_required only governs arming; without this, disarm still
+    demanded a code the entry already stores."""
+    await _setup(hass, config_entry)
+    assert hass.states.get(PANEL).attributes.get("code_format") is None
+
+
+async def test_without_a_stored_code_a_numeric_code_is_demanded(
+    hass, config_entry_no_code
+):
+    await _setup(hass, config_entry_no_code)
+    assert hass.states.get(PANEL).attributes.get("code_format") == "number"
