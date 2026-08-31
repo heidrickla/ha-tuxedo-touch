@@ -24,22 +24,22 @@ OUT = os.path.join(HERE, "preview")
 os.makedirs(OUT, exist_ok=True)
 
 # ---------------------------------------------------------------- palette
-BODY_TOP = (236, 238, 241)     # silver housing, lit from above
+BODY_TOP = (236, 238, 241)  # silver housing, lit from above
 BODY_BOT = (196, 201, 208)
 BODY_EDGE = (150, 156, 165)
-GLASS = (16, 19, 24)           # glossy black glass face
+GLASS = (16, 19, 24)  # glossy black glass face
 GLASS_EDGE = (5, 6, 8)
-SCREEN_TOP = (36, 74, 134)     # Tuxedo home-screen blue
+SCREEN_TOP = (36, 74, 134)  # Tuxedo home-screen blue
 SCREEN_BOT = (10, 28, 62)
-BANNER = (58, 176, 92)         # "Ready To Arm" green
+BANNER = (58, 176, 92)  # "Ready To Arm" green
 BANNER_DARK = (38, 136, 66)
 WHITE = (255, 255, 255)
 APP_COLORS = [
-    (52, 168, 186),   # teal   - security
-    (232, 163, 61),   # amber  - lighting
-    (86, 116, 214),   # indigo - thermostat
-    (98, 179, 104),   # green  - automation
-    (214, 100, 70),   # coral  - camera
+    (52, 168, 186),  # teal   - security
+    (232, 163, 61),  # amber  - lighting
+    (86, 116, 214),  # indigo - thermostat
+    (98, 179, 104),  # green  - automation
+    (214, 100, 70),  # coral  - camera
     (128, 142, 164),  # slate  - settings
 ]
 
@@ -53,14 +53,16 @@ def vgrad(size, top, bot):
         t = y / max(h - 1, 1)
         d.line(
             [(0, y), (w, y)],
-            fill=tuple(int(a + (b - a) * t) for a, b in zip(top, bot)),
+            fill=tuple(int(a + (b - a) * t) for a, b in zip(top, bot, strict=False)),
         )
     return img
 
 
 def rounded_mask(size, radius):
     m = Image.new("L", size, 0)
-    ImageDraw.Draw(m).rounded_rectangle([0, 0, size[0] - 1, size[1] - 1], radius, fill=255)
+    ImageDraw.Draw(m).rounded_rectangle(
+        [0, 0, size[0] - 1, size[1] - 1], radius, fill=255
+    )
     return m
 
 
@@ -79,13 +81,20 @@ def draw_device(canvas_w, canvas_h, variant="grid"):
     # housing
     paste_rounded_grad(img, (0, 0, W, H), int(H * 0.10), BODY_TOP, BODY_BOT)
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([0, 0, W - 1, H - 1], int(H * 0.10), outline=BODY_EDGE, width=max(2, H // 256))
+    d.rounded_rectangle(
+        [0, 0, W - 1, H - 1], int(H * 0.10), outline=BODY_EDGE, width=max(2, H // 256)
+    )
 
     # glass face
     gx0, gy0 = int(W * 0.035), int(H * 0.055)
     gx1, gy1 = W - gx0, H - gy0
-    d.rounded_rectangle([gx0, gy0, gx1, gy1], int(H * 0.065), fill=GLASS, outline=GLASS_EDGE,
-                        width=max(2, H // 300))
+    d.rounded_rectangle(
+        [gx0, gy0, gx1, gy1],
+        int(H * 0.065),
+        fill=GLASS,
+        outline=GLASS_EDGE,
+        width=max(2, H // 300),
+    )
 
     # screen
     sx0 = gx0 + int(W * 0.045)
@@ -100,13 +109,26 @@ def draw_device(canvas_w, canvas_h, variant="grid"):
     # green status banner with a check mark
     bx0, by0 = sx0 + int(sw * 0.03), sy0 + int(sh * 0.05)
     bx1, by1 = sx1 - int(sw * 0.03), sy0 + int(sh * 0.24)
-    d.rounded_rectangle([bx0, by0, bx1, by1], int(sh * 0.045), fill=BANNER, outline=BANNER_DARK,
-                        width=max(1, H // 400))
+    d.rounded_rectangle(
+        [bx0, by0, bx1, by1],
+        int(sh * 0.045),
+        fill=BANNER,
+        outline=BANNER_DARK,
+        width=max(1, H // 400),
+    )
     ch = by1 - by0
     ccx, ccy = (bx0 + bx1) // 2, (by0 + by1) // 2
     lw = max(3, ch // 5)
-    d.line([(ccx - ch * 0.55, ccy - ch * 0.02), (ccx - ch * 0.18, ccy + ch * 0.28),
-            (ccx + ch * 0.55, ccy - ch * 0.28)], fill=WHITE, width=lw, joint="curve")
+    d.line(
+        [
+            (ccx - ch * 0.55, ccy - ch * 0.02),
+            (ccx - ch * 0.18, ccy + ch * 0.28),
+            (ccx + ch * 0.55, ccy - ch * 0.28),
+        ],
+        fill=WHITE,
+        width=lw,
+        joint="curve",
+    )
 
     if variant == "grid":
         # 2x3 round app icons, like the Tuxedo home screen
@@ -121,13 +143,24 @@ def draw_device(canvas_w, canvas_h, variant="grid"):
             cx = sx0 + cell_w * col + cell_w // 2
             cy = area_y0 + cell_h * row + cell_h // 2
             color = APP_COLORS[i]
-            d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color,
-                      outline=tuple(max(0, c - 40) for c in color), width=max(1, H // 400))
+            d.ellipse(
+                [cx - r, cy - r, cx + r, cy + r],
+                fill=color,
+                outline=tuple(max(0, c - 40) for c in color),
+                width=max(1, H // 400),
+            )
             # glossy highlight on each icon
             hi = Image.new("RGBA", img.size, (0, 0, 0, 0))
             hd = ImageDraw.Draw(hi)
-            hd.ellipse([cx - int(r * 0.52), cy - int(r * 0.74),
-                        cx + int(r * 0.52), cy - int(r * 0.22)], fill=(255, 255, 255, 36))
+            hd.ellipse(
+                [
+                    cx - int(r * 0.52),
+                    cy - int(r * 0.74),
+                    cx + int(r * 0.52),
+                    cy - int(r * 0.22),
+                ],
+                fill=(255, 255, 255, 36),
+            )
             img.alpha_composite(hi)
             d = ImageDraw.Draw(img)
     else:
@@ -149,24 +182,45 @@ def draw_device(canvas_w, canvas_h, variant="grid"):
         ]
         d.polygon(pts, fill=(238, 242, 247), outline=(180, 190, 200))
         lw = max(4, shh // 10)
-        d.line([(cx - shw * 0.45, cy - shh * 0.08), (cx - shw * 0.12, cy + shh * 0.16),
-                (cx + shw * 0.5, cy - shh * 0.22)], fill=BANNER, width=lw, joint="curve")
+        d.line(
+            [
+                (cx - shw * 0.45, cy - shh * 0.08),
+                (cx - shw * 0.12, cy + shh * 0.16),
+                (cx + shw * 0.5, cy - shh * 0.22),
+            ],
+            fill=BANNER,
+            width=lw,
+            joint="curve",
+        )
 
     # speaker slot on the lower glass bezel
     slot_w = int(W * 0.14)
     slot_y = (sy1 + gy1) // 2
-    d.rounded_rectangle([W // 2 - slot_w // 2, slot_y - max(2, H // 220),
-                         W // 2 + slot_w // 2, slot_y + max(2, H // 220)],
-                        max(2, H // 220), fill=(70, 76, 84))
+    d.rounded_rectangle(
+        [
+            W // 2 - slot_w // 2,
+            slot_y - max(2, H // 220),
+            W // 2 + slot_w // 2,
+            slot_y + max(2, H // 220),
+        ],
+        max(2, H // 220),
+        fill=(70, 76, 84),
+    )
 
     # diagonal glass sheen, clipped to the glass
     sheen = Image.new("RGBA", img.size, (0, 0, 0, 0))
     sd = ImageDraw.Draw(sheen)
-    sd.polygon([(gx0, gy0), (int(W * 0.52), gy0), (int(W * 0.30), gy1), (gx0, gy1)],
-               fill=(255, 255, 255, 14))
+    sd.polygon(
+        [(gx0, gy0), (int(W * 0.52), gy0), (int(W * 0.30), gy1), (gx0, gy1)],
+        fill=(255, 255, 255, 14),
+    )
     clip = Image.new("L", img.size, 0)
-    ImageDraw.Draw(clip).rounded_rectangle([gx0, gy0, gx1, gy1], int(H * 0.065), fill=255)
-    sheen.putalpha(Image.composite(sheen.getchannel("A"), Image.new("L", img.size, 0), clip))
+    ImageDraw.Draw(clip).rounded_rectangle(
+        [gx0, gy0, gx1, gy1], int(H * 0.065), fill=255
+    )
+    sheen.putalpha(
+        Image.composite(sheen.getchannel("A"), Image.new("L", img.size, 0), clip)
+    )
     img.alpha_composite(sheen)
     return img
 
@@ -208,7 +262,12 @@ def make_logo(variant, dark=False, master_h=1024):
     canvas = Image.new("RGBA", (W, master_h), (0, 0, 0, 0))
     canvas.alpha_composite(dev, (0, 0))
     d = ImageDraw.Draw(canvas)
-    d.text((dev_w + gap - bbox[0], (master_h - th) // 2 - bbox[1]), text, font=font, fill=color)
+    d.text(
+        (dev_w + gap - bbox[0], (master_h - th) // 2 - bbox[1]),
+        text,
+        font=font,
+        fill=color,
+    )
     return canvas
 
 
@@ -216,7 +275,9 @@ def trim(img, pad=0):
     bbox = img.getchannel("A").getbbox()
     img = img.crop(bbox)
     if pad:
-        out = Image.new("RGBA", (img.width + 2 * pad, img.height + 2 * pad), (0, 0, 0, 0))
+        out = Image.new(
+            "RGBA", (img.width + 2 * pad, img.height + 2 * pad), (0, 0, 0, 0)
+        )
         out.alpha_composite(img, (pad, pad))
         img = out
     return img
@@ -225,19 +286,23 @@ def trim(img, pad=0):
 def save_scaled(img, path, target_short):
     short = min(img.size)
     scale = target_short / short
-    out = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
+    out = img.resize(
+        (round(img.width * scale), round(img.height * scale)), Image.LANCZOS
+    )
     out.save(path, optimize=True)
     return out.size
 
 
 def contact_sheet():
     tiles = []
-    for variant in ("grid", "shield"):
+    for _variant in ("grid", "shield"):
         icon = make_icon(variant).resize((256, 256), Image.LANCZOS)
         logo = trim(make_logo(variant))
         logo = logo.resize((round(logo.width * 256 / logo.height), 256), Image.LANCZOS)
         dark_logo = trim(make_logo(variant, dark=True))
-        dark_logo = dark_logo.resize((round(dark_logo.width * 256 / dark_logo.height), 256), Image.LANCZOS)
+        dark_logo = dark_logo.resize(
+            (round(dark_logo.width * 256 / dark_logo.height), 256), Image.LANCZOS
+        )
         tiles.append((variant, icon, logo, dark_logo))
 
     pad = 24
@@ -246,7 +311,7 @@ def contact_sheet():
     sheet = Image.new("RGB", (col_w + pad, row_h * len(tiles) * 2), (255, 255, 255))
     d = ImageDraw.Draw(sheet)
     y = 0
-    for variant, icon, logo, dark_logo in tiles:
+    for _variant, icon, logo, dark_logo in tiles:
         # white background row: icon + light logo
         sheet.paste(icon, (pad, y + pad), icon)
         sheet.paste(logo, (pad * 2 + icon.width, y + pad), logo)
