@@ -1,0 +1,71 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Nothing here writes to the repo, publishes, or comments on a PR.
+permissions: {}
+
+# A push that supersedes an in-flight run makes that run's answer irrelevant;
+# cancelling it leaves the newest answer as the only one.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+# Gitea's act_runner also picks up .github/workflows, so the job is gated to
+# GitHub. On the gitea forge it skips instantly and
+# .gitea/workflows/validate.yml is the one that runs.
+jobs:
+  tests:
+    if: github.server_url == 'https://github.com'
+    name: Ruff, tests, mypy, validator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Home Assistant 2026.x needs Python 3.14.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      # 0.13.357 pins Home Assistant 2026.8.3, the release on the HA VM. It
+      # brings pytest, pytest-cov, the asyncio and aiohttp plugins and PyYAML
+      # with it; pinning those again makes pip's resolution impossible.
+      # getmac is the integration's own requirement, which the harness does
+      # not install. Everything goes in a venv so the runner's own packages
+      # cannot change what a run means.
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install "mypy==1.18.2" "ruff==0.15.21" \
+            "pytest-homeassistant-custom-component==0.13.357" "getmac==0.9.5"
+
+      - name: Ruff check
+        run: .venv/bin/ruff check .
+
+      - name: Ruff format
+        run: .venv/bin/ruff format --check .
+
+      # A check() script rather than pytest functions: `pytest tests/` would
+      # collect nothing from it and report success. It exits non-zero on
+      # failure, so running it directly is the honest invocation.
+      - name: Pure tests
+        run: .venv/bin/python tests/test_api.py
+
+      # Coverage is reported, not yet gated; the threshold lands once the
+      # known gaps are closed.
+      - name: Home Assistant layer tests
+        run: >
+          .venv/bin/python -m pytest tests/ha -q
+          --cov=custom_components/tuxedo_touch --cov-report=term-missing
+
+      # With Home Assistant installed this is the strict run that means
+      # something; pyproject.toml carries no relaxations.
+      - name: mypy strict
+        run: .venv/bin/python -m mypy custom_components/tuxedo_touch
+
+      - name: Offline validator
+        run: .venv/bin/python tools/validate_local.py

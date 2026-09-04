@@ -27,6 +27,10 @@ concurrency:
 # gated to GitHub. On the gitea forge these skip and
 # .gitea/workflows/validate.yml is the one that runs - the runner is shared
 # with capacity 1 and duplicate jobs queue behind each other.
+#
+# Ruff, the pure tests, the Home Assistant layer tests, mypy and the offline
+# validator run in tests.yml. This file is the publication side: hassfest and
+# the HACS action, which HACS requires green, plus the secret guard.
 jobs:
   hassfest: # https://developers.home-assistant.io/blog/2020/04/16/hassfest
     if: github.server_url == 'https://github.com'
@@ -52,102 +56,18 @@ jobs:
         with:
           category: integration
 
-  lint:
+  secrets:
     if: github.server_url == 'https://github.com'
-    name: Ruff lint and format
+    name: Secret guard
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install ruff
-        # Pinned so a new ruff release changing the default rule set can't
-        # turn CI red without a repo change (same philosophy as the SHA pins).
-        run: pipx install ruff==0.16.1
-
-      - name: Ruff check
-        run: ruff check custom_components
-
-      - name: Ruff format check
-        run: ruff format --check custom_components
-
-  # NEW 2026-08-11. Until now this repo had 932 lines of Python and NO tests at all --
-  # including the HMAC/AES session layer in api.py, where the firmware's quirks are
-  # load-bearing: sign with the hex key DECODED rather than as text and every request
-  # fails authentication, reported to the user as "wrong password" or "unreachable".
-  # That is the failure this job exists to catch.
-  #
-  # The suite was verified passing against the tree before this job was added, so the
-  # gate starts GREEN -- a gate that arrives red is one people learn to click past. It
-  # was also verified to FAIL: mutating _hmac_hex to bytes.fromhex() turned it red on
-  # four checks, and dropping the authtoken clear from _invalidate_session on one. A
-  # gate never seen red is an assumption, not a gate.
-  tests:
-    if: github.server_url == 'https://github.com'
-    name: Unit tests and secret guard
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          # Pinned rather than "3.x" for the same reason ruff is pinned: a runner-side
-          # default bump should not be able to change what CI means.
-          python-version: "3.13"
-
-      - name: Install test dependencies
-        # api.py imports these at module scope. Home Assistant normally supplies both,
-        # but the tests deliberately do NOT install Home Assistant -- that keeps this
-        # job at seconds instead of minutes, and keeps it honest about what it covers
-        # (the client's pure logic, not the HA integration surface). Pinned, same
-        # philosophy as ruff and the action SHAs.
-        run: pip install aiohttp==3.14.3 cryptography==48.0.1
-
-      # These are standalone scripts with their own check() helper, NOT pytest test
-      # functions -- `pytest tests/` would collect zero of them and report success,
-      # which is exactly how a suite goes invisible. They exit non-zero on failure, so
-      # running them directly is the honest invocation. Matches ha-culligan-azure.
-      #
-      # The glob is deliberate: a new tests/test_*.py is covered the day it lands. The
-      # "found none" branch matters just as much -- if these are renamed or converted
-      # to pytest, this fails loudly instead of passing vacuously.
-      #
-      # Failures ACCUMULATE. Stopping at the first would hide the rest, and knowing two
-      # modules regressed is worth more than knowing one did.
-      - name: Unit tests
-        run: |
-          set -uo pipefail
-          shopt -s nullglob
-          found=0
-          failed=""
-          for t in tests/test_*.py; do
-            found=1
-            echo "::group::$t"
-            if python "$t"; then
-              echo "PASS $t"
-            else
-              echo "::error file=$t::unit tests failed"
-              failed="$failed $t"
-            fi
-            echo "::endgroup::"
-          done
-          if [ "$found" = "0" ]; then
-            echo "::error::no tests/test_*.py found -- were they renamed or moved to pytest?"
-            exit 1
-          fi
-          [ -z "$failed" ] || { echo "::error::failing suites:$failed"; exit 1; }
-
-      # Folded into this job rather than given its own: it is a two-second
-      # `git ls-files | grep`, and a separate job would spend a whole billable minute
-      # on VM boot and checkout to run it.
-      #
       # Deliberately narrow. It proves the material that must never be committed is
       # absent -- not that the repo is free of anything sensitive, which no grep can
       # show. Markdown is excluded because the API notes legitimately quote key-shaped
       # example blobs, and a guard that cries wolf is one people learn to ignore.
-      # Verified clean against the tree before being added.
       - name: No private keys or env files committed
         run: |
           set -euo pipefail

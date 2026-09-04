@@ -55,30 +55,21 @@ jobs:
           print("manifest ok:", m["domain"], m["version"])
           PY
 
-      - name: Quality scale is complete and honest
+      # The validator needs Python 3.11+ for tomllib; the runner image ships
+      # 3.10, so it runs under the same interpreter the Home Assistant job
+      # uses.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Quality scale and offline validator
         run: |
-          python3 -m pip install --quiet "PyYAML==6.0.2"
-          python3 - <<'PY'
-          import json, yaml
-          rules = yaml.safe_load(open(
-              "custom_components/tuxedo_touch/quality_scale.yaml", encoding="utf-8"))["rules"]
-          todo = sorted(k for k, v in rules.items()
-                        if isinstance(v, dict) and v.get("status") == "todo")
-          for name, v in rules.items():
-              if isinstance(v, dict):
-                  assert v.get("status") in {"done","todo","exempt"}, name
-                  assert str(v.get("comment","")).strip(), f"{name}: needs a reason"
-              else:
-                  assert v == "done", name
-          claimed = json.load(open(
-              "custom_components/tuxedo_touch/manifest.json", encoding="utf-8")
-          ).get("quality_scale")
-          assert not (claimed and todo), f"manifest claims {claimed} with todo: {todo}"
-          print(f"{len(rules)} rules; still todo: {', '.join(todo) or 'none'}")
-          PY
+          python -m pip install --quiet "PyYAML==6.0.2"
+          python tools/validate_local.py
 
   # Installs Home Assistant, so it is manual only and never occupies the shared
-  # runner on an ordinary push. This is the job that runs tests/ha/.
+  # runner on an ordinary push. This is the job that runs tests/ha/. The GitHub
+  # Tests workflow runs the same steps on every push.
   home-assistant:
     name: Home Assistant layer
     if: github.event_name == 'workflow_dispatch'
@@ -86,17 +77,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The runner image ships 3.10; Home Assistant needs 3.13.
+      # The runner image ships 3.10; Home Assistant 2026.x needs 3.14.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
+      # 0.13.357 pins Home Assistant 2026.8.3 and brings pytest and pytest-cov
+      # with it. getmac is the integration's own requirement.
       - name: Install
         run: |
           python -m pip install --quiet --upgrade pip
-          python -m pip install --quiet \
-            pytest pytest-asyncio "mypy==1.18.2" \
-            pytest-homeassistant-custom-component \
+          python -m pip install --quiet "mypy==1.18.2" \
+            "pytest-homeassistant-custom-component==0.13.357" \
             "getmac==0.9.5"
 
       - name: Unit tests
@@ -106,11 +98,14 @@ jobs:
           done
 
       - name: Home Assistant layer tests
-        run: python -m pytest tests/ha -q
+        run: >
+          python -m pytest tests/ha -q
+          --cov=custom_components/tuxedo_touch --cov-report=term-missing
 
       - name: mypy strict
         run: python -m mypy custom_components/tuxedo_touch
 
+  # No continue-on-error: a red hassfest or HACS run is the answer, not noise.
   hacs:
     name: hassfest + HACS
     if: github.event_name == 'workflow_dispatch'
@@ -118,8 +113,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
-        continue-on-error: true
       - uses: hacs/action@main
-        continue-on-error: true
         with:
           category: integration
