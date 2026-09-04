@@ -16,6 +16,7 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .api import (
@@ -37,14 +38,37 @@ from .identity import async_panel_mac, build_unique_id
 
 _LOGGER = logging.getLogger(__name__)
 
+_PASSWORD = selector.TextSelector(
+    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+)
+
+# The web password and the keypad code are both secrets: masked in the form,
+# never given a default and never sent back as a suggested value. A default
+# reaches the frontend, where the field can reveal it, and is also applied
+# when the user clears the field.
+SECRETS = (CONF_PASSWORD, CONF_CODE)
+
 STEP_USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): str,
         vol.Required(CONF_PORT, default=DEFAULT_PORT_HTTPS): int,
         vol.Required(CONF_USE_HTTPS, default=DEFAULT_USE_HTTPS): bool,
         vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): str,
-        vol.Optional(CONF_CODE): str,
+        vol.Required(CONF_PASSWORD): _PASSWORD,
+        vol.Optional(CONF_CODE): _PASSWORD,
+        vol.Optional(CONF_PARTITION, default=DEFAULT_PARTITION): int,
+    }
+)
+
+# Same fields, but both secrets may be left blank to keep the stored values.
+STEP_RECONFIGURE_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_HOST): str,
+        vol.Required(CONF_PORT, default=DEFAULT_PORT_HTTPS): int,
+        vol.Required(CONF_USE_HTTPS, default=DEFAULT_USE_HTTPS): bool,
+        vol.Required(CONF_USERNAME): str,
+        vol.Optional(CONF_PASSWORD): _PASSWORD,
+        vol.Optional(CONF_CODE): _PASSWORD,
         vol.Optional(CONF_PARTITION, default=DEFAULT_PARTITION): int,
     }
 )
@@ -52,9 +76,18 @@ STEP_USER_SCHEMA = vol.Schema(
 STEP_REAUTH_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): str,
+        vol.Required(CONF_PASSWORD): _PASSWORD,
     }
 )
+
+
+def _title_for(host: str) -> str:
+    return f"Tuxedo Touch ({host})"
+
+
+def _without_secrets(data: Mapping[str, Any]) -> dict[str, Any]:
+    """What may go back to the browser as suggested values: never a secret."""
+    return {k: v for k, v in data.items() if k not in SECRETS}
 
 
 async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
@@ -77,9 +110,7 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
         session.detach()
 
 
-# `domain=` is real on Home Assistant's ConfigFlow; it only looks wrong when
-# HA is absent and the base class degrades to `object`.
-class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
+class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Honeywell Tuxedo Touch."""
 
     VERSION = 1
@@ -135,6 +166,9 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg
             errors = await self._async_validate(user_input)
             if not errors:
                 data = await self._with_identity(user_input)
+                # An emptied code field must not be stored as a code.
+                if not data.get(CONF_CODE):
+                    data.pop(CONF_CODE, None)
                 await self.async_set_unique_id(
                     build_unique_id(
                         data.get(CONF_MAC),
@@ -154,11 +188,17 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg
                     }
                 )
                 return self.async_create_entry(
-                    title=f"Tuxedo Touch ({user_input[CONF_HOST]})", data=data
+                    title=_title_for(user_input[CONF_HOST]), data=data
                 )
 
+        # After an error the non-secret fields come back filled in; the
+        # secrets are typed again.
         return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
+            step_id="user",
+            data_schema=self.add_suggested_values_to_schema(
+                STEP_USER_SCHEMA, _without_secrets(user_input or {})
+            ),
+            errors=errors,
         )
 
     async def async_step_reconfigure(
@@ -168,9 +208,18 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg
         errors: dict[str, str] = {}
         entry = self._get_reconfigure_entry()
         if user_input is not None:
-            errors = await self._async_validate(user_input)
+            # A blank secret keeps the stored one. The stored values are never
+            # shown on the form, so blank is the ordinary way to leave them be.
+            merged = dict(user_input)
+            for secret in SECRETS:
+                if not merged.get(secret):
+                    if entry.data.get(secret):
+                        merged[secret] = entry.data[secret]
+                    else:
+                        merged.pop(secret, None)
+            errors = await self._async_validate(merged)
             if not errors:
-                data = await self._with_identity(user_input)
+                data = await self._with_identity(merged)
                 mac = data.get(CONF_MAC)
                 known = entry.data.get(CONF_MAC)
                 # Only the MAC says which panel this is. Comparing whole unique
@@ -194,14 +243,19 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg
                     for other in self._async_current_entries()
                 ):
                     return self.async_abort(reason="already_configured")
+                # The title names the host, so it follows a move - unless the
+                # user renamed the entry, in which case their name stays.
+                title = entry.title
+                if title == _title_for(entry.data[CONF_HOST]):
+                    title = _title_for(user_input[CONF_HOST])
                 return self.async_update_reload_and_abort(
-                    entry, data=data, unique_id=unique_id
+                    entry, data=data, unique_id=unique_id, title=title
                 )
 
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=self.add_suggested_values_to_schema(
-                STEP_USER_SCHEMA, {**entry.data, **(user_input or {})}
+                STEP_RECONFIGURE_SCHEMA, _without_secrets(user_input or entry.data)
             ),
             errors=errors,
         )
@@ -226,7 +280,10 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg
 
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=STEP_REAUTH_SCHEMA,
+            data_schema=self.add_suggested_values_to_schema(
+                STEP_REAUTH_SCHEMA,
+                {CONF_USERNAME: reauth_entry.data.get(CONF_USERNAME, "")},
+            ),
             description_placeholders={"host": reauth_entry.data[CONF_HOST]},
             errors=errors,
         )

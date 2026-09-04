@@ -5,11 +5,17 @@ it, so replacing that one method exercises the flow's real code, including its
 error mapping, without a socket.
 """
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.config_entries import SOURCE_USER
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.const import (
+    CONF_CODE,
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_USERNAME,
+)
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -23,6 +29,16 @@ from custom_components.tuxedo_touch.const import CONF_MAC, CONF_PARTITION, DOMAI
 from .conftest import ENTRY_DATA, HOST, MAC, PORT
 
 LOGIN = "custom_components.tuxedo_touch.api.TuxedoTouchClient.login"
+VALIDATE = "custom_components.tuxedo_touch.config_flow._validate_input"
+
+
+def _fields(result):
+    """The form's schema markers by field name, for looking at suggested values."""
+    return {str(key): key for key in result["data_schema"].schema}
+
+
+def _suggested(marker):
+    return (marker.description or {}).get("suggested_value")
 
 
 async def test_user_step_creates_the_entry(hass):
@@ -78,6 +94,36 @@ async def test_the_form_is_offered_again_after_a_failure(hass):
             first["flow_id"], dict(ENTRY_DATA)
         )
     assert second["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_the_form_after_an_error_keeps_everything_but_the_secrets(hass):
+    """The address comes back filled in; the password and code are typed again.
+
+    A suggested value is sent to the browser, where a password field can
+    reveal it, so the secrets must never be among them.
+    """
+    with patch(LOGIN, side_effect=TuxedoTouchAuthError("no")):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
+        )
+    fields = _fields(result)
+    assert _suggested(fields[CONF_HOST]) == HOST
+    assert _suggested(fields[CONF_USERNAME]) == "installer"
+    assert _suggested(fields[CONF_PASSWORD]) in (None, "")
+    assert _suggested(fields[CONF_CODE]) in (None, "")
+
+
+async def test_an_emptied_code_field_is_not_stored_as_a_code(hass):
+    """An empty string would count as "no code" everywhere, but storing it
+    would still be a lie about what the user configured."""
+    with patch(LOGIN, return_value=None):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data={**ENTRY_DATA, CONF_CODE: ""},
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert CONF_CODE not in result["data"]
 
 
 async def test_the_same_panel_and_partition_cannot_be_added_twice(hass, config_entry):
@@ -165,6 +211,111 @@ async def test_reconfigure_shows_the_error_rather_than_saving(hass, config_entry
     assert config_entry.data[CONF_HOST] == HOST
 
 
+async def test_reconfigure_recovers_from_an_unreachable_panel(hass, config_entry):
+    """A typo in the new address is corrected on the same form, not by
+    starting over."""
+    config_entry.add_to_hass(hass)
+    with patch(LOGIN, side_effect=TuxedoTouchConnectionError("down")):
+        first = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.99"},
+        )
+    assert first["type"] is FlowResultType.FORM
+    assert first["errors"] == {"base": "cannot_connect"}
+
+    with patch(LOGIN, return_value=None):
+        second = await hass.config_entries.flow.async_configure(
+            first["flow_id"], {**ENTRY_DATA, CONF_HOST: "10.10.52.61"}
+        )
+    assert second["type"] is FlowResultType.ABORT
+    assert second["reason"] == "reconfigure_successful"
+    assert config_entry.data[CONF_HOST] == "10.10.52.61"
+
+
+async def test_the_reconfigure_form_never_shows_the_stored_secrets(hass, config_entry):
+    config_entry.add_to_hass(hass)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+    )
+    assert result["type"] is FlowResultType.FORM
+    fields = _fields(result)
+    assert _suggested(fields[CONF_HOST]) == HOST
+    assert _suggested(fields[CONF_PASSWORD]) in (None, "")
+    assert _suggested(fields[CONF_CODE]) in (None, "")
+
+
+async def test_reconfigure_with_blank_secrets_keeps_the_stored_ones(hass, config_entry):
+    """Blank is the only way to say "unchanged" for a field that is never
+    shown, and the login check must run with the stored password, not with
+    the blank."""
+    config_entry.add_to_hass(hass)
+    with patch(VALIDATE, AsyncMock(return_value=None)) as validate:
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data={
+                **ENTRY_DATA,
+                CONF_HOST: "10.10.52.61",
+                CONF_PASSWORD: "",
+                CONF_CODE: "",
+            },
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert validate.await_args.args[1][CONF_PASSWORD] == "secret"
+    assert config_entry.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry.data[CONF_PASSWORD] == "secret"
+    assert config_entry.data[CONF_CODE] == "1234"
+
+
+async def test_reconfigure_with_a_new_password_stores_it(hass, config_entry):
+    config_entry.add_to_hass(hass)
+    with patch(LOGIN, return_value=None):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data={**ENTRY_DATA, CONF_PASSWORD: "newsecret", CONF_CODE: "4321"},
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry.data[CONF_PASSWORD] == "newsecret"
+    assert config_entry.data[CONF_CODE] == "4321"
+
+
+async def test_the_title_follows_the_panel_to_its_new_address(hass, config_entry):
+    """The default title names the host; a stale one would point at the old
+    address forever."""
+    config_entry.add_to_hass(hass)
+    assert config_entry.title == f"Tuxedo Touch ({HOST})"
+    with patch(LOGIN, return_value=None):
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+        )
+    assert config_entry.title == "Tuxedo Touch (10.10.52.61)"
+
+
+async def test_a_renamed_entry_keeps_its_name_on_a_move(hass):
+    renamed = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garage alarm",
+        unique_id=f"{HOST}:{PORT}:1",
+        data=dict(ENTRY_DATA),
+    )
+    renamed.add_to_hass(hass)
+    with patch(LOGIN, return_value=None):
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": renamed.entry_id},
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+        )
+    assert renamed.data[CONF_HOST] == "10.10.52.61"
+    assert renamed.title == "Garage alarm"
+
+
 async def test_reauth_updates_only_the_credentials(hass, config_entry):
     config_entry.add_to_hass(hass)
     result = await config_entry.start_reauth_flow(hass)
@@ -195,6 +346,37 @@ async def test_reauth_reports_a_still_wrong_password(hass, config_entry):
     assert again["type"] is FlowResultType.FORM
     assert again["errors"] == {"base": "invalid_auth"}
     assert config_entry.data[CONF_PASSWORD] == "secret"
+
+
+async def test_reauth_recovers_from_a_wrong_password(hass, config_entry):
+    """The second attempt on the same form must finish the reauth."""
+    config_entry.add_to_hass(hass)
+    result = await config_entry.start_reauth_flow(hass)
+    with patch(LOGIN, side_effect=TuxedoTouchAuthError("no")):
+        again = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "installer", CONF_PASSWORD: "wrong"},
+        )
+    assert again["type"] is FlowResultType.FORM
+
+    with patch(LOGIN, return_value=None):
+        done = await hass.config_entries.flow.async_configure(
+            again["flow_id"],
+            {CONF_USERNAME: "installer", CONF_PASSWORD: "right"},
+        )
+    assert done["type"] is FlowResultType.ABORT
+    assert done["reason"] == "reauth_successful"
+    assert config_entry.data[CONF_PASSWORD] == "right"
+
+
+async def test_the_reauth_form_suggests_the_username_but_not_the_password(
+    hass, config_entry
+):
+    config_entry.add_to_hass(hass)
+    result = await config_entry.start_reauth_flow(hass)
+    fields = _fields(result)
+    assert _suggested(fields[CONF_USERNAME]) == "installer"
+    assert _suggested(fields[CONF_PASSWORD]) in (None, "")
 
 
 MAC_LOOKUP = "custom_components.tuxedo_touch.config_flow.async_panel_mac"
@@ -284,6 +466,23 @@ async def test_a_failed_lookup_does_not_demote_a_known_identity(
     assert result["reason"] == "reconfigure_successful"
     assert config_entry_with_mac.data[CONF_MAC] == MAC
     assert config_entry_with_mac.unique_id == f"{MAC}_1"
+
+
+async def test_reconfigure_adopts_the_mac_an_address_entry_lacked(hass, config_entry):
+    """An entry set up from a routed segment, reconfigured from a local one:
+    the lookup answers for the first time and the identity upgrades."""
+    config_entry.add_to_hass(hass)
+    assert CONF_MAC not in config_entry.data
+    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=MAC):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data=dict(ENTRY_DATA),
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry.data[CONF_MAC] == MAC
+    assert config_entry.unique_id == f"{MAC}_1"
 
 
 async def test_a_duplicate_re_add_heals_the_stored_address(hass, config_entry_with_mac):

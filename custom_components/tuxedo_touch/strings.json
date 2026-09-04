@@ -14,7 +14,7 @@
           "partition": "Partition number"
         },
         "data_description": {
-          "host": "IP address or hostname of the Tuxedo Touch unit on your LAN. Give the unit a static IP or DHCP reservation - the integration identifies the panel by this address.",
+          "host": "IP address or hostname of the Tuxedo Touch unit on your LAN. When Home Assistant is on the same network segment, the panel is identified by its MAC address and a changed address is a reconfigure; otherwise it is identified by this address, so give it a static IP or DHCP reservation.",
           "use_https": "Required if 'Secured Web Server Access' is enabled on the unit (the common/default state).",
           "username": "The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code.",
           "password": "The unit's web login password.",
@@ -37,7 +37,7 @@
       },
       "reconfigure": {
         "title": "Reconfigure Tuxedo Touch",
-        "description": "Change the panel's address, port or partition.",
+        "description": "Change the panel's address, port, credentials, keypad code or partition. Leave the password and keypad code blank to keep the stored ones.",
         "data": {
           "host": "IP address",
           "port": "Port",
@@ -48,11 +48,11 @@
           "partition": "Partition number"
         },
         "data_description": {
-          "host": "IP address or hostname of the Tuxedo Touch unit on your LAN. Give the unit a static IP or DHCP reservation - the integration identifies the panel by this address.",
+          "host": "IP address or hostname of the Tuxedo Touch unit on your LAN. When Home Assistant is on the same network segment, the panel is identified by its MAC address and a changed address is a reconfigure; otherwise it is identified by this address, so give it a static IP or DHCP reservation.",
           "use_https": "Required if 'Secured Web Server Access' is enabled on the unit (the common/default state).",
           "username": "The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code.",
-          "password": "The unit's web login password.",
-          "code": "Optional. Used as the default arm/disarm code so automations can arm without prompting.",
+          "password": "The unit's web login password. Blank keeps the stored password.",
+          "code": "Optional. Used as the default arm/disarm code so automations can arm without prompting. Blank keeps the stored code.",
           "partition": "The panel partition this entry controls.",
           "port": "The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without."
         }
