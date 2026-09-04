@@ -60,9 +60,10 @@ rules:
   has-entity-name:
     status: done
     comment: |
-      The entity is named "Partition N" under the device name, so two
-      partition entries on one panel, which share a device through the MAC
-      connection, are two distinct rows rather than two identical ones.
+      The entity is named "Partition N" under the device name. Two partition
+      entries on one panel are two devices with the same name (one device per
+      config entry since HA 2026.8), so the partition in the entity name is
+      what tells the two alarms apart.
   runtime-data: done
   test-before-configure:
     status: done
