@@ -65,9 +65,10 @@ async def test_setup_loads_the_panel_entity(hass, config_entry, ready):
 async def test_two_partitions_on_one_panel_are_told_apart(
     hass, config_entry_with_mac, ready
 ):
-    """Partitions are separate alarms on one device. Both entries merge onto
-    the device the MAC identifies, so the entities must carry the partition
-    in their names or the device page shows two identical rows."""
+    """Partitions are separate alarms on one panel. Since Home Assistant
+    2026.8 a device belongs to one config entry, so each partition entry
+    gets its own device carrying the panel's MAC; both devices are named for
+    the panel, and only the partition in the entity name tells them apart."""
     second = MockConfigEntry(
         domain=DOMAIN,
         title=f"Tuxedo Touch ({HOST})",
@@ -91,11 +92,17 @@ async def test_two_partitions_on_one_panel_are_told_apart(
     assert one.name == "Honeywell Tuxedo Touch Partition 1"
     assert two.name == "Honeywell Tuxedo Touch Partition 2"
 
-    device = dr.async_get(hass).async_get_device(
-        connections={(dr.CONNECTION_NETWORK_MAC, MAC)}
-    )
-    assert device is not None
-    assert device.config_entries == {config_entry_with_mac.entry_id, second.entry_id}
+    registry = dr.async_get(hass)
+    devices = [
+        dr.async_entries_for_config_entry(registry, entry.entry_id)
+        for entry in (config_entry_with_mac, second)
+    ]
+    assert [len(found) for found in devices] == [1, 1]
+    first_device, second_device = devices[0][0], devices[1][0]
+    assert first_device.id != second_device.id
+    for device in (first_device, second_device):
+        assert (dr.CONNECTION_NETWORK_MAC, MAC) in device.connections
+        assert device.name == "Honeywell Tuxedo Touch"
 
 
 async def test_an_unreachable_panel_is_retried_not_failed(hass, config_entry):

@@ -77,8 +77,8 @@ class TuxedoAlarmPanel(
 
     _attr_has_entity_name = True
     # Named after the partition, not the device: two partition entries on one
-    # panel share a device (merged on the MAC connection) and would otherwise
-    # be two entities with the same name.
+    # panel are two devices with the same name, and the entities would
+    # otherwise be identical rows apart from a numeric suffix.
     _attr_translation_key = "partition"
     _attr_supported_features = (
         AlarmControlPanelEntityFeature.ARM_HOME
@@ -105,8 +105,9 @@ class TuxedoAlarmPanel(
         mac = entry.data.get(CONF_MAC)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
-            # Ties the panel to the same device the router reports, so it does
-            # not appear twice in the device list.
+            # The MAC records which physical panel this is. Since HA 2026.8 a
+            # device belongs to one config entry, so a second partition entry
+            # gets its own device carrying the same connection, not a merge.
             connections={(CONNECTION_NETWORK_MAC, mac)} if mac else set(),
             name="Honeywell Tuxedo Touch",
             manufacturer="Honeywell",
