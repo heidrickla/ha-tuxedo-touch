@@ -12,6 +12,7 @@ import ipaddress
 import logging
 from functools import partial
 
+from getmac import get_mac_address
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import format_mac
 
@@ -31,12 +32,6 @@ async def async_panel_mac(hass: HomeAssistant, host: str) -> str | None:
     Call it after a successful request to the panel, so the ARP entry it reads
     has just been populated.
     """
-    try:
-        from getmac import get_mac_address
-    except ImportError:
-        _LOGGER.debug("getmac is unavailable, so the panel keeps an address identity")
-        return None
-
     # getmac treats ip= as a literal IPv4 to find in ARP tables; hostnames
     # must go through hostname= (which resolves first) and IPv6 through ip6=.
     # A hostname in ip= matches nothing and returns None - no error, just the
@@ -57,7 +52,8 @@ async def async_panel_mac(hass: HomeAssistant, host: str) -> str | None:
 
     if not mac or mac.lower() in _NOT_A_MAC:
         return None
-    return format_mac(mac)
+    formatted: str = format_mac(mac)
+    return formatted
 
 
 def build_unique_id(mac: str | None, host: str, port: int, partition: int) -> str:
