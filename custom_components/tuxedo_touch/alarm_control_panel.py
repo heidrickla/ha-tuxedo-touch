@@ -76,7 +76,10 @@ class TuxedoAlarmPanel(
     """Represents one Tuxedo Touch partition."""
 
     _attr_has_entity_name = True
-    _attr_name = None
+    # Named after the partition, not the device: two partition entries on one
+    # panel share a device (merged on the MAC connection) and would otherwise
+    # be two entities with the same name.
+    _attr_translation_key = "partition"
     _attr_supported_features = (
         AlarmControlPanelEntityFeature.ARM_HOME
         | AlarmControlPanelEntityFeature.ARM_AWAY
@@ -92,6 +95,7 @@ class TuxedoAlarmPanel(
         # partition, and a partition change is a reconfigure of the same entry
         # - a suffix here orphaned the registry row on every such change.
         self._attr_unique_id = entry.entry_id
+        self._attr_translation_placeholders = {"partition": str(coordinator.partition)}
         # A code is required unless one is stored in config for automations
         # to use without prompting. code_format follows the same logic: with a
         # stored code the dashboard must not demand one for disarm either.

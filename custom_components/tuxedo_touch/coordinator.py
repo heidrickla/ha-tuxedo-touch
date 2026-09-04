@@ -101,9 +101,17 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         except TuxedoTouchAuthError as err:
             # Halts polling and starts a reauth flow instead of re-running the
             # full login handshake against doomed credentials every poll.
-            raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="auth_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
         except TuxedoTouchError as err:
-            raise UpdateFailed(str(err)) from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
 
         if self._last_command_monotonic > poll_started and self.data is not None:
             _LOGGER.debug(
