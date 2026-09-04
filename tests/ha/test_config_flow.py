@@ -251,7 +251,13 @@ async def test_reconfigure_with_blank_secrets_keeps_the_stored_ones(hass, config
     shown, and the login check must run with the stored password, not with
     the blank."""
     config_entry.add_to_hass(hass)
-    with patch(VALIDATE, AsyncMock(return_value=None)) as validate:
+    # The successful step reloads the entry, and that setup logs in for
+    # real unless login is patched like everywhere else in this file. The
+    # flow's own check is replaced wholesale so its input can be inspected.
+    with (
+        patch(VALIDATE, AsyncMock(return_value=None)) as validate,
+        patch(LOGIN, return_value=None),
+    ):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": "reconfigure", "entry_id": config_entry.entry_id},
@@ -262,6 +268,7 @@ async def test_reconfigure_with_blank_secrets_keeps_the_stored_ones(hass, config
                 CONF_CODE: "",
             },
         )
+        await hass.async_block_till_done()
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert validate.await_args.args[1][CONF_PASSWORD] == "secret"

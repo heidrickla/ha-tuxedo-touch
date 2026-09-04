@@ -76,11 +76,15 @@ async def test_two_partitions_on_one_panel_are_told_apart(
     )
     config_entry_with_mac.add_to_hass(hass)
     second.add_to_hass(hass)
+    # Setting up the first entry loads the component, and loading the
+    # component sets up every entry of the domain; a second explicit setup
+    # would find an already loaded entry and refuse.
     with patch(STATUS, return_value=ready):
         await hass.config_entries.async_setup(config_entry_with_mac.entry_id)
-        await hass.config_entries.async_setup(second.entry_id)
         await hass.async_block_till_done()
 
+    assert config_entry_with_mac.state is ConfigEntryState.LOADED
+    assert second.state is ConfigEntryState.LOADED
     one = hass.states.get(PANEL)
     two = hass.states.get("alarm_control_panel.honeywell_tuxedo_touch_partition_2")
     assert one is not None and two is not None
