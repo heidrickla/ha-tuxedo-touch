@@ -10,9 +10,15 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 "tests/*" = ["S101", "E501"]
 
 # Home Assistant runs mypy in strict mode over integrations claiming the
-# strict-typing rule.
+# strict-typing rule. This block is the real strict configuration and it is
+# what the Tests workflow runs with Home Assistant installed. A local run
+# without Home Assistant sees every class it exports as Any, so it reports
+# subclassing-Any and the `domain=` keyword on ConfigFlow; those are artifacts
+# of the missing package, not defects, and CI is the run that counts.
 [tool.mypy]
-python_version = "3.13"
+# Home Assistant 2026.x is written for 3.14; a lower target makes mypy stop
+# at its own source before reaching this integration.
+python_version = "3.14"
 strict = true
 warn_return_any = true
 disallow_untyped_defs = true
@@ -20,12 +26,6 @@ disallow_any_generics = true
 no_implicit_reexport = true
 ignore_missing_imports = true
 follow_imports = "silent"
-# Relaxed only because Home Assistant is not installed here: without it every
-# class it exports is Any, so subclassing Entity reads as subclassing Any and
-# @callback reads as an untyped decorator.
-disallow_subclassing_any = false
-disallow_untyped_decorators = false
-warn_unused_ignores = false
 
 [[tool.mypy.overrides]]
 module = "tests.*"
