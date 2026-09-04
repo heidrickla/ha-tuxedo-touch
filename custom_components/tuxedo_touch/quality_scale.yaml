@@ -2,47 +2,83 @@ rules:
   # Bronze
   action-setup:
     status: exempt
-    comment: This integration does not provide actions.
-  appropriate-polling: done
-  brands: done
+    comment: |
+      This integration registers no actions of its own. Arming and disarming
+      go through the alarm_control_panel domain's actions.
+  appropriate-polling:
+    status: done
+    comment: |
+      Thirty seconds. The panel is an embedded web server with a legacy TLS
+      handshake on every new connection; a command is reflected immediately
+      through an optimistic update, so the poll only has to catch changes
+      made at the keypad.
+  brands:
+    status: done
+    comment: |
+      Brand images ship in-repo at custom_components/tuxedo_touch/brand/,
+      which Home Assistant serves from 2026.3 on; hacs.json floors there.
   common-modules: done
   config-flow-test-coverage:
     status: done
     comment: |
-      tests/ha/test_config_flow.py covers the user step, all four error
-      mappings, retry after a failure, the duplicate abort, a second partition,
-      reconfigure (address change, partition change, the another_panel guard
-      and the collision guard), MAC identity and its address fallback, and
-      reauth. Run by the `Home Assistant layer` job of
-      .gitea/workflows/validate.yml on the self-hosted runner.
-  config-flow: done
+      tests/ha/test_config_flow.py covers the user step, the four error
+      mappings and recovery from an error to a created entry, the duplicate
+      abort, a second partition, reconfigure (address and partition changes,
+      recovery from an error, the another_panel and collision guards, blank
+      secrets keeping the stored ones, the title following a move, an
+      address entry gaining its MAC) and reauth in both outcomes including
+      recovery. Run by the GitHub Tests workflow on every push.
+  config-flow:
+    status: done
+    comment: Every field has a data_description; the secrets use a password selector.
   dependency-transparency:
     status: done
     comment: |
-      One dependency, `getmac==0.9.5` - open source, on PyPI, pinned, and the
-      same pin five core integrations use. It resolves the panel's MAC so the
-      config entry's identity survives a DHCP address change.
+      getmac==0.9.5 - open source, on PyPI, the pin five core integrations
+      use. cryptography is declared unpinned on purpose: Home Assistant core
+      pins it and constrains every install to that pin, so any other version
+      here would refuse to install on the next core release.
   docs-actions:
     status: exempt
-    comment: This integration does not provide actions.
+    comment: This integration registers no actions of its own.
   docs-conditions:
     status: exempt
-    comment: This integration does not provide conditions.
+    comment: This integration provides no conditions.
   docs-high-level-description: done
   docs-installation-instructions: done
   docs-removal-instructions: done
   docs-triggers:
     status: exempt
-    comment: This integration does not provide triggers.
+    comment: This integration provides no triggers.
   entity-event-setup:
-    status: exempt
-    comment: The entity does not subscribe to events of its own.
+    status: done
+    comment: |
+      The entity is a CoordinatorEntity, which subscribes to the coordinator
+      in async_added_to_hass and unsubscribes on removal. Nothing else is
+      subscribed to.
   entity-unique-id: done
-  has-entity-name: done
+  has-entity-name:
+    status: done
+    comment: |
+      The entity is named "Partition N" under the device name, so two
+      partition entries on one panel, which share a device through the MAC
+      connection, are two distinct rows rather than two identical ones.
   runtime-data: done
-  test-before-configure: done
-  test-before-setup: done
-  unique-config-entry: done
+  test-before-configure:
+    status: done
+    comment: The flow performs a real login before the entry is created.
+  test-before-setup:
+    status: done
+    comment: |
+      async_config_entry_first_refresh raises ConfigEntryNotReady while the
+      panel is unreachable and ConfigEntryAuthFailed when it refuses the
+      credentials.
+  unique-config-entry:
+    status: done
+    comment: |
+      The panel's MAC plus the partition where the network resolves it, the
+      address plus the partition otherwise; a same-panel re-add is also
+      caught on the stored connection data before any network traffic.
 
   # Silver
   action-exceptions: done
@@ -53,30 +89,33 @@ rules:
   docs-installation-parameters: done
   entity-unavailable: done
   integration-owner: done
-  log-when-unavailable: done
+  log-when-unavailable:
+    status: done
+    comment: |
+      The coordinator logs an unreachable panel once, via UpdateFailed, and
+      once more when it recovers.
   parallel-updates: done
   reauthentication-flow: done
   test-coverage:
-    status: done
+    status: todo
     comment: |
-      The API session layer has unit tests that run on a bare interpreter.
-      tests/ha/ adds the Home Assistant layer: setup, an unreachable panel,
-      rejected credentials starting reauth, session closure on both a failed
-      setup and unload, the "Not available" firmware quirk, MAC adoption on an
-      existing entry, and the panel entity's status map, codes, optimistic
-      updates and refusals. 49 tests, run in CI.
+      Coverage is reported by the Tests workflow but not yet gated, and
+      known gaps remain: diagnostics.py, the coordinator's in-flight poll
+      discard, and the client's login and _call network paths. Raising it to
+      95% and adding the gate is the next step.
 
   # Gold
   devices: done
   diagnostics: done
   discovery:
-    status: exempt
+    status: todo
     comment: |
-      The panel announces nothing on the network. Its address is entered by
-      the user.
+      The panel announces nothing over mDNS or SSDP, but it is a DHCP client,
+      and DHCP discovery needs only a stable OUI. The Wi-Fi module's OUI has
+      not been measured from a LAN host; a dhcp matcher waits on that.
   discovery-update-info:
-    status: exempt
-    comment: Nothing to discover, so no discovery data to update from.
+    status: todo
+    comment: Follows discovery.
   docs-data-update: done
   docs-examples: done
   docs-known-limitations: done
@@ -88,40 +127,66 @@ rules:
     status: exempt
     comment: A panel is a single fixed device.
   entity-category:
-    status: exempt
-    comment: The alarm panel is the integration's primary entity.
-  entity-device-class: done
+    status: done
+    comment: |
+      The alarm panel is the primary entity, for which the default (no
+      category) is the correct assignment.
+  entity-device-class:
+    status: done
+    comment: alarm_control_panel has no device classes, so there is nothing to assign.
   entity-disabled-by-default:
     status: exempt
     comment: One entity, and it is the reason to install this.
   entity-translations:
-    status: exempt
+    status: done
     comment: |
-      A single main entity carrying the device's name, so it sets
-      `_attr_name = None` rather than a translation key.
-  exception-translations: done
+      The entity name is the translation key `partition` with the partition
+      number as a placeholder.
+  exception-translations:
+    status: done
+    comment: |
+      The two entity-facing errors and the two setup and poll errors
+      (ConfigEntryAuthFailed, UpdateFailed) all carry translation keys;
+      tools/validate_local.py refuses an f-string in either place.
   icon-translations:
-    status: exempt
-    comment: The alarm panel uses the device class icon.
-  reconfiguration-flow: done
-  repair-issues:
-    status: exempt
+    status: done
     comment: |
-      Authentication failure raises a reauth flow. No other condition needs
-      user intervention.
+      No icons.json: alarm_control_panel has no device class, and the
+      domain's default state icons are the right ones for an alarm panel.
+  reconfiguration-flow:
+    status: done
+    comment: |
+      Address, port, scheme, credentials, code and partition; the entry title
+      follows the host unless the user renamed the entry.
+  repair-issues:
+    status: todo
+    comment: |
+      Two persistent, user-actionable conditions surface only as errors and
+      log lines: the panel redirecting plain-HTTP API calls to HTTPS (fix is
+      to reconfigure with HTTPS on) and a second entry reaching the same
+      panel (fix is to remove one). Both want a repair issue.
   stale-devices:
     status: exempt
     comment: A panel is a single fixed device, removed with the entry.
 
   # Platinum
   async-dependency:
-    status: exempt
+    status: todo
     comment: |
-      No external dependency; the panel is spoken to over aiohttp directly.
+      getmac is synchronous and runs in the executor. The rule allows no
+      exemption; an asynchronous ARP source, or dropping the lookup in favour
+      of another identity, is open.
   inject-websession:
-    status: exempt
+    status: todo
     comment: |
-      A dedicated session is required. The panel sets a session cookie with a
-      random name per login, so sharing Home Assistant's session would leak
-      cookies between integrations.
-  strict-typing: done
+      The coordinator builds its own aiohttp.ClientSession, for a
+      DummyCookieJar and a keep-alive longer than the poll interval.
+      async_create_clientsession(hass, cookie_jar=aiohttp.DummyCookieJar())
+      would satisfy the rule at the cost of the connector tuning; whether
+      that tuning is worth keeping has not been measured against the panel.
+  strict-typing:
+    status: todo
+    comment: |
+      pyproject.toml is strict with no relaxations and the Tests workflow
+      runs mypy with Home Assistant installed on every push. Marked done on
+      the first green run; until then the claim is unverified.
