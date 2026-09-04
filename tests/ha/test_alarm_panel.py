@@ -13,7 +13,7 @@ STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"
 ARM = "custom_components.tuxedo_touch.api.TuxedoTouchClient.arm"
 DISARM = "custom_components.tuxedo_touch.api.TuxedoTouchClient.disarm"
 
-PANEL = "alarm_control_panel.honeywell_tuxedo_touch"
+PANEL = "alarm_control_panel.honeywell_tuxedo_touch_partition_1"
 
 
 async def _setup(hass, entry, status="Ready To Arm"):
@@ -149,7 +149,8 @@ async def test_the_entity_unique_id_is_the_entry_id(hass, config_entry):
 
 
 async def test_an_old_partition_suffixed_unique_id_is_migrated(hass, config_entry):
-    """An install from before the format change keeps its entity."""
+    """An install from before the format change keeps its entity, under the
+    entity id it always had."""
     from homeassistant.helpers import entity_registry as er
 
     config_entry.add_to_hass(hass)
@@ -167,9 +168,9 @@ async def test_an_old_partition_suffixed_unique_id_is_migrated(hass, config_entr
 
     migrated = registry.async_get(row.entity_id)
     assert migrated.unique_id == config_entry.entry_id
-    # One entity, not a stale row plus a freshly minted `_2`.
-    assert hass.states.get(PANEL) is not None
-    assert hass.states.get(f"{PANEL}_2") is None
+    # One entity under the old id, not a stale row plus a freshly minted one.
+    assert hass.states.get(row.entity_id) is not None
+    assert hass.states.async_entity_ids("alarm_control_panel") == [row.entity_id]
 
 
 async def test_a_stored_code_disables_the_code_prompt_entirely(hass, config_entry):

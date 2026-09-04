@@ -4,16 +4,18 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.helpers import device_registry as dr
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.tuxedo_touch.api import (
     TuxedoStatus,
     TuxedoTouchAuthError,
     TuxedoTouchError,
 )
-from custom_components.tuxedo_touch.const import CONF_MAC, DOMAIN
+from custom_components.tuxedo_touch.const import CONF_MAC, CONF_PARTITION, DOMAIN
 from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
 
-from .conftest import MAC
+from .conftest import ENTRY_DATA, HOST, MAC
 
 STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"
 MAC_LOOKUP = "custom_components.tuxedo_touch.async_panel_mac"
@@ -37,7 +39,9 @@ def _coordinators():
         yield made
 
 
-PANEL = "alarm_control_panel.honeywell_tuxedo_touch"
+# The entity is named after its partition so two partitions on one panel are
+# told apart; the device name is the prefix.
+PANEL = "alarm_control_panel.honeywell_tuxedo_touch_partition_1"
 
 
 async def _setup(hass, entry):
@@ -55,6 +59,39 @@ async def test_setup_loads_the_panel_entity(hass, config_entry, ready):
     assert state is not None
     assert state.state == "disarmed"
     assert state.attributes["tuxedo_status"] == "Ready To Arm"
+    assert state.name == "Honeywell Tuxedo Touch Partition 1"
+
+
+async def test_two_partitions_on_one_panel_are_told_apart(
+    hass, config_entry_with_mac, ready
+):
+    """Partitions are separate alarms on one device. Both entries merge onto
+    the device the MAC identifies, so the entities must carry the partition
+    in their names or the device page shows two identical rows."""
+    second = MockConfigEntry(
+        domain=DOMAIN,
+        title=f"Tuxedo Touch ({HOST})",
+        unique_id=f"{MAC}_2",
+        data={**ENTRY_DATA, CONF_MAC: MAC, CONF_PARTITION: 2},
+    )
+    config_entry_with_mac.add_to_hass(hass)
+    second.add_to_hass(hass)
+    with patch(STATUS, return_value=ready):
+        await hass.config_entries.async_setup(config_entry_with_mac.entry_id)
+        await hass.config_entries.async_setup(second.entry_id)
+        await hass.async_block_till_done()
+
+    one = hass.states.get(PANEL)
+    two = hass.states.get("alarm_control_panel.honeywell_tuxedo_touch_partition_2")
+    assert one is not None and two is not None
+    assert one.name == "Honeywell Tuxedo Touch Partition 1"
+    assert two.name == "Honeywell Tuxedo Touch Partition 2"
+
+    device = dr.async_get(hass).async_get_device(
+        connections={(dr.CONNECTION_NETWORK_MAC, MAC)}
+    )
+    assert device is not None
+    assert device.config_entries == {config_entry_with_mac.entry_id, second.entry_id}
 
 
 async def test_an_unreachable_panel_is_retried_not_failed(hass, config_entry):

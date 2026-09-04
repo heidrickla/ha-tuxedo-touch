@@ -71,12 +71,25 @@
       "another_panel": "That address answers as a different panel than this entry was set up for."
     }
   },
+  "entity": {
+    "alarm_control_panel": {
+      "partition": {
+        "name": "Partition {partition}"
+      }
+    }
+  },
   "exceptions": {
     "no_code": {
       "message": "No alarm code provided and none configured for this panel."
     },
     "command_failed": {
       "message": "Tuxedo Touch command failed: {error}"
+    },
+    "auth_failed": {
+      "message": "The panel rejected the stored web login credentials: {error}"
+    },
+    "update_failed": {
+      "message": "Could not read the panel's status: {error}"
     }
   }
 }
