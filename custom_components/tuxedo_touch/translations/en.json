@@ -112,6 +112,9 @@
     "update_failed": {
       "message": "Could not read the panel's status: {error}"
     },
+    "status_not_available": {
+      "message": "The panel answered 'Not available' rather than a security status. This is a quirk of the panel's own firmware and not a connection problem; the alarm stays unavailable until the panel reports a real status, which it does on its own."
+    },
     "https_required": {
       "message": "The panel redirected the API call to HTTPS. Turn on 'Use HTTPS' for this entry; the repair notification does it for you."
     }

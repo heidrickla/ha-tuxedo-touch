@@ -1,5 +1,6 @@
 """Setup, teardown, and the failure modes that decide which of the two happens."""
 
+import logging
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -18,6 +19,8 @@ from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
 from .conftest import ENTRY_DATA, HOST, MAC
 
 STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"
+# What the panel answers instead of a status during one of its outages.
+NOT_AVAILABLE = TuxedoStatus(status="Not available", color=None)
 
 
 @contextmanager
@@ -152,41 +155,92 @@ async def test_unload_removes_the_entity_and_closes_the_session(
     assert made and made[0].session.closed
 
 
-async def test_a_not_available_poll_does_not_erase_the_known_state(
+async def test_a_first_poll_of_not_available_leaves_the_entity_unavailable(
     hass, config_entry, ready
 ):
-    """The firmware quirk this integration exists to survive.
+    """The latch this release removes.
 
-    GetSecurityStatus intermittently answers "Not available" on a panel that
-    is otherwise fine. Writing that through would flip the alarm to unknown
-    on a working system.
+    "Not available" used to be stored as data when there was no earlier
+    status to keep - which is exactly the first poll after a load - and every
+    later "Not available" then preserved that stored placeholder, so the
+    entity read unknown until somebody armed or disarmed. It is a failed read
+    on the first poll as much as on the hundredth, so nothing is stored and
+    the entity is unavailable. The entry still loads: the panel answered, so
+    the address and the credentials are proven, and a real status still takes
+    effect the moment one arrives.
     """
-    with patch(STATUS, return_value=ready) as status:
+    with patch(STATUS, return_value=NOT_AVAILABLE) as status:
         await _setup(hass, config_entry)
-        assert hass.states.get(PANEL).state == "disarmed"
+        assert config_entry.state is ConfigEntryState.LOADED
+        coordinator = config_entry.runtime_data
+        assert coordinator.data is None
+        assert hass.states.get(PANEL).state == "unavailable"
 
-        status.return_value = TuxedoStatus(status="Not available", color=None)
-        await hass.config_entries.async_reload(config_entry.entry_id)
+        # A second one changes nothing: there is no placeholder to preserve.
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert coordinator.data is None
+        assert hass.states.get(PANEL).state == "unavailable"
+
+        # And a real status still lands, with no arm or disarm to unstick it.
+        status.return_value = ready
+        await coordinator.async_refresh()
         await hass.async_block_till_done()
 
-    # A reload starts from no prior data, so the placeholder is all there is
-    # and the entity is honestly unknown rather than falsely disarmed.
-    assert hass.states.get(PANEL).state == "unknown"
+    assert hass.states.get(PANEL).state == "disarmed"
 
 
-async def test_a_later_not_available_keeps_the_previous_status(
+async def test_a_not_available_after_a_good_poll_recovers_by_itself(
     hass, config_entry, ready
 ):
+    """A transient blip mid-run: the last good status is kept, the entity is
+    unavailable while the panel is answering the placeholder, and the next
+    real status brings it straight back with no arm or disarm needed."""
+    with patch(STATUS, return_value=ready) as status:
+        await _setup(hass, config_entry)
+        coordinator = config_entry.runtime_data
+        assert hass.states.get(PANEL).state == "disarmed"
+
+        status.return_value = NOT_AVAILABLE
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        assert not coordinator.last_update_success
+        # The good status is still held, so nothing has to be rediscovered.
+        assert coordinator.data.status == "Ready To Arm"
+        assert hass.states.get(PANEL).state == "unavailable"
+
+        status.return_value = TuxedoStatus(status="Armed Away", color="red")
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert coordinator.last_update_success
+    assert hass.states.get(PANEL).state == "armed_away"
+
+
+async def test_an_outage_is_logged_once_and_so_is_the_recovery(
+    hass, config_entry, ready, caplog
+):
+    """log-when-unavailable: one line for the outage however long it runs,
+    one when it ends - not one per poll."""
     with patch(STATUS, return_value=ready) as status:
         await _setup(hass, config_entry)
         coordinator = config_entry.runtime_data
 
-        status.return_value = TuxedoStatus(status="Not available", color=None)
-        await coordinator.async_refresh()
-        await hass.async_block_till_done()
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="custom_components.tuxedo_touch"):
+            status.return_value = NOT_AVAILABLE
+            await coordinator.async_refresh()
+            await coordinator.async_refresh()
+            await coordinator.async_refresh()
 
-    assert coordinator.data.status == "Ready To Arm"
-    assert hass.states.get(PANEL).state == "disarmed"
+            status.return_value = ready
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert len([m for m in messages if "instead of a security status" in m]) == 1
+    assert len([m for m in messages if "reporting a security status again" in m]) == 1
 
 
 async def test_a_poll_in_flight_when_a_command_lands_is_discarded(

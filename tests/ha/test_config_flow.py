@@ -5,6 +5,7 @@ it, so replacing that one method exercises the flow's real code, including its
 error mapping, without a socket.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -350,6 +351,68 @@ async def test_reconfigure_frees_the_panel_before_probing_it(hass, config_entry,
     assert result["reason"] == "reconfigure_successful"
     assert config_entry.data[CONF_HOST] == "10.10.52.61"
     assert config_entry.state is ConfigEntryState.LOADED
+
+
+async def test_the_probe_waits_for_a_poll_that_is_already_running(
+    hass, config_entry, ready
+):
+    """Standing the entry down cancels the next poll, not the one in flight.
+
+    That poll is holding the panel's one connection, so a probe that started
+    while it was still running would be the second client the unit answers
+    with silence. The fake panel here holds its answer until the test releases
+    it: the probe must not have run by then, and must run once it does.
+    """
+    await _load(hass, config_entry, ready)
+
+    polling = asyncio.Event()
+    release = asyncio.Event()
+    order: list[str] = []
+
+    async def _stalled_poll():
+        polling.set()
+        await release.wait()
+        order.append("poll finished")
+        return ready
+
+    async def _probe(hass_, data):
+        order.append("probe")
+
+    with (
+        patch(STATUS, side_effect=_stalled_poll),
+        patch(VALIDATE, AsyncMock(side_effect=_probe)),
+    ):
+        poll = hass.async_create_task(config_entry.runtime_data.async_refresh())
+        await polling.wait()
+
+        flow = hass.async_create_task(
+            hass.config_entries.flow.async_init(
+                DOMAIN,
+                context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+                data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+            )
+        )
+        # Every chance to get ahead of the poll it is supposed to wait for:
+        # the flow runs until it is standing the entry down and can go no
+        # further, which is where it must stop.
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if config_entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS:
+                break
+        assert order == []
+
+        release.set()
+        await poll
+        result = await flow
+        # The entry is set up again on the new address, so a third entry -
+        # that reload's own first poll - follows; the order of the first two
+        # is the point.
+        assert order[:2] == ["poll finished", "probe"]
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry.data[CONF_HOST] == "10.10.52.61"
 
 
 async def test_a_reconfigure_that_fails_its_probe_puts_the_entry_back(

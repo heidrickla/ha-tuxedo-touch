@@ -220,10 +220,13 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
           fails. A probe that succeeds leaves it unloaded for the caller's
           reload, which is the next thing to happen.
 
-        Standing the entry down stops it starting new work; it does not close
-        the socket it last used, which Home Assistant's pool holds as idle for
-        fifteen seconds. That socket is the one this probe then uses: every
-        client shares an SSLContext, so the pool key matches (see
+        Standing the entry down stops it starting new work and waits for the
+        poll it already had in flight (async_unload_entry awaits the
+        coordinator's poll lock), so by the time the probe runs nothing of
+        ours is mid-request against the panel. What it does not do is close
+        the socket that poll last used, which Home Assistant's pool holds as
+        idle for fifteen seconds. That socket is the one this probe then uses:
+        every client shares an SSLContext, so the pool key matches (see
         api._legacy_ssl_context) and the two take turns on one connection
         instead of the panel seeing a second.
 

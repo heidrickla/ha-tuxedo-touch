@@ -43,6 +43,7 @@ name carried the partition keeps whatever entity id it already had.
 | `NN  Secs Remaining` (exit delay) | `arming` |
 | Entry Delay Active | `pending` |
 | Not Ready Alarm, Armed Stay Alarm, Armed Away Alarm, Armed Night Alarm, Armed Instant Alarm | `triggered` |
+| `Not available` | `unavailable` - the panel reported no status at all; see [How it updates](#how-it-updates) |
 | Anything else | `unknown` |
 
 Commands are the alarm panel domain's own actions: `alarm_control_panel.alarm_arm_home`
@@ -206,18 +207,34 @@ entity back. When the panel is unreachable the entity becomes unavailable; the l
 one line when that happens and one when it recovers.
 
 The panel's status endpoint intermittently answers `Not available` on a unit that is
-otherwise fine (on at least one unit, persistently). That answer is treated as no new
-information: the last known state is kept rather than overwritten. On a restart with no
-prior state to keep, the entity reads `unknown` until the panel says something else.
+otherwise fine, and on some units for long stretches. That is the panel's own behaviour
+and this integration does not try to talk it out of it; what it does is treat the answer
+as a failed read rather than a state. The entity goes `unavailable` for as long as the
+panel keeps saying it, the last real status is kept underneath, and the first genuine
+status brings the entity back by itself with no help from you. The log gets one line
+when an outage starts and one when it ends. Note that Home Assistant skips unavailable
+entities in service calls, so arming and disarming from Home Assistant are unavailable
+too for the length of an outage - the panel's own touchscreen is not.
+
+Up to 0.3.1 that answer was instead stored as the entity's data when there was nothing
+earlier to keep, so an entry that loaded during an outage latched: every later
+`Not available` preserved the placeholder and the entity read `unknown` until somebody
+armed or disarmed. It no longer stores it at all, on the first poll or any other. The
+entry itself still loads through an outage, because a panel that answers `Not available`
+has answered - address, port, scheme and credentials are all proven by that reply - so
+the device, the entity and its history stay where they were.
 
 Requests go out on Home Assistant's own HTTP connection pool rather than a pool of this
 integration's own, and every client here - each entry's poller, and the checks the setup
 and reconfigure forms run - shares one pool key, so a check takes over the connection the
-poller left idle rather than opening a second one. Two of ours are two connections only
-while their requests overlap, which is what the reconfigure form's stand-down is there to
-prevent. That is the point rather than a detail: the unit serves one connection at a time
-and answers a second with silence, so anything of ours that opened its own would starve
-the poller instead of queueing behind it.
+poller left idle rather than opening a second one. Sharing the key is what makes the
+takeover possible; it does not by itself cap us at one connection, because two requests
+of ours that overlap in time are two connections. What keeps them from overlapping is the
+reconfigure form's stand-down: it unloads the entry, which stops the next poll, and waits
+for any poll already in flight to finish before the check dials the panel. That is the
+point rather than a detail: the unit serves one connection at a time and answers a second
+with silence, so anything of ours that opened its own would starve the poller instead of
+queueing behind it.
 
 The pool keeps an idle connection for fifteen seconds. A thirty-second poll therefore
 opens a fresh one each time and pays for the panel's slow legacy TLS handshake once per
@@ -308,10 +325,14 @@ script:
 - Only security arm/disarm/status is implemented. The panel's API also exposes lighting,
   thermostat, door lock, scene, and garage door control - untested and unimplemented here,
   though they should follow the same request-signing pattern.
-- **The status feed can go quiet.** While the panel answers `Not available` the entity
-  reflects the last command *you* sent and cannot see changes made at the physical keypad
-  or by another integration. If you have a working ECP-bus alarm integration (Envisalink,
-  esphome-vistaECP, etc.) on the same panel, prefer that one for status.
+- **The status feed can go quiet.** While the panel answers `Not available` it is
+  reporting no status at all, so the entity is `unavailable`: it cannot see changes made
+  at the physical keypad or by another integration, and because Home Assistant skips
+  unavailable entities in service calls, it cannot be armed or disarmed from Home
+  Assistant either until the panel reports a real status again. The panel's own
+  touchscreen is unaffected throughout - the command path and the status-reporting path
+  fail independently on this firmware. If you have a working ECP-bus alarm integration
+  (Envisalink, esphome-vistaECP, etc.) on the same panel, prefer that one for status.
 - Status is polled without a partition parameter (the firmware's `GetSecurityStatus`
   doesn't take one), so on multi-partition panels the reported status is whatever the
   Tuxedo module itself reports; arm/disarm do target the configured partition.
@@ -347,8 +368,8 @@ script:
 | Setup says the panel answered but the response could not be used | The login page came back without the challenge headers, or the key page was short: firmware this client does not know. The log line names which. Open an issue with the firmware version from the touchscreen's About page. |
 | The entity is unavailable and the API call was redirected to HTTPS | "Secured Web Server Access" is on and the entry uses HTTP. A repair notification offers to switch the entry over; see [Repairs](#repairs). Reconfiguring by hand with Use HTTPS on and port 443 does the same thing. |
 | Home Assistant asks to re-authenticate | The panel rejected the stored web login. Enter the current username and password; the address and code are kept. |
-| The entity reads `unknown` after a restart | The panel is answering `Not available` and there is no earlier state to keep. It corrects itself on the first real status, or on your first arm or disarm. |
-| The entity does not follow the keypad | The status feed is stuck on `Not available` (see Known limitations). Arm or disarm from Home Assistant to resync, or use an ECP-bus integration for status. |
+| The entity is unavailable and the panel is up | It is answering `Not available` instead of a status - its own firmware quirk, not a fault of the connection. The log says so once per outage, and the entity comes back on the first real status without anything from you. |
+| The entity does not follow the keypad | The status feed is stuck on `Not available` (see Known limitations), which also means Home Assistant will not arm or disarm it. Use the panel's touchscreen, or an ECP-bus integration for status. |
 | Two entries for one panel | A repair notification names both entries. Remove one; the other adopts the panel's identity on the panel's next DHCP lease. See [Repairs](#repairs). |
 | The panel moved to a new IP and stayed unavailable | The stored address is only corrected automatically where Home Assistant sees the panel's DHCP lease. On a routed install, or where the panel holds a static address and issues no lease, reconfigure the entry with the new address. |
 | The panel is not discovered | Home Assistant only discovers it from a DHCP lease. Check that the panel is on DHCP rather than a static address set on its touchscreen, and that Home Assistant is on the same network segment. Add it by hand otherwise; it works exactly the same, it is just keyed on the address. |

@@ -25,9 +25,12 @@ async def async_get_config_entry_diagnostics(
         "partition": coordinator.partition,
         "update_interval": str(coordinator.update_interval),
         "last_update_success": coordinator.last_update_success,
-        # The raw strings the panel returned. `Not available` is a firmware
-        # quirk rather than a fault, and is the usual reason an entity reads
-        # unknown, so it is the first thing worth seeing in a bug report.
+        # The raw strings the panel returned - the last good ones, since a
+        # `Not available` answer fails the poll rather than being stored.
+        # That answer is a firmware quirk rather than a fault, and is the
+        # usual reason the entity is unavailable while the panel is up, so
+        # `last_update_success` beside them is the first thing worth seeing
+        # in a bug report.
         "panel_status": status.status if status else None,
         "panel_color": status.color if status else None,
     }
