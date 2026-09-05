@@ -619,3 +619,46 @@ async def test_each_mode_the_map_knows_is_taken_from_a_streamed_text(
     await _setup(hass, panel_entry)
     await fake_panel.push_status_text(text, armed=armed)
     await wait_until(lambda: _state(hass).state == expected)
+
+
+async def test_a_stream_sourced_mode_is_never_held_by_corroboration(
+    hass, fake_panel, panel_entry
+):
+    """A held status that came from the STREAM must not be corroborated.
+
+    Holding it would keep `source` at "stream", which the poll-suppression
+    guard reads as "the stream is carrying the state", so every later poll is
+    discarded and nothing ever re-reads the mode. The panel moving on - an
+    exit delay expiring, or a change of armed mode - would then leave the
+    entity latched on a mode the panel is no longer reporting. That is worse
+    than the honest `unknown` the corroboration exists to avoid, because it is
+    confidently wrong rather than visibly unsure.
+    """
+    coordinator = await _setup(hass, panel_entry)
+
+    # The stream names a mode itself, so what is held is stream-sourced.
+    await fake_panel.push(status_frame("Armed Away", armed=True))
+    await wait_until(lambda: coordinator.data.status == "Armed Away")
+    assert _state(hass).state == "armed_away"
+    assert _state(hass).attributes["tuxedo_source"] == "stream"
+
+    # The panel really moves to another mode and streams a text the map does
+    # not know. Its armed flag still agrees with the held reading, which is
+    # exactly the shape corroboration matches on.
+    fake_panel.status = "Armed Stay"
+    frames_before = coordinator.push.frames
+    await fake_panel.push(status_frame("Armed With Some New Word", armed=True))
+    await wait_until(lambda: coordinator.push.frames > frames_before)
+    await hass.async_block_till_done()
+
+    assert _state(hass).state != "armed_away", (
+        "a stream-sourced mode was held after the panel stopped reporting it"
+    )
+
+    # And because the source was not kept at "stream", the poll is not
+    # suppressed and settles the mode the panel is actually in.
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert _state(hass).state == "armed_home"
+    assert _state(hass).attributes["tuxedo_source"] == "poll"
