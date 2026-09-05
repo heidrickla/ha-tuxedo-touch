@@ -10,16 +10,25 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import TuxedoStatus, TuxedoTouchAuthError, TuxedoTouchClient, TuxedoTouchError
+from .api import (
+    TuxedoStatus,
+    TuxedoTouchAuthError,
+    TuxedoTouchClient,
+    TuxedoTouchError,
+    TuxedoTouchHttpsRequiredError,
+)
 from .const import (
     CONF_PARTITION,
     CONF_USE_HTTPS,
     DEFAULT_PARTITION,
     DOMAIN,
+    ISSUE_HTTPS_REDIRECT,
     SCAN_INTERVAL,
     STATUS_NOT_AVAILABLE,
+    issue_id,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,6 +55,9 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             update_interval=SCAN_INTERVAL,
             always_update=False,
         )
+        # Kept explicitly: DataUpdateCoordinator.config_entry is typed
+        # optional, and every use here is on an entry that certainly exists.
+        self._entry = entry
         self.partition = entry.data.get(CONF_PARTITION, DEFAULT_PARTITION)
         # keep-alive must outlive SCAN_INTERVAL: aiohttp's default (15s) would
         # guarantee a fresh TCP + legacy-TLS handshake - by far the most
@@ -66,6 +78,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 limit=2,
             ),
         )
+        self._https_issue_raised = False
         self.client = TuxedoTouchClient(
             session=self.session,
             host=entry.data[CONF_HOST],
@@ -94,6 +107,44 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         color = self.data.color if self.data else None
         self.async_set_updated_data(TuxedoStatus(status=status, color=color))
 
+    @property
+    def _https_issue_id(self) -> str:
+        """One issue per entry: two entries can be wrong independently."""
+        return issue_id(ISSUE_HTTPS_REDIRECT, self._entry.entry_id)
+
+    @callback
+    def _async_raise_https_issue(self) -> None:
+        """Offer the fix for a condition no retry can clear.
+
+        The panel redirects every plain-HTTP API call to HTTPS while "Secured
+        Web Server Access" is on, so the entry stays broken until its scheme
+        changes. repairs.py flips it.
+        """
+        if self._https_issue_raised:
+            return
+        self._https_issue_raised = True
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._https_issue_id,
+            data={"entry_id": self._entry.entry_id},
+            is_fixable=True,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=ISSUE_HTTPS_REDIRECT,
+            translation_placeholders={"title": self._entry.title},
+        )
+
+    @callback
+    def _async_clear_https_issue(self) -> None:
+        """Clear it on any good poll, including one after a restart.
+
+        Deleting unconditionally rather than only when this coordinator
+        raised it: the scheme can also be fixed on the panel, and an issue
+        left standing after that would outlive the condition.
+        """
+        self._https_issue_raised = False
+        ir.async_delete_issue(self.hass, DOMAIN, self._https_issue_id)
+
     async def _async_update_data(self) -> TuxedoStatus:
         poll_started = time.monotonic()
         try:
@@ -106,12 +157,20 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 translation_key="auth_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+        except TuxedoTouchHttpsRequiredError as err:
+            self._async_raise_https_issue()
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="https_required",
+            ) from err
         except TuxedoTouchError as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="update_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+
+        self._async_clear_https_issue()
 
         if self._last_command_monotonic > poll_started and self.data is not None:
             _LOGGER.debug(

@@ -55,6 +55,15 @@ class TuxedoTouchConnectionError(TuxedoTouchError):
     """Could not reach the panel at all."""
 
 
+class TuxedoTouchHttpsRequiredError(TuxedoTouchError):
+    """The panel redirected a plain-HTTP API call to HTTPS.
+
+    Its own class because this is a persistent misconfiguration with one
+    known fix, not a transient failure: the coordinator turns it into a
+    repair issue rather than another retry.
+    """
+
+
 @dataclass
 class TuxedoStatus:
     status: str
@@ -376,7 +385,7 @@ class TuxedoTouchClient:
                         # docs/tuxedo_touch_api_notes.md). Re-logging-in can
                         # never fix this, so fail with something actionable
                         # instead of burning a full login per attempt.
-                        raise TuxedoTouchError(
+                        raise TuxedoTouchHttpsRequiredError(
                             "Panel redirected the API call to HTTPS - "
                             "reconfigure the integration with 'Use HTTPS' enabled"
                         )
