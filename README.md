@@ -133,11 +133,14 @@ The panel answers one client at a time, so the form takes care not to compete wi
 polling it is reconfiguring. Changing only the keypad code or the partition contacts the
 panel not at all: nothing the login depends on has changed, and the entry is already
 proof that what it does depend on works. Changing the address, port, scheme, username or
-password does need a login, so the entry is unloaded for the moment that check takes and
-set up again straight afterwards - on the new settings if they worked, on the old ones
-if they did not. Without that, the check competes with the poller for the panel's only
-connection, and contention on this unit is a hang rather than a refusal: the form waits
-out its timeout and reports "Failed to connect" about a panel that is perfectly well.
+password does need a login, so the entry is stood down for the moment that check takes
+and set up again straight afterwards - on the new settings if they worked, on the old
+ones if they did not. That applies to an entry that is retrying as much as to one that
+is polling: the state you most often reconfigure from is a panel that has moved, and a
+retry on the clock logs into the panel just as a poll does. Without this, the check
+competes with the entry for the panel's only connection, and contention on this unit is
+a hang rather than a refusal: the form waits out its timeout and reports "Failed to
+connect" about a panel that is perfectly well.
 
 When the panel starts refusing the stored credentials, Home Assistant stops polling and
 asks for them again rather than re-running the login handshake against doomed
@@ -324,7 +327,7 @@ script:
 | Symptom | Cause and fix |
 |---|---|
 | Setup says "Failed to connect" | Home Assistant cannot reach the address and port, or the panel's single web session is held by a browser tab. Close any tab open on the unit and retry; check the port matches the HTTPS setting (443 on, 80 off). |
-| Reconfigure says "Failed to connect" | The new address, port, scheme or credentials did not answer. The entry has already been put back on its old settings and is polling again, so correct the form and submit it once more. It is not the entry's own poll getting in the way: the check runs with the entry unloaded. |
+| Reconfigure says "Failed to connect" | The new address, port, scheme or credentials did not answer. The entry has already been put back on its old settings and is running as it was before, so correct the form and submit it once more. It is not the entry itself getting in the way: whether it was polling or retrying, it is stood down for the moment the check takes. |
 | Setup says "Invalid username or password" and they are right | Web access for that user was disabled, which a panel reset does. Re-enable it on the touchscreen under Setup -> Account, or use the Login settings page to set the credentials again. |
 | Setup says the panel answered but the response could not be used | The login page came back without the challenge headers, or the key page was short: firmware this client does not know. The log line names which. Open an issue with the firmware version from the touchscreen's About page. |
 | The entity is unavailable and the API call was redirected to HTTPS | "Secured Web Server Access" is on and the entry uses HTTP. A repair notification offers to switch the entry over; see [Repairs](#repairs). Reconfiguring by hand with Use HTTPS on and port 443 does the same thing. |
@@ -349,23 +352,23 @@ and code redacted and the panel's raw status strings included.
 
 ```
 python tests/test_api.py          # the client's pure logic, no Home Assistant needed
-python -m pytest tests -q         # the whole suite; tests/ha needs the harness, Linux
+python -m pytest tests -q         # the whole suite; tests/ha needs the harness
 python -m pytest tests -q --cov=custom_components/tuxedo_touch --cov-fail-under=95
 python -m mypy custom_components/tuxedo_touch
 python tools/validate_local.py    # the offline stand-in for hassfest and HACS
 ```
 
-`tests/ha` needs `pytest-homeassistant-custom-component` and skips where it is absent, so
-a run on Windows covers the client only, and the coverage figure from such a run measures
-the skip rather than the code. The harness installs on Windows, but Home Assistant itself
-does not run there: `homeassistant/runner.py` imports `fcntl` and
-`homeassistant/util/resource.py` imports `resource`, both POSIX-only, and with those
-shimmed every test still ends in `HASocketBlockedError` because the Windows event loop
-opens a socketpair that the harness re-blocks for each test. Linux, WSL or the GitHub
-runner is the way to run these. The GitHub Tests workflow runs the whole suite, gates
-coverage of the integration at 95%, and runs mypy in strict mode and the validator on
-every push. A local mypy run without Home Assistant installed reports its classes as
-`Any`; that is the missing package, not the code.
+`tests/ha` needs `pytest-homeassistant-custom-component`, which brings Home Assistant
+with it, and skips where it is absent - so a run without it covers the client only, and
+the coverage figure from such a run measures the skip rather than the code. What the
+harness needs is the Python version, not the platform: 2026.x is written for 3.14 and
+will not install under 3.12. Given 3.14 the whole suite runs on Windows as it does on
+Linux, measured here on 2026-09-05 with `pytest-homeassistant-custom-component`
+0.13.357, Home Assistant 2026.8.3 and CPython 3.14.7 - 119 tests, 99% coverage, mypy
+strict clean. The GitHub Tests workflow is still the gate: it runs the whole suite,
+holds coverage of the integration at 95%, and runs mypy in strict mode and the validator
+on every push. A mypy run without Home Assistant installed reports its classes as `Any`;
+that is the missing package, not the code.
 
 Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 

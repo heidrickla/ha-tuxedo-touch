@@ -377,6 +377,70 @@ async def test_a_reconfigure_that_fails_its_probe_puts_the_entry_back(
     assert config_entry.state is ConfigEntryState.LOADED
 
 
+async def _load_retrying(hass, entry):
+    """Set an entry up against a panel that will not answer, so it lands in
+    SETUP_RETRY with a retry pending against that same panel."""
+    entry.add_to_hass(hass)
+    with patch(STATUS, side_effect=TuxedoTouchConnectionError("down")):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_reconfigure_frees_a_retrying_entry_too(hass, config_entry, ready):
+    """The state a user actually reconfigures from: the panel moved, so the
+    entry is in SETUP_RETRY with a retry on the clock that logs in against the
+    same panel. That retry is the same contention as a poll, so the entry is
+    stood down before the probe here as well."""
+    await _load_retrying(hass, config_entry)
+
+    seen: list[ConfigEntryState] = []
+
+    async def _probe(hass_, data):
+        seen.append(config_entry.state)
+
+    with (
+        patch(VALIDATE, AsyncMock(side_effect=_probe)),
+        patch(STATUS, return_value=ready),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+        )
+        await hass.async_block_till_done()
+
+    assert seen == [ConfigEntryState.NOT_LOADED]
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry.state is ConfigEntryState.LOADED
+
+
+async def test_a_retrying_entry_whose_probe_fails_goes_back_to_retrying(
+    hass, config_entry
+):
+    """The new address was a typo. The entry keeps its old settings and its
+    retry loop rather than being left switched off."""
+    await _load_retrying(hass, config_entry)
+
+    with (
+        patch(LOGIN, side_effect=TuxedoTouchConnectionError("down")),
+        patch(STATUS, side_effect=TuxedoTouchConnectionError("down")),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.99"},
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert config_entry.data[CONF_HOST] == HOST
+    assert config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
 async def test_the_reconfigure_form_never_shows_the_stored_secrets(hass, config_entry):
     config_entry.add_to_hass(hass)
     result = await hass.config_entries.flow.async_init(
