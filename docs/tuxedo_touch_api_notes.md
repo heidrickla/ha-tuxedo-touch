@@ -216,11 +216,15 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
 import asyncio, aiohttp
 from custom_components.tuxedo_touch.api import TuxedoTouchClient
 
+
 async def main():
     async with aiohttp.ClientSession() as session:
-        client = TuxedoTouchClient(session, "<ip>", 443, True, "<username>", "<password>")
+        client = TuxedoTouchClient(
+            session, "<ip>", 443, True, "<username>", "<password>"
+        )
         await client.login()
         print(await client.get_status())
+
 
 asyncio.run(main())
 ```
