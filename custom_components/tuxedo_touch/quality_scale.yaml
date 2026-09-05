@@ -98,12 +98,15 @@ rules:
   parallel-updates: done
   reauthentication-flow: done
   test-coverage:
-    status: todo
+    status: done
     comment: |
-      Coverage is reported by the Tests workflow but not yet gated, and
-      known gaps remain: diagnostics.py, the coordinator's in-flight poll
-      discard, and the client's login and _call network paths. Raising it to
-      95% and adding the gate is the next step.
+      The Tests workflow runs the whole suite under coverage on every push
+      and fails below 95% (`--cov-fail-under=95`). tests/test_client_io.py
+      covers the client's login, key fetch and call paths through a session
+      stand-in; tests/ha covers setup, the entity, the config flow,
+      diagnostics, identity, the repair issues and the in-flight poll
+      discard. tools/validate_local.py refuses a workflow that drops the
+      gate.
 
   # Gold
   devices: done
@@ -112,11 +115,18 @@ rules:
     status: todo
     comment: |
       The panel announces nothing over mDNS or SSDP, but it is a DHCP client,
-      and DHCP discovery needs only a stable OUI. The Wi-Fi module's OUI has
-      not been measured from a LAN host; a dhcp matcher waits on that.
+      so a dhcp matcher would work on either the Wi-Fi module's OUI or the
+      hostname it puts in its lease. Neither has been measured: nothing in
+      this repository carries the unit's real MAC prefix or DHCP hostname,
+      and guessing a matcher would discover other vendors' devices as Tuxedo
+      panels. It needs one reading from a host on the panel's segment.
   discovery-update-info:
     status: todo
-    comment: Follows discovery.
+    comment: |
+      Follows discovery: with no matcher there is no discovery payload to
+      update the host from. The mechanism it would use already exists - the
+      entry is keyed on the panel's MAC and the config flow updates the
+      address when a known MAC turns up at a new one.
   docs-data-update: done
   docs-examples: done
   docs-known-limitations: done
@@ -126,7 +136,10 @@ rules:
   docs-use-cases: done
   dynamic-devices:
     status: exempt
-    comment: A panel is a single fixed device.
+    comment: |
+      A device-type integration: one config entry is one panel partition and
+      one device, created at setup. No device can appear later, so there is
+      nothing for a coordinator to notice.
   entity-category:
     status: done
     comment: |
@@ -146,9 +159,11 @@ rules:
   exception-translations:
     status: done
     comment: |
-      The two entity-facing errors and the two setup and poll errors
-      (ConfigEntryAuthFailed, UpdateFailed) all carry translation keys;
-      tools/validate_local.py refuses an f-string in either place.
+      The two entity-facing errors and the three setup and poll errors
+      (ConfigEntryAuthFailed, and UpdateFailed for a failed read and for the
+      HTTPS redirect) all carry translation keys; tools/validate_local.py
+      refuses an f-string in either place, and refuses an exception key that
+      strings.json does not declare or declares unused.
   icon-translations:
     status: done
     comment: |
@@ -160,34 +175,51 @@ rules:
       Address, port, scheme, credentials, code and partition; the entry title
       follows the host unless the user renamed the entry.
   repair-issues:
-    status: todo
+    status: done
     comment: |
-      Two persistent, user-actionable conditions surface only as errors and
-      log lines: the panel redirecting plain-HTTP API calls to HTTPS (fix is
-      to reconfigure with HTTPS on) and a second entry reaching the same
-      panel (fix is to remove one). Both want a repair issue.
+      Two persistent, user-actionable conditions raise one. The panel
+      redirecting plain-HTTP API calls to HTTPS is fixable: repairs.py flips
+      the entry to HTTPS, moves port 80 to 443 and reloads. A second entry
+      reaching the same panel is not, because only the user can say which of
+      the two to remove; that issue names both entries instead. Both are
+      cleared when the condition goes and when the entry is deleted.
   stale-devices:
     status: exempt
-    comment: A panel is a single fixed device, removed with the entry.
+    comment: |
+      A device-type integration: the one device an entry creates is the panel
+      the entry is for, and it is removed with the entry. A device can never
+      be stale while the entry that made it exists.
 
   # Platinum
   async-dependency:
     status: todo
     comment: |
-      getmac is synchronous and runs in the executor. The rule allows no
-      exemption; an asynchronous ARP source, or dropping the lookup in favour
-      of another identity, is open.
+      The panel's own client is in this repository and is asyncio throughout.
+      The one synchronous dependency left is getmac, which runs in the
+      executor and exists because the panel reports no identifier of its own:
+      Registration/AddDeviceMAC enrolls a client's MAC, not the unit's, and
+      no endpoint returns the unit's network configuration. An ARP lookup is
+      an operating-system call with no asyncio equivalent in Home Assistant
+      or on PyPI that does not want raw sockets, so this cannot be closed by
+      swapping libraries. The routes out are a panel-side identifier found by
+      reading a real unit, or the DHCP matcher blocked under `discovery`,
+      which would have Home Assistant supply the MAC. The rule allows no
+      exemption, so it stays todo rather than being filed as met.
   inject-websession:
-    status: todo
+    status: done
     comment: |
-      The coordinator builds its own aiohttp.ClientSession, for a
-      DummyCookieJar and a keep-alive longer than the poll interval.
-      async_create_clientsession(hass, cookie_jar=aiohttp.DummyCookieJar())
-      would satisfy the rule at the cost of the connector tuning; whether
-      that tuning is worth keeping has not been measured against the panel.
+      The coordinator takes its session from
+      async_create_clientsession(hass, auto_cleanup=False,
+      cookie_jar=aiohttp.DummyCookieJar()) and the config flow already did;
+      both run on Home Assistant's shared connector and are detached rather
+      than closed. The jar is the reason for a session of its own: the panel
+      names its session cookie randomly per login and the client sets the
+      Cookie header itself. The old dedicated connector's keep-alive tuning
+      went with the change - see the README's "How it updates".
   strict-typing:
-    status: todo
+    status: done
     comment: |
-      pyproject.toml is strict with no relaxations and the Tests workflow
-      runs mypy with Home Assistant installed on every push. Marked done on
-      the first green run; until then the claim is unverified.
+      pyproject.toml sets strict with nothing switched off underneath it -
+      the only override is ignore_missing_imports scoped to getmac, which
+      ships no stubs - and the Tests workflow runs mypy against the whole
+      integration with Home Assistant installed on every push.
