@@ -132,6 +132,24 @@ COUNTDOWN_RE = re.compile(r"^(\d+)\s+Secs Remaining$")
 STATUS_NOT_AVAILABLE = "Not available"
 
 
+def status_means_armed(text: str) -> bool | None:
+    """Whether a display text says the partition is armed, or arming.
+
+    The coordinator's half of alarm_control_panel.reports_armed, which it
+    cannot import: this module exists so the coordinator never depends on a
+    platform module. Same table, same countdown, and the same three answers -
+    None for a text nothing here recognises, because a text that names no
+    state cannot say whether the partition is armed either.
+    """
+    stripped = text.strip()
+    state = STATUS_STATES.get(stripped)
+    if state is not None:
+        return state != "disarmed"
+    if COUNTDOWN_RE.match(stripped):
+        return True
+    return None
+
+
 def status_names_a_state(text: str) -> bool:
     """Whether a display text says what the partition is doing, on its own.
 
