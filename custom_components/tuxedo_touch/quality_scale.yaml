@@ -190,7 +190,18 @@ rules:
       firmware is known to return the version string, and a hardcoded one
       would be wrong on every unit but the author's - it waits until the
       panel's web root is enumerated and a real page is found to carry it.
-  diagnostics: done
+  diagnostics:
+    status: done
+    comment: |
+      Host, credentials and keypad code redacted; everything else about how
+      the state got on screen is in. Since 0.4.0 that means naming the source
+      the shown status came from and carrying the push stream's own account
+      of itself - connected, the firmware's permanent 404 if there is no
+      stream at all, the connection id, the client count, how many frames
+      have arrived and how far a failing stream has backed off - beside the
+      fallback poll's interval and last result. The two sources fail in
+      different ways, so a report that named neither could not distinguish a
+      stream that never came up from a panel that is not answering at all.
   discovery:
     status: done
     comment: |

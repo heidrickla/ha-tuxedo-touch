@@ -477,7 +477,12 @@ logger:
 ```
 
 Download diagnostics from the entry's menu for a report with the host, MAC, credentials
-and code redacted and the panel's raw status strings included.
+and code redacted. It carries the panel's raw status strings, which source spelled them,
+and the stream's own account of itself: whether it is connected, whether the firmware
+answered 404 and has no stream at all, the connection id the panel handed out, how many
+clients it thinks it has, how many frames have arrived, and how far a failing stream has
+backed off - beside the fallback poll's interval and last result. The two sources fail
+differently, so which one was speaking is the first thing to read.
 
 ## Development
 
