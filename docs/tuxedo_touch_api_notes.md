@@ -169,11 +169,16 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
   that stored placeholder and the entity read `unknown` until a command replaced it.
   Separately, each arm/disarm call immediately pushes the *requested* status into the
   coordinator via `async_set_updated_data()` right after the command succeeds, rather than
-  waiting on (and trusting) the next poll. If the panel's status feed is genuinely dead,
-  the entity therefore reflects the last command you sent rather than sitting on
-  `Unknown` forever - it just can't detect arming/disarming triggered from the physical
-  keypad or another integration while the feed is down. If a real status ever does come
-  back, it overrides the optimistic value normally.
+  waiting on (and trusting) the next poll. That belongs to the healthy-feed case: a poll
+  already in flight when the command goes out carries an answer that predates the command,
+  and writing it through would flip the entity straight back to the state the user has just
+  changed. The optimistic value stops that, and the next fresh poll overrides it normally
+  (`tests/ha/test_init.py::test_a_poll_in_flight_when_a_command_lands_is_discarded`).
+  It is not a way to drive the panel through an outage. While the feed is answering
+  `"Not available"` the entity is `unavailable`, and Home Assistant skips unavailable
+  entities in service calls, so no arm or disarm can be sent from Home Assistant until a
+  real status comes back - the entity cannot reflect a command it was never given. The
+  panel's own touchscreen is unaffected.
   If you have a working ECP-bus alarm integration (Envisalink, esphome-vistaECP, etc.) on
   the same panel, prefer that one for status - this integration's status reporting is only
   as good as the Tuxedo module's own connection to the panel.
