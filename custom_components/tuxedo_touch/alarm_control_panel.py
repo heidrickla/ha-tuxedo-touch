@@ -35,6 +35,9 @@ PARALLEL_UPDATES = 1
 # Status strings observed from GetSecurityStatus. The exit-delay countdown
 # is matched separately below (SECS_REMAINING_RE); anything else
 # unrecognized falls back to None (unknown) rather than guessing.
+# "Not available" is deliberately absent and never arrives here: the
+# coordinator fails the poll on it, so the entity is unavailable for that
+# outage instead of rendering the placeholder as a state.
 STATUS_MAP: dict[str, AlarmControlPanelState] = {
     "Ready To Arm": AlarmControlPanelState.DISARMED,
     "Ready Fault": AlarmControlPanelState.DISARMED,

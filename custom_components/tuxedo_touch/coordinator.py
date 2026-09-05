@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -35,6 +36,18 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 type TuxedoTouchConfigEntry = ConfigEntry[TuxedoTouchCoordinator]
+
+
+class PanelStatusUnavailable(UpdateFailed):
+    """The panel answered the status call without a status in it.
+
+    A class of its own so setup can tell it apart from a panel that could not
+    be reached: the request, the TLS handshake and the login all worked, so
+    the entry is set up and its entity comes up unavailable rather than the
+    integration refusing to load. This firmware can answer "Not available"
+    for hours, and an entry that never loaded would take the panel's device,
+    its entity and its history with it for the whole of that.
+    """
 
 
 class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
@@ -82,6 +95,11 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             password=entry.data[CONF_PASSWORD],
         )
         self._last_command_monotonic = 0.0
+        # One poll at a time, and a handle on the one in flight: see
+        # async_wait_for_poll.
+        self._poll_lock = asyncio.Lock()
+        # "Not available" is logged once per outage rather than every poll.
+        self._not_available_logged = False
 
     @callback
     def set_optimistic_status(self, status: str) -> None:
@@ -140,6 +158,16 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         ir.async_delete_issue(self.hass, DOMAIN, self._https_issue_id)
 
     async def _async_update_data(self) -> TuxedoStatus:
+        """Poll the panel, one poll at a time.
+
+        The lock serializes polls against each other - the panel serves one
+        client at a time - and is the handle async_wait_for_poll needs on a
+        poll already running.
+        """
+        async with self._poll_lock:
+            return await self._async_poll()
+
+    async def _async_poll(self) -> TuxedoStatus:
         poll_started = time.monotonic()
         try:
             status = await self.client.get_status()
@@ -176,26 +204,61 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             held: TuxedoStatus = self.data
             return held
 
-        # Quirk workaround: this firmware intermittently - and on at least one
-        # unit, persistently - reports "Not available" from GetSecurityStatus
-        # even though arm/disarm commands are still reaching the panel fine
-        # (confirmed by comparing against a separate ECP-bus-based alarm
-        # integration on the same panel, which tracked the real state
-        # correctly while this endpoint stayed stuck). Treat "Not available"
-        # as "no new information" rather than a real status: keep whatever we
-        # last knew (including optimistic updates set immediately after a
-        # successful arm/disarm - see set_optimistic_status above) instead of
-        # clobbering good data with this placeholder every poll.
-        if status.status == STATUS_NOT_AVAILABLE and self.data is not None:
-            _LOGGER.debug(
-                "GetSecurityStatus returned 'Not available' - keeping last "
-                "known status (%s) instead of overwriting it",
-                self.data.status,
+        # The panel's own quirk, not this integration's: this firmware
+        # intermittently - and on at least one unit, for long stretches -
+        # reports "Not available" from GetSecurityStatus even though arm and
+        # disarm commands are still reaching it fine (confirmed by comparing
+        # against a separate ECP-bus-based alarm integration on the same
+        # panel, which tracked the real state correctly while this endpoint
+        # stayed stuck). It is a failed read rather than a state: failing the
+        # poll leaves the entity unavailable and Home Assistant keeps the last
+        # good status in self.data, so a transient blip costs nothing and the
+        # first real status ends it.
+        #
+        # It has to fail on the FIRST poll after a load as well, which is what
+        # this used to get wrong. Keeping the last known status only when
+        # self.data existed meant a load that opened on "Not available" stored
+        # the placeholder as data, and every later "Not available" then
+        # preserved it: the entity latched to unknown until an arm or disarm
+        # replaced the data by hand.
+        if status.status == STATUS_NOT_AVAILABLE:
+            if not self._not_available_logged:
+                self._not_available_logged = True
+                _LOGGER.info(
+                    "The panel is answering '%s' instead of a security status. "
+                    "This is the panel's own firmware quirk, not a connection "
+                    "problem: the alarm entity is unavailable until it reports "
+                    "a real status",
+                    STATUS_NOT_AVAILABLE,
+                )
+            raise PanelStatusUnavailable(
+                translation_domain=DOMAIN,
+                translation_key="status_not_available",
             )
-            kept: TuxedoStatus = self.data
-            return kept
+
+        if self._not_available_logged:
+            self._not_available_logged = False
+            _LOGGER.info(
+                "The panel is reporting a security status again (%s)", status.status
+            )
 
         return status
+
+    async def async_wait_for_poll(self) -> None:
+        """Wait for a poll already in flight to finish.
+
+        Unloading an entry stops the next poll being scheduled; it does not
+        touch one that is already running, and that poll holds the connection
+        Home Assistant's pool keeps to a panel that serves one client at a
+        time. The unload path awaits this before it returns, so "the entry is
+        stood down" means the panel is actually free by the time the next
+        client - the config flow's check - dials it.
+
+        Bounded by the client's own 15 s request timeout, so this cannot hold
+        an unload open indefinitely.
+        """
+        async with self._poll_lock:
+            pass
 
     @callback
     def async_release_session(self) -> None:

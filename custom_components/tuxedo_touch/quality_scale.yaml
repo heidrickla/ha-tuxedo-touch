@@ -25,7 +25,9 @@ rules:
       mappings and recovery from an error to a created entry, the duplicate
       abort, a second partition, reconfigure (address and partition changes,
       recovery from an error, the collision guard, blank secrets keeping the
-      stored ones, the title following a move, the stored MAC surviving),
+      stored ones, the title following a move, the stored MAC surviving, the
+      stand-down for a polling and a retrying entry, and a stalled poll
+      holding the check off the panel until it finishes),
       reauth in both outcomes including recovery, and every branch of the
       dhcp step: a new panel through its confirm step to a created entry,
       that step recovering from a wrong password and dropping an emptied
@@ -79,7 +81,12 @@ rules:
     comment: |
       async_config_entry_first_refresh raises ConfigEntryNotReady while the
       panel is unreachable and ConfigEntryAuthFailed when it refuses the
-      credentials.
+      credentials. The one first-refresh failure that does not hold setup
+      back is the firmware answering "Not available" instead of a status:
+      that reply has already proved the address, the scheme and the login,
+      so the entry loads with its entity unavailable and corrects itself on
+      the next real status, rather than taking the device and its history
+      away for an outage this unit can hold for hours.
   unique-config-entry:
     status: done
     comment: |
@@ -91,18 +98,38 @@ rules:
 
   # Silver
   action-exceptions: done
-  config-entry-unloading: done
+  config-entry-unloading:
+    status: done
+    comment: |
+      Platforms are unloaded, the session is released by an on_unload
+      callback, and async_unload_entry additionally awaits the coordinator's
+      poll lock: unloading cancels the next poll but not one already in
+      flight, and that poll holds the panel's single connection. A caller
+      that has awaited the unload can therefore treat the panel as free -
+      which the reconfigure flow does before it checks new settings.
   docs-configuration-parameters:
     status: exempt
     comment: No options flow; the connection details are edited by reconfigure.
   docs-installation-parameters: done
-  entity-unavailable: done
+  entity-unavailable:
+    status: done
+    comment: |
+      The entity is a CoordinatorEntity and follows the coordinator's
+      last_update_success. Every way a read can fail fails the poll, the
+      firmware's "Not available" answer included: that is a read that
+      returned no status rather than a status, so the entity is unavailable
+      while it lasts instead of publishing a placeholder or presenting the
+      last good state as current.
   integration-owner: done
   log-when-unavailable:
     status: done
     comment: |
       The coordinator logs an unreachable panel once, via UpdateFailed, and
-      once more when it recovers.
+      once more when it recovers. A panel that answers "Not available"
+      instead of a status is the same shape and is logged the same way - one
+      info line naming the quirk when the outage starts, one when a real
+      status returns - rather than one line per 30 s poll for as long as it
+      runs, which on this unit can be hours.
   parallel-updates: done
   reauthentication-flow: done
   test-coverage:
@@ -112,12 +139,23 @@ rules:
       and fails below 95% (`--cov-fail-under=95`). tests/test_client_io.py
       covers the client's login, key fetch and call paths through a session
       stand-in; tests/ha covers setup, the entity, the config flow,
-      diagnostics, identity, the repair issues and the in-flight poll
-      discard. tools/validate_local.py refuses a workflow that drops the
-      gate.
+      diagnostics, identity, the repair issues, the in-flight poll discard,
+      the "Not available" answer on the first poll and on a later one with
+      its recovery, and a stalled poll holding the reconfigure check off the
+      panel until it finishes. tools/validate_local.py refuses a workflow
+      that drops the gate.
 
   # Gold
-  devices: done
+  devices:
+    status: done
+    comment: |
+      One device per entry: the panel, named for it, manufacturer Honeywell,
+      model "Tuxedo Touch WIFI", configuration_url pointing at the unit's own
+      web UI, and the MAC as a CONNECTION_NETWORK_MAC connection wherever a
+      DHCP lease has supplied one. No sw_version: no endpoint on this
+      firmware is known to return the version string, and a hardcoded one
+      would be wrong on every unit but the author's - it waits until the
+      panel's web root is enumerated and a real page is found to carry it.
   diagnostics: done
   discovery:
     status: done
@@ -182,9 +220,10 @@ rules:
   exception-translations:
     status: done
     comment: |
-      The two entity-facing errors and the three setup and poll errors
-      (ConfigEntryAuthFailed, and UpdateFailed for a failed read and for the
-      HTTPS redirect) all carry translation keys; tools/validate_local.py
+      The two entity-facing errors and the four setup and poll errors
+      (ConfigEntryAuthFailed, and UpdateFailed for a failed read, for the
+      HTTPS redirect and for the panel answering "Not available" instead of
+      a status) all carry translation keys; tools/validate_local.py
       refuses an f-string in either place, and refuses an exception key that
       strings.json does not declare or declares unused.
   icon-translations:
@@ -201,10 +240,12 @@ rules:
       otherwise runs with the entry unloaded - whether it was polling or
       retrying its setup: the panel serves one client at a time, so a check
       alongside either one hangs and reports cannot_connect on a healthy
-      panel. Unloading stops the entry starting new work; what keeps the check
-      off a second connection is that every client shares one TLS context and
-      so one connection-pool key, leaving the check to reuse the socket the
-      poller left idle in Home Assistant's pool.
+      panel. Unloading stops the entry starting new work and waits for the
+      poll it already had in flight, so nothing of ours is mid-request when
+      the check runs; what then keeps the check off a second connection is
+      that every client shares one TLS context and so one connection-pool key,
+      leaving the check to reuse the socket the poller left idle in Home
+      Assistant's pool.
   repair-issues:
     status: done
     comment: |

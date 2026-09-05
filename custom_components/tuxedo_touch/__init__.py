@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
@@ -13,7 +16,13 @@ from .const import (
     ISSUE_HTTPS_REDIRECT,
     issue_id,
 )
-from .coordinator import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
+from .coordinator import (
+    PanelStatusUnavailable,
+    TuxedoTouchConfigEntry,
+    TuxedoTouchCoordinator,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.ALARM_CONTROL_PANEL]
 
@@ -26,7 +35,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: TuxedoTouchConfigEntry) 
     # the on_unload callbacks, so the session is released instead of leaking
     # once per setup retry.
     entry.async_on_unload(coordinator.async_release_session)
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady:
+        # One failure is not a reason to refuse setup: the panel answering
+        # "Not available" has already proved the address, the TLS handshake
+        # and the credentials - it simply had no status in the answer. The
+        # entity comes up unavailable and the next poll corrects it, whereas
+        # refusing to load would take the device, the entity and its history
+        # away for an outage this firmware can hold for hours. Every other
+        # first-refresh failure still means the panel could not be read at
+        # all, and is still ConfigEntryNotReady.
+        if not isinstance(coordinator.last_exception, PanelStatusUnavailable):
+            raise
+        _LOGGER.debug(
+            "Setting up anyway: the panel answered without a status, which is "
+            "a firmware quirk rather than a connection failure"
+        )
 
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -58,6 +83,12 @@ async def async_unload_entry(
     # The session is released by the async_on_unload callback registered in
     # async_setup_entry, which HA runs after the platforms unload.
     unloaded: bool = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    # Unloading cancels the next poll but not one already running, and a poll
+    # in flight is holding this panel's single connection. Waiting for it here
+    # is what lets a caller treat a returned unload as "the panel is free" -
+    # the config flow stands an entry down for exactly that reason before it
+    # checks a new address or password.
+    await entry.runtime_data.async_wait_for_poll()
     return unloaded
 
 

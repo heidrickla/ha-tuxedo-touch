@@ -159,17 +159,21 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
   don't assume a stuck "Not available" means arm/disarm aren't working, and don't assume
   arm/disarm working means status will start reporting correctly.
 
-  **Integration workaround** (see `TuxedoTouchCoordinator._async_update_data` and
-  `TuxedoTouchCoordinator.set_optimistic_status` in
-  `__init__.py`): the coordinator now treats a polled `"Not available"` as "no
-  new information" and keeps whatever status it last knew, instead of overwriting good data
-  with the placeholder every 30-second poll. Separately, each arm/disarm call immediately
-  pushes the *requested* status into the coordinator via `async_set_updated_data()` right
-  after the command succeeds, rather than waiting on (and trusting) the next poll. If the
-  panel's status feed is genuinely dead, the entity will now reflect the last command you
-  sent rather than sitting on "Not available"/`Unknown` forever - it just can't detect
-  arming/disarming triggered from the physical keypad or another integration while the feed
-  is down. If a real status ever does come back, it overrides the optimistic value normally.
+  **Integration workaround** (see `TuxedoTouchCoordinator._async_poll` and
+  `TuxedoTouchCoordinator.set_optimistic_status` in `coordinator.py`): the coordinator
+  treats a polled `"Not available"` as a *failed read* - it raises `UpdateFailed` on every
+  poll that returns it, the first one after a load included, so the entity is unavailable
+  while the panel is answering it and the last real status is kept underneath rather than
+  overwritten. Up to 0.3.1 the placeholder was instead stored as data when there was
+  nothing earlier to keep, which latched: every later `"Not available"` then preserved
+  that stored placeholder and the entity read `unknown` until a command replaced it.
+  Separately, each arm/disarm call immediately pushes the *requested* status into the
+  coordinator via `async_set_updated_data()` right after the command succeeds, rather than
+  waiting on (and trusting) the next poll. If the panel's status feed is genuinely dead,
+  the entity therefore reflects the last command you sent rather than sitting on
+  `Unknown` forever - it just can't detect arming/disarming triggered from the physical
+  keypad or another integration while the feed is down. If a real status ever does come
+  back, it overrides the optimistic value normally.
   If you have a working ECP-bus alarm integration (Envisalink, esphome-vistaECP, etc.) on
   the same panel, prefer that one for status - this integration's status reporting is only
   as good as the Tuxedo module's own connection to the panel.
