@@ -33,7 +33,10 @@ numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
   on the hundredth.
 - The entity is now available while **either** source is working, and unavailable only
   when both are down. A poll answering `Not available` while the stream is delivering
-  real statuses is not an outage of anything, and no longer shows as one.
+  real statuses is not an outage of anything, and no longer shows as one. The stream
+  counts once it has a status to show rather than the moment it connects, so an entry
+  loading during an outage stays `unavailable` until one arrives instead of reading
+  `unknown` with nothing behind it.
 - A command the panel accepted but has not carried out is no longer reported as done.
   Arm and disarm answer HTTP 200 with an empty body - the panel says what it did on the
   event stream, not in the reply - so a command now waits for that report, falls back to
