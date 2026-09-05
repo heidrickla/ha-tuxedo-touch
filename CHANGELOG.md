@@ -6,9 +6,6 @@ numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
 ## [0.3.0] - 2026-09-05
 
-`manifest.json` carries 0.3.0; the GitHub release for it is not cut yet, so
-everything below is what you get by installing from the default branch.
-
 ### Added
 
 - Repair notifications for the two conditions that need you rather than a
