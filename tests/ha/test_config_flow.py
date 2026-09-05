@@ -8,7 +8,7 @@ error mapping, without a socket.
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.config_entries import SOURCE_USER
+from homeassistant.config_entries import SOURCE_DHCP, SOURCE_USER
 from homeassistant.const import (
     CONF_CODE,
     CONF_HOST,
@@ -17,6 +17,7 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.tuxedo_touch.api import (
@@ -30,6 +31,29 @@ from .conftest import ENTRY_DATA, HOST, MAC, PORT
 
 LOGIN = "custom_components.tuxedo_touch.api.TuxedoTouchClient.login"
 VALIDATE = "custom_components.tuxedo_touch.config_flow._validate_input"
+SETUP = "custom_components.tuxedo_touch.async_setup_entry"
+# The dhcp component reports a MAC with no separators, which is what the
+# integration's step has to cope with.
+RAW_MAC = MAC.replace(":", "")
+
+
+def _lease(ip, macaddress=RAW_MAC):
+    """A DHCP lease as the dhcp component reports one: MAC without separators."""
+    return DhcpServiceInfo(ip=ip, hostname="tuxedo-touch", macaddress=macaddress)
+
+
+async def _dhcp_flow(hass, lease):
+    """Run the dhcp step with the entry reload stubbed out.
+
+    Moving an entry schedules a reload, and a real reload would go looking
+    for the panel; the flow's own behaviour is what these tests are about.
+    """
+    with patch(SETUP, return_value=True):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_DHCP}, data=lease
+        )
+        await hass.async_block_till_done()
+    return result
 
 
 def _fields(result):
@@ -505,3 +529,65 @@ async def test_a_duplicate_re_add_heals_the_stored_address(hass, config_entry_wi
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
     assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"
+
+
+async def test_dhcp_follows_a_configured_panel_to_a_new_address(
+    hass, config_entry_with_mac
+):
+    """The half of discovery-update-info that needs no OUI: a lease for a MAC
+    Home Assistant already has a device for corrects the stored address."""
+    config_entry_with_mac.add_to_hass(hass)
+    result = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry_with_mac.title == "Tuxedo Touch (10.10.52.61)"
+
+
+async def test_dhcp_at_the_same_address_changes_nothing(hass, config_entry_with_mac):
+    config_entry_with_mac.add_to_hass(hass)
+    result = await _dhcp_flow(hass, _lease(HOST))
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert config_entry_with_mac.data[CONF_HOST] == HOST
+    assert config_entry_with_mac.title == f"Tuxedo Touch ({HOST})"
+
+
+async def test_dhcp_ignores_a_lease_for_another_device(hass, config_entry_with_mac):
+    config_entry_with_mac.add_to_hass(hass)
+    result = await _dhcp_flow(hass, _lease("10.10.52.61", macaddress="112233445566"))
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "unknown_panel"
+    assert config_entry_with_mac.data[CONF_HOST] == HOST
+
+
+async def test_dhcp_keeps_a_title_the_user_chose(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Downstairs alarm",
+        unique_id=f"{MAC}_1",
+        data={**ENTRY_DATA, CONF_MAC: MAC},
+    )
+    entry.add_to_hass(hass)
+    result = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    assert result["reason"] == "already_configured"
+    assert entry.data[CONF_HOST] == "10.10.52.61"
+    assert entry.title == "Downstairs alarm"
+
+
+async def test_dhcp_moves_every_partition_of_the_same_panel(
+    hass, config_entry_with_mac
+):
+    """Partitions are separate entries on one unit, so one lease moves them all."""
+    config_entry_with_mac.add_to_hass(hass)
+    second = MockConfigEntry(
+        domain=DOMAIN,
+        title=f"Tuxedo Touch ({HOST})",
+        unique_id=f"{MAC}_2",
+        data={**ENTRY_DATA, CONF_MAC: MAC, CONF_PARTITION: 2},
+    )
+    second.add_to_hass(hass)
+    result = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    assert result["reason"] == "already_configured"
+    assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"
+    assert second.data[CONF_HOST] == "10.10.52.61"

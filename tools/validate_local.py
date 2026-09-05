@@ -432,6 +432,54 @@ def main() -> int:
                 f"{sorted(used_aborts - aborts)}",
             )
 
+    # ------------------------------------------------------ dhcp discovery
+    # The manifest's dhcp block and the flow step that serves it are one
+    # mechanism: a matcher with no step makes Home Assistant start a flow
+    # that lands on the user form, and a step with no matcher never runs.
+    flow_src = read(COMP, "config_flow.py")
+    dhcp_matchers = manifest.get("dhcp", [])
+    check(
+        bool(dhcp_matchers) == ("async_step_dhcp" in flow_src),
+        "manifest dhcp matchers and config_flow.async_step_dhcp must go together",
+    )
+    if any(m.get("registered_devices") for m in dhcp_matchers):
+        # registered_devices matches against the device registry, so a device
+        # without the MAC as a connection is never discovered at all.
+        check(
+            any("CONNECTION_NETWORK_MAC" in read(COMP, f"{p}.py") for p in PLATFORMS),
+            "dhcp registered_devices needs the panel's MAC in device info as a "
+            "CONNECTION_NETWORK_MAC connection",
+        )
+    # Every abort the flow can reach needs its text, or the user reads a key.
+    declared_aborts = set(strings.get("config", {}).get("abort", {}))
+    flow_aborts = set(re.findall(r'reason="([^"]+)"', flow_src))
+    check(
+        flow_aborts <= declared_aborts,
+        f"config.abort is missing {sorted(flow_aborts - declared_aborts)}",
+    )
+
+    # ------------------------------------------------------ strict typing
+    # strict-typing is claimed on pyproject.toml saying strict with nothing
+    # switched off under it. An override that relaxes a check would leave the
+    # config still reading as strict at a glance while the claim went false.
+    if os.path.isfile(pyproject_path):
+        import tomllib
+
+        mypy_cfg = tomllib.loads(read(pyproject_path)).get("tool", {}).get("mypy", {})
+        check(
+            mypy_cfg.get("strict") is True,
+            "pyproject.toml [tool.mypy] does not set strict = true",
+        )
+        # Supplying types for a dependency that ships none is not a relaxation
+        # of this integration's own checking; switching a check off is.
+        for override in mypy_cfg.get("overrides", []):
+            relaxations = set(override) - {"module", "ignore_missing_imports"}
+            check(
+                not relaxations,
+                f"the mypy override for {override.get('module')!r} relaxes "
+                f"strict with {sorted(relaxations)}",
+            )
+
     # ----------------------------------------------------- the coverage gate
     # test-coverage is claimed on a threshold CI enforces. A workflow that
     # only reports coverage would let the claim rot silently.
