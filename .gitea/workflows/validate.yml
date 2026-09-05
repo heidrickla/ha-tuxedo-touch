@@ -91,16 +91,16 @@ jobs:
             "pytest-homeassistant-custom-component==0.13.357" \
             "getmac==0.9.5"
 
-      - name: Unit tests
-        run: |
-          for t in tests/test_*.py; do
-            echo "-- $t"; python "$t" || exit 1
-          done
+      # A check() script rather than pytest functions, so running it directly
+      # is the honest invocation. Everything else in tests/ is pytest.
+      - name: Pure tests
+        run: python tests/test_api.py
 
-      - name: Home Assistant layer tests
+      - name: Tests and coverage
         run: >
-          python -m pytest tests/ha -q
+          python -m pytest tests -q
           --cov=custom_components/tuxedo_touch --cov-report=term-missing
+          --cov-fail-under=95
 
       - name: mypy strict
         run: python -m mypy custom_components/tuxedo_touch
