@@ -179,6 +179,55 @@ async def test_a_rejection_at_runtime_is_written_down_without_a_reload(
     assert issue.severity is ir.IssueSeverity.ERROR
 
 
+async def test_a_key_page_hiccup_is_not_written_down_as_a_refusal(
+    hass, fake_panel, panel_entry
+):
+    """The sequence a live panel produces, and what it used to cost.
+
+    An ordinary session expiry makes the next poll log in again. The panel
+    ACCEPTS that credential - it counts a successful login - and then the key
+    page fetched behind it answers 500, because this unit serves one
+    connection at a time and is busy. That is a server fault after a proven
+    password, and it used to be recorded on the config entry as "the panel
+    refused these credentials", permanently: setup then refused before
+    touching the network and the reauthentication card refused the correct
+    stored password without ever asking the panel.
+
+    Counted against what the PANEL judged rather than against the exception
+    type, so this cannot pass for the wrong reason: accepted logins go up and
+    the entry is never flagged.
+    """
+    panel_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(panel_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = panel_entry.runtime_data
+    logins_before = fake_panel.logins
+
+    fake_panel.expire_session()
+    fake_panel.keys_status = 500
+    fake_panel.keys_failures_left = 1
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert not coordinator.last_update_success
+    # The panel accepted the credential it was given; nothing was refused.
+    assert fake_panel.logins == logins_before + 1
+    assert OPT_CREDENTIALS_REJECTED not in panel_entry.options
+    assert panel_entry.state is ConfigEntryState.LOADED
+    assert (
+        ir.async_get(hass).async_get_issue(
+            DOMAIN, issue_id(ISSUE_CREDENTIALS_REJECTED, panel_entry.entry_id)
+        )
+        is None
+    )
+
+    # The panel is well again, so the next poll is the whole of the recovery.
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.last_update_success
+    assert hass.states.get(PANEL).state == "disarmed"
+
+
 async def test_a_flagged_entry_spends_no_login_at_setup(hass, fake_panel):
     """A restart with credentials already known to be refused costs nothing.
 

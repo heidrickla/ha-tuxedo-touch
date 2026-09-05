@@ -191,11 +191,41 @@ async def test_a_login_page_without_the_correlation_cookie_still_posts():
 
 
 async def test_a_rejected_login_post_is_an_auth_error():
+    """401 is a status that can only be a verdict on the account."""
     answers = login_answers()
     answers[1] = FakeResponse(status=401)
     made, _ = client(answers)
     with pytest.raises(api.TuxedoTouchAuthError):
         await made.login()
+    assert made._failed_logins == 1
+
+
+async def test_a_server_error_on_the_login_post_is_not_a_verdict():
+    """500 never reached the credential comparison, so it judged nothing.
+
+    Counting it spends the one-login budget on a busy embedded web server,
+    which the coordinator then writes onto the config entry as "the panel
+    refused these credentials" - permanently, with no UI path back to the
+    password that was right the whole time.
+    """
+    for status in (500, 503, 429, 408):
+        answers = login_answers()
+        answers[1] = FakeResponse(status=status)
+        made, _ = client(answers)
+        with pytest.raises(api.TuxedoTouchConnectionError):
+            await made.login()
+        assert made._failed_logins == 0
+
+
+async def test_an_odd_login_post_status_is_a_panel_error_not_a_verdict():
+    """A 404 says the path or the port is wrong, not that the account is."""
+    answers = login_answers()
+    answers[1] = FakeResponse(status=404)
+    made, _ = client(answers)
+    with pytest.raises(api.TuxedoTouchError) as raised:
+        await made.login()
+    assert not isinstance(raised.value, api.TuxedoTouchAuthError)
+    assert made._failed_logins == 0
 
 
 async def test_a_timeout_on_the_login_post_is_a_connection_error():
@@ -218,20 +248,48 @@ async def test_a_login_that_returns_no_session_cookie_is_an_auth_error():
 # ----------------------------------------------------------- key fetch
 
 
-async def test_a_key_page_that_refuses_means_the_session_is_not_real():
+async def test_a_key_page_that_refuses_is_a_session_fault_not_a_refusal():
+    """The credential POST already returned a session cookie.
+
+    So the panel accepted the password and counted a SUCCESSFUL login; the
+    page behind that session answering badly says nothing about the password.
+    Raising the auth class here had the coordinator write a permanent
+    "credentials rejected" flag onto the config entry, stop the push stream
+    for good, and then refuse the correct stored password on the
+    reauthentication card without asking the panel - for one HTTP hiccup.
+    """
     answers = login_answers()
     answers[2] = FakeResponse(status=302)
     made, _ = client(answers)
-    with pytest.raises(api.TuxedoTouchAuthError):
+    with pytest.raises(api.TuxedoTouchSessionError) as raised:
         await made.login()
+    assert not isinstance(raised.value, api.TuxedoTouchAuthError)
+    assert made._failed_logins == 0
 
 
-async def test_a_key_page_without_the_readit_element_is_an_auth_error():
+async def test_a_key_page_without_the_readit_element_is_a_session_fault():
     answers = login_answers()
     answers[2] = FakeResponse(text="<p>please log in</p>")
     made, _ = client(answers)
-    with pytest.raises(api.TuxedoTouchAuthError):
+    with pytest.raises(api.TuxedoTouchSessionError) as raised:
         await made.login()
+    assert not isinstance(raised.value, api.TuxedoTouchAuthError)
+    assert made._failed_logins == 0
+
+
+async def test_a_failed_key_fetch_leaves_no_half_built_session_behind():
+    """A cookie with no key material behind it is not a session.
+
+    Left on the client it is carried into every later call, which then fails
+    on the missing key instead of logging in again.
+    """
+    answers = login_answers()
+    answers[2] = FakeResponse(status=500)
+    made, _ = client(answers)
+    with pytest.raises(api.TuxedoTouchSessionError):
+        await made.login()
+    assert made._session_cookie is None
+    assert made._key is None
 
 
 async def test_a_short_key_blob_is_rejected_rather_than_sliced():

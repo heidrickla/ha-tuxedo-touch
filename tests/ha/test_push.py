@@ -403,6 +403,42 @@ async def test_a_refused_login_ends_the_stream_task_rather_than_slowing_it(
     assert fake_panel.stream_requests == requests
 
 
+async def test_a_key_page_hiccup_does_not_stop_the_stream_for_good(
+    hass, fake_panel, panel_entry
+):
+    """The other half of the same misclassification, on the primary source.
+
+    A cookie dying under the stream is routine: the reconnect logs in again.
+    Here the panel ACCEPTS that login and the key page behind it answers 500
+    once. That used to raise the same exception class as a refused password,
+    so the stream set its terminal auth_failed flag and stopped for the life
+    of the entry - one transient HTTP 500 killing both state sources at once.
+
+    Now it is an ordinary fault: back off, reconnect, carry on.
+    """
+    coordinator = await _setup(hass, panel_entry)
+    logins_before = fake_panel.logins
+
+    fake_panel.expire_session()
+    fake_panel.keys_status = 500
+    fake_panel.keys_failures_left = 1
+    # Otherwise the reconnect waits out the five-second floor first.
+    coordinator.push.reconnect_wait = 0.01
+    fake_panel.drop_stream()
+
+    await wait_until(lambda: not coordinator.push.connected)
+    await wait_until(lambda: coordinator.push.connected)
+
+    assert coordinator.push.auth_failed is False
+    # It logged in twice: once for the key page that failed, once for the
+    # reconnect that worked. The panel accepted both.
+    assert fake_panel.logins >= logins_before + 2
+    assert _stream_tasks()
+
+    await fake_panel.push_status_text("Armed Away", armed=True)
+    await wait_until(lambda: _state(hass).state == "armed_away")
+
+
 async def test_firmware_without_a_push_stream_runs_on_the_poll_alone(
     hass, fake_panel, panel_entry
 ):

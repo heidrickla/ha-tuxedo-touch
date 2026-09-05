@@ -148,6 +148,62 @@ async def test_a_connection_failure_is_not_a_strike(panel, session):
     assert client._failed_logins == 0
 
 
+async def test_a_server_error_on_the_login_post_is_not_a_strike(panel, session):
+    """A 5xx never reached the credential comparison, so nothing was judged.
+
+    The mirror of the test above, and the one that was missing: that one
+    measures a panel which DOES judge, so it cannot tell a refusal from an
+    embedded web server having a bad moment. Spending the budget here is a
+    lockout for a transient fault - the entry is condemned, the stream stops
+    and the reauthentication card then refuses the password that was right
+    all along.
+    """
+    client = _client(panel, session, panel.password)
+    panel.login_post_status = 503
+    panel.login_post_failures_left = 1
+
+    with pytest.raises(api.TuxedoTouchConnectionError):
+        await client.login()
+    # The panel was asked, but it judged nothing.
+    assert panel.login_attempts == 1
+    assert panel.logins == 0
+    assert client._failed_logins == 0
+
+    # And the budget is whole, so the panel getting better is the whole of
+    # the recovery: no reauthentication, no user action.
+    await client.login()
+    assert panel.logins == 1
+    assert client._failed_logins == 0
+
+
+async def test_a_key_page_that_fails_is_not_a_credential_judgement(panel, session):
+    """The login POST already succeeded, so the panel accepted the password.
+
+    Both raises in _fetch_keys happen after the panel returned a session
+    cookie - it counted a SUCCESSFUL login. An exception that says "the panel
+    refused these credentials" there is a lie the coordinator then writes
+    onto the config entry for good.
+    """
+    for keys_status in (500, 200):
+        client = _client(panel, session, panel.password)
+        panel.keys_status = keys_status
+        panel.keys_failures_left = 1
+        logins_before = panel.logins
+
+        with pytest.raises(api.TuxedoTouchSessionError) as raised:
+            await client.login()
+        # Not an auth error: nothing here is the panel judging a credential.
+        assert not isinstance(raised.value, api.TuxedoTouchAuthError)
+        assert panel.logins == logins_before + 1
+        assert client._failed_logins == 0
+        # A cookie with no key material behind it is not a session.
+        assert client._session_cookie is None
+
+        # The panel recovers by itself on the next attempt.
+        await client.login()
+        assert client._failed_logins == 0
+
+
 async def test_a_login_that_works_leaves_the_budget_whole(panel, session):
     """A success is not a strike, and it clears any that were recorded.
 
