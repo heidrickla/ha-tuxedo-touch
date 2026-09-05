@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.tuxedo_touch.api import (
@@ -12,7 +13,13 @@ from custom_components.tuxedo_touch.api import (
     TuxedoTouchAuthError,
     TuxedoTouchError,
 )
-from custom_components.tuxedo_touch.const import CONF_MAC, CONF_PARTITION, DOMAIN
+from custom_components.tuxedo_touch.const import (
+    CONF_MAC,
+    CONF_PARTITION,
+    DOMAIN,
+    ISSUE_DUPLICATE_ENTRY,
+    issue_id,
+)
 from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
 
 from .conftest import ENTRY_DATA, HOST, MAC
@@ -124,12 +131,13 @@ async def test_rejected_credentials_start_a_reauth_flow(hass, config_entry):
 
 
 async def test_the_session_is_closed_when_setup_never_completes(hass, config_entry):
-    """The dedicated session leaks once per retry if teardown waits for LOADED.
+    """The session leaks once per retry if teardown waits for LOADED.
 
     The callback is registered before the first refresh precisely so a panel
-    that is down at Home Assistant start does not accumulate sessions. Asserted
-    against the real session: mocking async_close would prove only that the
-    callback fired, while leaking the very session under test.
+    that is down at Home Assistant start does not accumulate sessions.
+    Asserted against the real session: mocking the release would prove only
+    that the callback fired, while leaking the very session under test. A
+    session detached from the shared connector reports itself closed.
     """
     with _coordinators() as made, patch(STATUS, side_effect=TuxedoTouchError("down")):
         await _setup(hass, config_entry)
@@ -221,7 +229,9 @@ async def test_mac_adoption_refuses_a_unique_id_another_entry_holds(
     hass, config_entry, config_entry_with_mac, ready
 ):
     """Two entries reaching the same panel: the second must not corrupt the
-    unique-id index by adopting an id the first already owns."""
+    unique-id index by adopting an id the first already owns. Only the user
+    can say which of the two to remove, so it is raised as an issue rather
+    than fixed here."""
     config_entry_with_mac.add_to_hass(hass)
     config_entry.add_to_hass(hass)
     before = config_entry.unique_id
@@ -232,3 +242,52 @@ async def test_mac_adoption_refuses_a_unique_id_another_entry_holds(
 
     assert config_entry.unique_id == before
     assert CONF_MAC not in config_entry.data
+    issue = ir.async_get(hass).async_get_issue(
+        DOMAIN, issue_id(ISSUE_DUPLICATE_ENTRY, config_entry.entry_id)
+    )
+    assert issue is not None
+    assert not issue.is_fixable
+    assert issue.translation_placeholders == {
+        "title": config_entry.title,
+        "other": config_entry_with_mac.title,
+    }
+
+
+async def test_the_duplicate_issue_goes_once_the_second_entry_does(
+    hass, config_entry, config_entry_with_mac, ready
+):
+    """Removing one of the two is the fix, and the notice must not survive it."""
+    config_entry_with_mac.add_to_hass(hass)
+    config_entry.add_to_hass(hass)
+    with patch(STATUS, return_value=ready), patch(MAC_LOOKUP, return_value=MAC):
+        await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    raised = issue_id(ISSUE_DUPLICATE_ENTRY, config_entry.entry_id)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, raised) is not None
+
+    await hass.config_entries.async_remove(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, raised) is None
+
+
+async def test_a_poll_in_flight_when_a_command_lands_is_discarded(
+    hass, config_entry, ready
+):
+    """The poll's answer predates the command, so writing it through would
+    flip the entity back to the state the user just changed."""
+    with patch(STATUS, return_value=ready):
+        await _setup(hass, config_entry)
+    coordinator = config_entry.runtime_data
+
+    async def _command_lands_mid_poll():
+        coordinator.set_optimistic_status("Armed Away")
+        return TuxedoStatus(status="Ready To Arm", color="green")
+
+    with patch(STATUS, side_effect=_command_lands_mid_poll):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert coordinator.data.status == "Armed Away"
+    assert hass.states.get(PANEL).state == "armed_away"
