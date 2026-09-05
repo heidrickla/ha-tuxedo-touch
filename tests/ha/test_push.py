@@ -143,6 +143,22 @@ async def test_a_streamed_text_the_map_does_not_know_leaves_the_poll_to_settle_i
     assert _state(hass).state == "armed_away"
     assert _state(hass).attributes["tuxedo_source"] == "poll"
 
+    # And it STAYS settled. The panel repeats its partition status on its own
+    # timer roughly every 33 s, so the correction above used to last about
+    # three seconds in every thirty-three: the repeat wrote the unrecognised
+    # text back over the poll's answer and the entity read `unknown` again -
+    # and, because writing a pushed status restarts the 30 s poll clock, the
+    # poll that would have settled it a second time was pushed out past the
+    # next repeat. The stream's flag corroborates the mode the poll named
+    # rather than erasing it.
+    frames_before = coordinator.push.frames
+    await fake_panel.push(status_frame("Armed With Some New Word", armed=True))
+    await wait_until(lambda: coordinator.push.frames > frames_before)
+    await hass.async_block_till_done()
+
+    assert _state(hass).state == "armed_away"
+    assert _state(hass).attributes["tuxedo_status"] == "Armed Away"
+
 
 async def test_the_entity_is_available_while_either_source_works(
     hass, fake_panel, panel_entry

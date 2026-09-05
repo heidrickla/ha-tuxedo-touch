@@ -39,6 +39,7 @@ from .const import (
     SOURCE_STREAM,
     STATUS_NOT_AVAILABLE,
     issue_id,
+    status_means_armed,
     status_names_a_state,
 )
 from .push import PushStatus, TuxedoPushStream
@@ -234,6 +235,35 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             armed=status.armed,
             seconds_remaining=status.seconds_remaining,
         )
+        # Whether this frame only corroborates what the poll already
+        # established. The stream's flag says whether the partition is armed
+        # but never in which mode, so a display text this integration does not
+        # know settles nothing on its own - and writing it over a poll that
+        # DID name the mode is what made the documented fallback fail. The
+        # poll's correction lasted until the panel's next status repeat,
+        # roughly 33 s, at which point the entity went back to `unknown`; and
+        # because every pushed status restarts the 30 s poll clock, the poll
+        # that would have corrected it again was pushed out past that repeat.
+        # About three seconds correct in every thirty-three, and on any
+        # firmware repeating faster than SCAN_INTERVAL the poll would never
+        # have run at all.
+        held = self.data
+        corroborates = (
+            held is not None
+            and not status_names_a_state(status.text)
+            and status_names_a_state(held.status)
+            and status_means_armed(held.status) is status.armed
+        )
+        if held is not None and corroborates:
+            # The two agree about arming, so the mode the poll named stands
+            # and only the fields the stream genuinely carries are taken.
+            data = TuxedoStatus(
+                status=held.status,
+                color=status.colour or held.color,
+                source=held.source,
+                armed=status.armed,
+                seconds_remaining=status.seconds_remaining,
+            )
         for confirms, future in list(self._command_waiters):
             # Only a positive report ends the wait. `is True` rather than a
             # truth test because the callable now answers None for a reading
@@ -251,7 +281,13 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 "stream (%s)",
                 data.status,
             )
-        self.async_set_updated_data(data)
+        if corroborates:
+            # Not async_set_updated_data: that restarts the poll clock, and
+            # the poll is the only source that can name the mode in this case.
+            self.data = data
+            self.async_update_listeners()
+        else:
+            self.async_set_updated_data(data)
 
     @callback
     def _async_push_connection_changed(self, connected: bool) -> None:
