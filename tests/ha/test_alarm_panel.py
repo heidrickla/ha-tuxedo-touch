@@ -7,7 +7,9 @@ from homeassistant.components.alarm_control_panel import DOMAIN as ALARM_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
+from custom_components.tuxedo_touch.alarm_control_panel import TuxedoAlarmPanel
 from custom_components.tuxedo_touch.api import TuxedoStatus, TuxedoTouchError
+from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
 
 STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"
 ARM = "custom_components.tuxedo_touch.api.TuxedoTouchClient.arm"
@@ -79,6 +81,33 @@ async def test_disarm_reports_disarmed_without_a_poll(hass, config_entry):
         )
     disarm.assert_awaited_once_with("1234", 1)
     assert hass.states.get(PANEL).state == "disarmed"
+
+
+async def test_arm_night_sends_the_night_mode(hass, config_entry):
+    """Each supported mode has its own panel word; a wrong one arms nothing."""
+    await _setup(hass, config_entry)
+    with patch(ARM, AsyncMock(return_value={})) as arm:
+        await hass.services.async_call(
+            ALARM_DOMAIN,
+            "alarm_arm_night",
+            {ATTR_ENTITY_ID: PANEL},
+            blocking=True,
+        )
+    arm.assert_awaited_once_with("NIGHT", "1234", 1)
+    assert hass.states.get(PANEL).state == "armed_night"
+
+
+async def test_the_entity_says_nothing_before_the_first_status(hass, config_entry):
+    """Built but never refreshed: the state is unknown, not a guess, and the
+    attributes are absent rather than None-filled."""
+    config_entry.add_to_hass(hass)
+    coordinator = TuxedoTouchCoordinator(hass, config_entry)
+    try:
+        entity = TuxedoAlarmPanel(coordinator, config_entry)
+        assert entity.alarm_state is None
+        assert entity.extra_state_attributes == {}
+    finally:
+        coordinator.async_release_session()
 
 
 async def test_a_code_given_in_the_call_beats_the_stored_one(hass, config_entry):
