@@ -671,13 +671,13 @@ def _rejected_entry(fake_panel, password):
 async def test_resubmitting_the_stored_credentials_asks_the_panel_nothing(
     hass, fake_panel
 ):
-    """The user's submission is the last place a login is spent, and it is
-    not spent on this.
+    """The user's submission is the last place a login is spent, and this
+    submission does not spend it by itself.
 
     Sending back exactly what is stored is sending the credentials the panel
-    has already refused. Probing them again buys no information and costs one
-    of the three strikes that disable the panel's web accounts, so the form
-    answers it without a request.
+    refused, so nothing goes out on the strength of the Submit button: the
+    flow asks again, naming the cost, and only a deliberate confirmation
+    reaches the panel.
     """
     entry = _rejected_entry(fake_panel, "no longer the password")
     entry.add_to_hass(hass)
@@ -692,8 +692,96 @@ async def test_resubmitting_the_stored_credentials_asks_the_panel_nothing(
     )
 
     assert again["type"] is FlowResultType.FORM
-    assert again["errors"] == {"base": "invalid_auth"}
+    assert again["step_id"] == "reauth_retry"
+    assert not again.get("errors")
     assert fake_panel.login_attempts == 0
+
+
+async def test_the_stored_credentials_can_be_retried_once_when_the_panel_is_fixed(
+    hass, fake_panel
+):
+    """The way out of a flag that was set while the password was right.
+
+    The commonest reason the panel refuses a credential is not a wrong
+    password: a panel that has been reset comes back with web access disabled
+    per user, so the stored password is refused and becomes correct again the
+    moment the owner re-enables it at the touchscreen. Nothing could tell the
+    integration that. The card refused a byte-identical resubmission without
+    contacting the panel, a reconfigure that changed no probed field cleared
+    nothing, and the only submission that did reach the panel was a DIFFERENT
+    password - a genuine refused login against a unit that disables every web
+    account at three, which is the harm the whole design exists to prevent.
+
+    So: one retry of the stored credentials, spent deliberately.
+    """
+    entry = _rejected_entry(fake_panel, fake_panel.password)
+    entry.add_to_hass(hass)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id(ISSUE_CREDENTIALS_REJECTED, entry.entry_id),
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=ISSUE_CREDENTIALS_REJECTED,
+        translation_placeholders={"title": entry.title},
+    )
+    result = await entry.start_reauth_flow(hass)
+
+    asked = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_USERNAME: fake_panel.username, CONF_PASSWORD: fake_panel.password},
+    )
+    assert asked["type"] is FlowResultType.FORM
+    assert asked["step_id"] == "reauth_retry"
+    # The form is the question, not the attempt: nothing has been sent.
+    assert fake_panel.login_attempts == 0
+
+    done = await hass.config_entries.flow.async_configure(asked["flow_id"], {})
+    await hass.async_block_till_done()
+
+    assert done["type"] is FlowResultType.ABORT
+    assert done["reason"] == "reauth_successful"
+    assert OPT_CREDENTIALS_REJECTED not in entry.options
+    assert (
+        ir.async_get(hass).async_get_issue(
+            DOMAIN, issue_id(ISSUE_CREDENTIALS_REJECTED, entry.entry_id)
+        )
+        is None
+    )
+    assert entry.state is ConfigEntryState.LOADED
+    # One login for the retry the user asked for, one for the entry that then
+    # loaded. Nothing automatic retried anything.
+    assert fake_panel.login_attempts == 2
+
+
+async def test_a_retry_the_panel_still_refuses_says_it_may_be_locked_out(
+    hass, fake_panel
+):
+    """The confirmation buys exactly one login, and no more than one.
+
+    A retry that fails leaves the flag standing and says what a refusal of
+    credentials that used to work most likely means, rather than repeating
+    "invalid username or password" at somebody whose account may already be
+    disabled.
+    """
+    entry = _rejected_entry(fake_panel, "no longer the password")
+    entry.add_to_hass(hass)
+    result = await entry.start_reauth_flow(hass)
+
+    asked = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_USERNAME: fake_panel.username,
+            CONF_PASSWORD: "no longer the password",
+        },
+    )
+    refused = await hass.config_entries.flow.async_configure(asked["flow_id"], {})
+
+    assert refused["type"] is FlowResultType.FORM
+    assert refused["step_id"] == "reauth_confirm"
+    assert refused["errors"] == {"base": "possibly_locked_out"}
+    assert entry.options[OPT_CREDENTIALS_REJECTED] is True
+    assert fake_panel.login_attempts == 1
 
 
 async def test_a_rejection_after_a_rejection_says_the_panel_may_be_locked(

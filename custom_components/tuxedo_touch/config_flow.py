@@ -532,6 +532,27 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle reauth after the panel rejected the stored credentials."""
         return await self.async_step_reauth_confirm()
 
+    def _async_credentials_accepted(
+        self, entry: ConfigEntry[Any], data_updates: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """The panel took these, so the entry stops being a refused one."""
+        ir.async_delete_issue(
+            self.hass,
+            DOMAIN,
+            issue_id(ISSUE_CREDENTIALS_REJECTED, entry.entry_id),
+        )
+        return self.async_update_reload_and_abort(
+            entry,
+            data_updates=data_updates,
+            # The setup that the reload runs next reads exactly this option,
+            # so a flag left standing would refuse a working entry for ever.
+            options={
+                key: value
+                for key, value in entry.options.items()
+                if key != OPT_CREDENTIALS_REJECTED
+            },
+        )
+
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -545,7 +566,8 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         still spent, and it spends at most one per submission:
 
         - credentials byte-identical to the stored ones are the ones already
-          refused, so they are answered from here with no request at all;
+          refused, so submitting them sends nothing and asks instead, on the
+          retry step below;
         - anything else is a genuinely different guess and is probed once.
 
         A failed probe on an entry already flagged says so differently: at
@@ -560,30 +582,61 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                 user_input.get(field) == reauth_entry.data.get(field)
                 for field in (CONF_USERNAME, CONF_PASSWORD)
             ):
+                # Unchanged credentials are the ones the panel refused, so
+                # nothing goes out on the strength of the Submit button. But
+                # refusing them outright is a dead end, and the commonest
+                # reason for the flag is not a wrong password: a panel that
+                # has been reset comes back with web access disabled per user,
+                # and re-enabling it at the touchscreen makes the stored
+                # password correct again with nothing in the entry to say so.
+                # Ask once, name the cost, and probe only if the user says yes.
+                if already_rejected:
+                    return await self.async_step_reauth_retry()
                 errors = {"base": "invalid_auth"}
             else:
                 errors = await self._async_validate({**reauth_entry.data, **user_input})
                 if not errors:
-                    ir.async_delete_issue(
-                        self.hass,
-                        DOMAIN,
-                        issue_id(ISSUE_CREDENTIALS_REJECTED, reauth_entry.entry_id),
-                    )
-                    return self.async_update_reload_and_abort(
-                        reauth_entry,
-                        data_updates=user_input,
-                        # The panel accepts these, so the entry stops being
-                        # one whose credentials are refused - and the setup
-                        # that the reload runs next reads exactly this.
-                        options={
-                            key: value
-                            for key, value in reauth_entry.options.items()
-                            if key != OPT_CREDENTIALS_REJECTED
-                        },
-                    )
+                    return self._async_credentials_accepted(reauth_entry, user_input)
                 if already_rejected and errors.get("base") == "invalid_auth":
                     errors = {"base": "possibly_locked_out"}
 
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=self.add_suggested_values_to_schema(
+                STEP_REAUTH_SCHEMA,
+                {CONF_USERNAME: reauth_entry.data.get(CONF_USERNAME, "")},
+            ),
+            description_placeholders={"host": reauth_entry.data[CONF_HOST]},
+            errors=errors,
+        )
+
+    async def async_step_reauth_retry(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Spend one login on the stored credentials, if the user asks for it.
+
+        The form carries what the reauthentication card has no room for: that
+        this sends a credential POST to a panel which disables every web
+        account after three refused ones, and that the reason to do it is
+        something having changed at the panel rather than hope. Confirming is
+        the consent; nothing automatic can reach this step.
+
+        A refusal leaves the flag exactly as it was and sends the user back to
+        the card with the locked-out wording, so the next thing they see is
+        what a refusal of credentials that used to work most likely means.
+        """
+        reauth_entry = self._get_reauth_entry()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reauth_retry",
+                data_schema=vol.Schema({}),
+                description_placeholders={"host": reauth_entry.data[CONF_HOST]},
+            )
+        errors = await self._async_validate(dict(reauth_entry.data))
+        if not errors:
+            return self._async_credentials_accepted(reauth_entry, {})
+        if errors.get("base") == "invalid_auth":
+            errors = {"base": "possibly_locked_out"}
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=self.add_suggested_values_to_schema(
