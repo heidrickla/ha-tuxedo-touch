@@ -12,6 +12,7 @@ from custom_components.tuxedo_touch.alarm_control_panel import (
     reports_armed,
 )
 from custom_components.tuxedo_touch.api import TuxedoStatus, TuxedoTouchError
+from custom_components.tuxedo_touch.const import STATUS_STATES, status_means_armed
 from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
 from tests.fake_panel import wait_until
 
@@ -282,3 +283,28 @@ def test_whether_a_reported_status_means_armed(status, armed):
     """What decides that a command took effect. None is the important row:
     read as False it would confirm a disarm the panel never reported."""
     assert reports_armed(status) is armed
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        *STATUS_STATES,
+        "59  Secs Remaining",
+        "Armed With Some New Word",
+    ],
+)
+def test_the_coordinators_armed_reading_matches_the_platforms(text):
+    """Two readings of one table, and they have to stay one reading.
+
+    const.status_means_armed exists because the coordinator must not import a
+    platform module, and it decides whether a streamed text this integration
+    does not know corroborates the mode the poll named. If it drifted from
+    reports_armed the two halves of the integration would disagree about
+    whether the same panel is armed.
+
+    Texts as either source delivers them: the stream decoder strips the
+    display field and the REST answer is the panel's own word, so nothing
+    padded reaches either reading. The const helpers strip and the platform's
+    map lookup does not, which is invisible while that holds.
+    """
+    assert status_means_armed(text) is reports_armed(TuxedoStatus(status=text))
