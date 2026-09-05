@@ -250,6 +250,15 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         held = self.data
         corroborates = (
             held is not None
+            # Only a POLL's reading may be held this way. Corroborating a
+            # stream-sourced status keeps `source` at SOURCE_STREAM, which the
+            # poll-suppression guard below reads as "the stream is carrying the
+            # state", so every later poll would be discarded and nothing would
+            # ever re-read the mode. The panel moving on - an exit delay
+            # expiring into Armed Away - would then leave the entity latched on
+            # a mode the panel is no longer reporting, which is worse than the
+            # honest `unknown` this corroboration exists to avoid.
+            and held.source != SOURCE_STREAM
             and not status_names_a_state(status.text)
             and status_names_a_state(held.status)
             and status_means_armed(held.status) is status.armed
