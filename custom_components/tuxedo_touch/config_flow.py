@@ -117,6 +117,24 @@ def _title_for(host: str) -> str:
     return f"Tuxedo Touch ({host})"
 
 
+def _holds_the_panel(state: ConfigEntryState) -> bool:
+    """Whether this entry has to be stood down before the panel is probed.
+
+    LOADED is the coordinator polling. SETUP_RETRY is the state a user most
+    often reconfigures from - the panel moved, the password changed - and it
+    is not idle: a retry is on the clock and logs in against the same panel,
+    which is the contention this whole path exists to remove. SETUP_ERROR
+    holds nothing, but unloading it costs nothing either and keeps the rule
+    one sentence long.
+
+    NOT_LOADED is already stood down, and the states that are not recoverable
+    (SETUP_IN_PROGRESS, UNLOAD_IN_PROGRESS, FAILED_UNLOAD, MIGRATION_ERROR)
+    cannot be unloaded at all - async_unload raises OperationNotAllowed on
+    them. Both take the probe as it comes.
+    """
+    return state.recoverable and state is not ConfigEntryState.NOT_LOADED
+
+
 def _without_secrets(data: Mapping[str, Any]) -> dict[str, Any]:
     """What may go back to the browser as suggested values: never a secret."""
     return {k: v for k, v in data.items() if k not in SECRETS}
@@ -189,17 +207,17 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
           The entry itself is the check on those fields - a loaded one is
           already logging in with them, and one that is failing to set up
           reports why on its own card.
-        - otherwise the entry is unloaded first, which stops the poll loop and
-          releases its session, and set up again if the probe fails. A probe
-          that succeeds leaves it unloaded for the caller's reload, which is
-          the next thing to happen.
+        - otherwise the entry is stood down first, which stops the poll loop
+          or the pending setup retry and releases the session, and set up
+          again if the probe fails. A probe that succeeds leaves it unloaded
+          for the caller's reload, which is the next thing to happen.
 
         Not shared with the reauth step: there "unchanged" means the password
         the panel has just rejected, which is exactly what has to be probed.
         """
         if all(data.get(field) == entry.data.get(field) for field in PROBED):
             return {}
-        if entry.state is not ConfigEntryState.LOADED:
+        if not _holds_the_panel(entry.state):
             return await self._async_validate(data)
 
         unloaded = await self.hass.config_entries.async_unload(entry.entry_id)

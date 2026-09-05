@@ -14,9 +14,12 @@ numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
   "Failed to connect" about a panel that was answering the poller perfectly.
   Changing only the keypad code or the partition now contacts the panel not at
   all - nothing the login depends on changed - and changing the address, port,
-  scheme, username or password unloads the entry for the moment the check
+  scheme, username or password stands the entry down for the moment the check
   takes, then sets it up again: on the new settings if they worked, on the old
-  ones if they did not.
+  ones if they did not. An entry that is retrying its setup is stood down the
+  same way as one that is polling - that is the state you most often
+  reconfigure from, and the retry on the clock logs into the panel just as a
+  poll does.
 
 ## [0.3.0] - 2026-09-05
 
