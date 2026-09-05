@@ -209,7 +209,17 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
     @callback
     def _async_push_status(self, status: PushStatus) -> None:
         """A partition status arrived on the stream: it is the state now."""
-        if status.partition is not None and status.partition != self.partition:
+        # An explicit match, because "the frame does not say" is not "the
+        # frame is about this entry". The unsolicited record (command id -1)
+        # carries no partition field at all, and reading its silence as
+        # consent had every entry on the panel accept it whatever partition
+        # it was configured for - one partition's state written onto
+        # another's entity, then latched there, because a pushed status that
+        # names a state suppresses the poll that would have corrected it, and
+        # able to satisfy the wrong partition's command confirmation as well.
+        # Command 21 carries every real change and repeats about every 33 s,
+        # so requiring the frame to name the entry costs latency at worst.
+        if status.partition != self.partition:
             _LOGGER.debug(
                 "Ignoring a status for partition %s; this entry is partition %s",
                 status.partition,

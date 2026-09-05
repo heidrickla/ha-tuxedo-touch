@@ -407,6 +407,42 @@ async def test_a_status_for_another_partition_is_not_this_entry(
     assert _state(hass).state == "disarmed"
 
 
+async def test_a_status_naming_no_partition_is_not_taken_as_this_entry(
+    hass, fake_panel, panel_entry
+):
+    """A frame that does not say which partition it is about is not evidence
+    about any particular one.
+
+    The unsolicited record (command id -1) carries no partition field at all,
+    and the filter used to read "no partition" as "mine": every entry on the
+    panel accepted it, whatever partition it was configured for. On a
+    two-partition install that puts one partition's state on the other's
+    entity - and then latches it, because a pushed status that names a state
+    suppresses the poll that would have corrected it. It could satisfy a
+    pending command's confirmation too, so an arm sent to partition 2 could
+    be confirmed by a frame about partition 1.
+
+    Command 21 carries every real change and the panel repeats it about every
+    33 seconds, so nothing is lost by requiring the frame to name the entry
+    it is applied to.
+    """
+    coordinator = await _setup(hass, panel_entry)
+    await fake_panel.push_status_text("Armed Away", armed=True)
+    await wait_until(lambda: _state(hass).state == "armed_away")
+    frames_before = coordinator.push.frames
+
+    await fake_panel.push(
+        b"['ud','SimpleDbgServer2ClientIntf','statusMessageText',"
+        b'["0:-1:\xfeReady To Arm"]]'
+    )
+    await wait_until(lambda: coordinator.push.frames > frames_before)
+    await hass.async_block_till_done()
+
+    # The frame was read and then ignored, not missed.
+    assert _state(hass).state == "armed_away"
+    assert _state(hass).attributes["tuxedo_status"] == "Armed Away"
+
+
 async def test_unloading_closes_the_stream_and_leaves_nothing_running(
     hass, fake_panel, panel_entry
 ):
