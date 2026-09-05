@@ -212,10 +212,12 @@ prior state to keep, the entity reads `unknown` until the panel says something e
 
 Requests go out on Home Assistant's own HTTP connection pool rather than a pool of this
 integration's own, and every client here - each entry's poller, and the checks the setup
-and reconfigure forms run - shares one pool key, so at most one connection to a given
-panel is ours at any moment. That is the point rather than a detail: the unit serves one
-connection at a time and answers a second with silence, so anything of ours that opened
-its own would starve the poller instead of queueing behind it.
+and reconfigure forms run - shares one pool key, so a check takes over the connection the
+poller left idle rather than opening a second one. Two of ours are two connections only
+while their requests overlap, which is what the reconfigure form's stand-down is there to
+prevent. That is the point rather than a detail: the unit serves one connection at a time
+and answers a second with silence, so anything of ours that opened its own would starve
+the poller instead of queueing behind it.
 
 The pool keeps an idle connection for fifteen seconds. A thirty-second poll therefore
 opens a fresh one each time and pays for the panel's slow legacy TLS handshake once per
