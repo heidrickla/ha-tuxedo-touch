@@ -1,5 +1,6 @@
 """Constants for the Honeywell Tuxedo Touch integration."""
 
+import re
 from datetime import timedelta
 
 DOMAIN = "tuxedo_touch"
@@ -28,6 +29,40 @@ API_BASE_PATH = f"/system_http_api/{API_REV}"
 LOGIN_PATH = "/authenticated/index.html"
 KEYS_PATH = "/tuxedoapi.html"
 
+# The push stream, which is where the state actually comes from. The slash
+# before "G." is required: without it the server answers 404. Nothing else is
+# needed - no token, no query string, just the session cookie.
+PUSH_PATH = "/SimpleDebugger.interface/G."
+PUSH_BOUNDARY = "EH912ZZ"
+PUSH_CONNECT_TIMEOUT = 15
+# No total timeout applies to the stream at all - the point of the request is
+# to stay open. This is how long silence may last before the connection is
+# treated as dead and reopened. An idle panel is NOT silent: it repeats the
+# partition status on its own timer roughly every 33 seconds (measured over a
+# five-minute hold, 81 frames, last at t+296 s), so a gap this long is three
+# missed refreshes and means the socket, not the house, has gone quiet.
+PUSH_READ_TIMEOUT = 90
+PUSH_BACKOFF_INITIAL = 5.0
+# Reconnecting costs the panel nothing measurable - six connect/disconnect
+# cycles on one session left noOfClient at 1 every time and the session
+# usable - so the ceiling is about not hammering a panel that is down, not
+# about protecting a scarce slot.
+PUSH_BACKOFF_MAX = 300.0
+
+# How long a command waits for the panel to report the change on the stream
+# before falling back to a poll. Arming pushes its first exit-delay frame
+# within seconds; the entity's PARALLEL_UPDATES = 1 holds other calls to it
+# for at most this long, so it is a bound rather than a target.
+COMMAND_CONFIRM_TIMEOUT = 8.0
+
+# Where a status came from, on TuxedoStatus.source.
+SOURCE_STREAM = "stream"
+SOURCE_POLL = "poll"
+# Neither source reported the change, so the entity shows what was asked for
+# rather than a state the panel never confirmed.
+SOURCE_ASSUMED = "assumed"
+
+# The fallback poll, and the initial sync before the stream is open.
 SCAN_INTERVAL = timedelta(seconds=30)
 
 
@@ -36,7 +71,54 @@ def issue_id(key: str, entry_id: str) -> str:
     return f"{key}_{entry_id}"
 
 
-# Tuxedo panel status strings we know about, mapped in alarm_control_panel.py.
-# See ../../../docs/tuxedo_touch_api_notes.md for the full list observed and
-# where this list came from.
+# Tuxedo panel status strings we know about, and the alarm state each one
+# means. The values are Home Assistant's own AlarmControlPanelState values as
+# plain text: alarm_control_panel.py turns them into the enum, and keeping the
+# map here lets the coordinator - which must not import a platform module -
+# ask whether a display text names a state at all.
+#
+# One map serves BOTH sources, because both carry the same strings: the push
+# stream's display text is the text GetSecurityStatus returns. See
+# ../../../docs/tuxedo_touch_api_notes.md for where the list came from and
+# what each source spells for each mode.
+STATUS_STATES: dict[str, str] = {
+    "Ready To Arm": "disarmed",
+    "Ready Fault": "disarmed",
+    "Not Ready": "disarmed",
+    "Not Ready Fault": "disarmed",
+    "Armed Stay": "armed_home",
+    "Armed Stay Fault": "armed_home",
+    "Armed Away": "armed_away",
+    "Armed Away Fault": "armed_away",
+    "Armed Night": "armed_night",
+    "Armed Night Fault": "armed_night",
+    "Armed Instant": "armed_night",
+    "Armed Instant Fault": "armed_night",
+    "Armed Instant Alarm": "triggered",
+    "Entry Delay Active": "pending",
+    "Not Ready Alarm": "triggered",
+    "Armed Stay Alarm": "triggered",
+    "Armed Night Alarm": "triggered",
+    "Armed Away Alarm": "triggered",
+}
+
+# The exit-delay countdown as the panel spells it, double space included.
+# Matching it loosely would also swallow statuses that are not a countdown.
+COUNTDOWN_RE = re.compile(r"^(\d+)\s+Secs Remaining$")
+
+# What the panel's status cache answers with while it is empty. It is a
+# failed read rather than a state, and it cannot appear on the push stream.
 STATUS_NOT_AVAILABLE = "Not available"
+
+
+def status_names_a_state(text: str) -> bool:
+    """Whether a display text says what the partition is doing, on its own.
+
+    False for a text no firmware anyone has watched produces. It matters
+    because the two sources are not equal: the stream's armed flag says
+    whether the partition is armed but never in which mode, so a stream text
+    that fails this leaves the mode unsettled and the poll's own reading is
+    what disambiguates it.
+    """
+    stripped = text.strip()
+    return stripped in STATUS_STATES or COUNTDOWN_RE.match(stripped) is not None
