@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -45,6 +46,7 @@ from .const import (
     PUSH_CONNECT_TIMEOUT,
     PUSH_PATH,
     PUSH_READ_TIMEOUT,
+    PUSH_STABLE_AFTER,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -226,8 +228,8 @@ class TuxedoPushStream:
         self.client_count: int | None = None
         self.frames = 0
         # How long the next reconnect waits. An attribute rather than a local
-        # so the reset below can be asserted, and so diagnostics can say how
-        # far a failing stream has backed off.
+        # so the reset can be asserted, and so diagnostics can say how far a
+        # failing stream has backed off.
         self.reconnect_wait = PUSH_BACKOFF_INITIAL
 
     async def async_run(self) -> None:
@@ -239,8 +241,8 @@ class TuxedoPushStream:
                 await self._async_stream_once()
                 # The connection worked, so the next expiry gets its own
                 # immediate re-login rather than inheriting the last one's.
-                # (The wait is reset the moment a connection comes up; see
-                # _set_connected.)
+                # (Whether the wait is reset is a higher bar, and is decided
+                # in _async_stream_once: see PUSH_STABLE_AFTER.)
                 expiry_retried = False
             except asyncio.CancelledError:
                 raise
@@ -337,6 +339,8 @@ class TuxedoPushStream:
 
             decoder = _FrameDecoder(_boundary_of(resp.headers.get("Content-Type")))
             self._set_connected(True)
+            started = time.monotonic()
+            frames_before = self.frames
             try:
                 async for chunk in resp.content.iter_any():
                     # latin-1, never utf-8: the state flag is a raw byte.
@@ -344,19 +348,20 @@ class TuxedoPushStream:
                         self._handle_frame(frame)
             finally:
                 self._set_connected(False)
+                # Whether this connection earned the next outage a fresh
+                # start. Both halves are needed: the panel sends its setCid
+                # part before a body that ends at once, so a frame having
+                # arrived proves nothing on its own, and a half-open socket
+                # can sit there past the threshold delivering nothing.
+                held = time.monotonic() - started >= PUSH_STABLE_AFTER
+                if held and self.frames > frames_before:
+                    self.reconnect_wait = PUSH_BACKOFF_INITIAL
 
     def _set_connected(self, connected: bool) -> None:
         if connected == self.connected:
             return
         self.connected = connected
-        if connected:
-            # A connection that came up starts the next outage from scratch.
-            # Without this, a night of occasional blips ratchets the wait to
-            # the five-minute ceiling and leaves it there, so a stream that
-            # had been healthy for hours would come back slowly for a reason
-            # that has nothing to do with the panel.
-            self.reconnect_wait = PUSH_BACKOFF_INITIAL
-        else:
+        if not connected:
             self.connection_id = None
         self._on_connection_change(connected)
 

@@ -52,6 +52,14 @@ PUSH_CONNECT_TIMEOUT = 15
 # missed refreshes and means the socket, not the house, has gone quiet.
 PUSH_READ_TIMEOUT = 90
 PUSH_BACKOFF_INITIAL = 5.0
+# How long a connection has to last before it counts as one that WORKED, and
+# so earns the backoff a reset back to the floor. Longer than the ~33 s status
+# repeat above, so a connection that qualifies carried at least one full cycle
+# of the panel talking; short enough that a stream that has genuinely been up
+# resets on its way down. Resetting on the response headers instead - before a
+# byte of the body has been read - makes every failure after a 200 look like a
+# healthy connection, which turns the ceiling below off for that whole class.
+PUSH_STABLE_AFTER = 60.0
 # Reconnecting costs the panel nothing measurable - six connect/disconnect
 # cycles on one session left noOfClient at 1 every time and the session
 # usable - so the ceiling is about not hammering a panel that is down, not

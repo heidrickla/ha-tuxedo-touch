@@ -119,6 +119,13 @@ class FakePanel:
         # What the stream endpoint answers with: 200 opens a stream, 404 is
         # firmware without one, 302/401 is a dead session cookie.
         self.push_status = push_status
+        # A 200 that carries the real multipart header and the setCid part
+        # and then ends the response. The failure the fixture could not
+        # express before, and therefore the one nothing tested: an embedded
+        # web server restarting, or a middlebox, accepts the connection and
+        # hangs up. Note it still delivers a frame, so "did anything arrive"
+        # is not on its own a test of whether the connection was healthy.
+        self.stream_ends_at_once = False
         self.empty_command_body = empty_command_body
         # A real panel reports what a command did on the stream, seconds
         # later; with this on, so does this one.
@@ -279,6 +286,8 @@ class FakePanel:
         )
         await resp.prepare(request)
         await resp.write(b"--" + BOUNDARY.encode() + b"\r\n['setCid', 7]")
+        if self.stream_ends_at_once:
+            return resp
         self._writers.append(resp)
         self._drop.clear()
         self.stream_open.set()
