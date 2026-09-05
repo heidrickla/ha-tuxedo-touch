@@ -42,9 +42,10 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
 
     The session comes from Home Assistant's helper, so it runs on the shared
     connector. It is a session of its own only for its cookie jar: the panel
-    sets a session cookie with a random name per login. (The client's custom
+    sets a session cookie with a random name per login. (The permissive
     SSLContext is passed per-request and would work on any session; it is not
-    the reason for a separate session.)
+    the reason for a separate session, and it is shared with every other
+    client so that they all queue on one pooled connection per panel.)
     """
 
     def __init__(self, hass: HomeAssistant, entry: TuxedoTouchConfigEntry) -> None:
@@ -204,5 +205,13 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         connector, so closing it would close that pool for every integration.
         Home Assistant replaces close() with a warn-and-no-op wrapper for
         exactly this reason. A detached session reports itself closed.
+
+        What detach() does NOT do is close the sockets this entry used: they
+        stay in the shared pool until it drops them as idle, fifteen seconds
+        after the last poll. That is deliberate rather than tolerated - the
+        next client to want this panel, a config flow probe included, is on
+        the same pool key (see api._legacy_ssl_context) and picks that
+        connection up rather than opening a second one to a unit that serves
+        one at a time.
         """
         self.session.detach()
