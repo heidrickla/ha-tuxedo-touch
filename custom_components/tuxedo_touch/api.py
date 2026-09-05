@@ -32,7 +32,7 @@ import aiohttp
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from .const import API_BASE_PATH, KEYS_PATH, LOGIN_PATH
+from .const import API_BASE_PATH, KEYS_PATH, LOGIN_PATH, SOURCE_POLL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -65,10 +65,22 @@ class TuxedoTouchHttpsRequiredError(TuxedoTouchError):
     """
 
 
-@dataclass
+@dataclass(frozen=True)
 class TuxedoStatus:
+    """One reported panel status, and where it came from.
+
+    A poll fills in the two fields the REST answer carries. The push stream
+    fills in the rest: it says outright whether the partition is armed (its
+    0xFE/0xFF flag) and carries the exit-delay countdown, neither of which
+    the display text on its own settles.
+    """
+
     status: str
     color: str | None = None
+    source: str = SOURCE_POLL
+    # None from a poll, which reports display text and nothing else.
+    armed: bool | None = None
+    seconds_remaining: int | None = None
 
 
 @cache
@@ -136,6 +148,41 @@ class TuxedoTouchClient:
     @property
     def base_url(self) -> str:
         return f"{self._scheme}://{self._host}:{self._port}"
+
+    @property
+    def session(self) -> aiohttp.ClientSession:
+        """The session every request of this client's runs on.
+
+        Exposed so the push stream opens its long-lived request on the same
+        session, and therefore the same cookie handling and the same
+        connection pool, rather than making a second one of its own.
+        """
+        return self._session
+
+    @property
+    def ssl_arg(self) -> ssl.SSLContext | bool:
+        """What to pass as aiohttp's `ssl=`, shared for the pool key's sake."""
+        return self._ssl_ctx or True
+
+    async def async_session_cookie(self) -> str:
+        """Log in if needed and hand back the cookie a stream opens with.
+
+        The push endpoint authenticates on the session cookie alone - no
+        authtoken, no identity header, no encrypted body - so this is the
+        whole of what it needs from the client.
+        """
+        await self._ensure_authenticated()
+        if self._session_cookie is None:
+            raise TuxedoTouchError("no session cookie after authenticating")
+        return self._session_cookie
+
+    def invalidate_session(self) -> None:
+        """Drop the session so the next caller logs in again.
+
+        The stream calls this when the panel refuses the cookie it opened
+        with; _call() does the same thing itself on a 401.
+        """
+        self._invalidate_session()
 
     # ------------------------------------------------------------------
     # Login
@@ -350,7 +397,11 @@ class TuxedoTouchClient:
     # the request URL includes it, and uses the literal device id "Browser".
     # ------------------------------------------------------------------
     async def _call(
-        self, endpoint_path: str, plain_params: str, retry: bool = True
+        self,
+        endpoint_path: str,
+        plain_params: str,
+        retry: bool = True,
+        allow_empty: bool = False,
     ) -> dict[str, Any]:
         await self._ensure_authenticated()
         # Snapshot the whole session state this request runs under: a
@@ -410,7 +461,12 @@ class TuxedoTouchClient:
                     # another login.
                     if self._session_cookie == cookie_used:
                         self._invalidate_session()
-                    return await self._call(endpoint_path, plain_params, retry=False)
+                    return await self._call(
+                        endpoint_path,
+                        plain_params,
+                        retry=False,
+                        allow_empty=allow_empty,
+                    )
                 if resp.status != 200:
                     raise TuxedoTouchError(f"API call returned HTTP {resp.status}")
                 try:
@@ -421,6 +477,23 @@ class TuxedoTouchClient:
                     raise TuxedoTouchError(
                         f"API answered 200 with a non-JSON body: {err}"
                     ) from err
+                if payload is None:
+                    # aiohttp answers None, not a decode error, for a body
+                    # that is empty or all whitespace - which is exactly what
+                    # the command endpoints send. A command answering 200
+                    # with nothing in it has done the thing and said so on
+                    # the push stream instead: the panel's own client reads
+                    # command results there, not in the reply. Only the
+                    # callers that expect that accept it; an empty answer to
+                    # a read is still a failed read.
+                    if not allow_empty:
+                        raise TuxedoTouchError("API answered 200 with an empty body")
+                    _LOGGER.debug(
+                        "%s answered 200 with an empty body; the result "
+                        "comes on the push stream",
+                        endpoint_path,
+                    )
+                    return {}
         except (aiohttp.ClientError, TimeoutError) as err:
             raise TuxedoTouchConnectionError(str(err)) from err
 
@@ -444,11 +517,17 @@ class TuxedoTouchClient:
     # Public operations
     # ------------------------------------------------------------------
     async def get_status(self) -> TuxedoStatus:
-        """Fetch the panel's current status.
+        """Fetch the panel's cached status. The fallback under the stream.
 
         GetSecurityStatus takes no partition parameter on this firmware - the
         plaintext body is just "operation=get", unlike arm/disarm which do
-        send a pID (see docs/tuxedo_touch_api_notes.md).
+        send a pID. The panel's own client sends an empty body here and the
+        endpoint accepts both, so the parameter is ignored (see
+        docs/tuxedo_touch_api_notes.md).
+
+        What it reads is a cache the firmware fills from ECP messages, which
+        is why it can answer "Not available" on a panel that is working
+        perfectly. The push stream does not read it.
         """
         result = await self._call("/GetSecurityStatus", "operation=get")
         return TuxedoStatus(
@@ -456,10 +535,19 @@ class TuxedoTouchClient:
         )
 
     async def arm(self, mode: str, code: str, partition: int = 1) -> dict[str, Any]:
-        """mode is one of STAY, AWAY, NIGHT."""
+        """mode is one of STAY, AWAY, NIGHT.
+
+        The return value carries nothing worth acting on - it is the panel
+        acknowledging the request, and on some firmware it is an empty body.
+        What the panel then did shows up on the push stream.
+        """
         params = f"arming={mode}&pID={partition}&ucode={code}&operation=set"
-        return await self._call("/AdvancedSecurity/ArmWithCode", params)
+        return await self._call(
+            "/AdvancedSecurity/ArmWithCode", params, allow_empty=True
+        )
 
     async def disarm(self, code: str, partition: int = 1) -> dict[str, Any]:
         params = f"pID={partition}&ucode={code}&operation=set"
-        return await self._call("/AdvancedSecurity/DisarmWithCode", params)
+        return await self._call(
+            "/AdvancedSecurity/DisarmWithCode", params, allow_empty=True
+        )
