@@ -176,6 +176,21 @@ def version_tuple(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
 
 
+def quoted_placeholders(node: Any, path: str = "") -> list[str]:
+    """Dotted paths whose text wraps a placeholder in single quotes.
+
+    The frontend reads single quotes as ICU escaping, so a quoted placeholder
+    is printed as its own name instead of the value. hassfest rejects it.
+    """
+    bad: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            bad.extend(quoted_placeholders(value, f"{path}.{key}" if path else key))
+    elif isinstance(node, str) and re.search(r"'[^']*\{\w+\}[^']*'", node):
+        bad.append(path)
+    return bad
+
+
 def main() -> int:
     manifest = read_json(COMP, "manifest.json")
     const_src = read(COMP, "const.py")
@@ -260,6 +275,11 @@ def main() -> int:
     check(
         strings == en,
         "strings.json and translations/en.json differ - copy strings.json over",
+    )
+    quoted = quoted_placeholders(strings)
+    check(
+        not quoted,
+        f"strings.json quotes placeholders at {quoted} - drop the single quotes",
     )
 
     # ---------------------------------------------------------- actions

@@ -113,7 +113,7 @@
     },
     "duplicate_entry": {
       "title": "Two Tuxedo Touch entries reach one panel",
-      "description": "'{title}' and '{other}' both reach the same panel and partition by different addresses, so only one of them can hold the panel's identity. Remove whichever entry you do not want under Settings > Devices & services; the other adopts the panel's MAC address on its next start."
+      "description": "{title} and {other} both reach the same panel and partition by different addresses, so only one of them can hold the panel's identity. Remove whichever entry you do not want under Settings > Devices & services; the other adopts the panel's MAC address on its next start."
     }
   }
 }
