@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Coroutine
 from typing import Any
 
@@ -22,8 +21,8 @@ from homeassistant.helpers.device_registry import (
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import TuxedoTouchError
-from .const import CONF_MAC, DOMAIN
+from .api import TuxedoStatus, TuxedoTouchError
+from .const import CONF_MAC, COUNTDOWN_RE, DOMAIN, STATUS_STATES
 from .coordinator import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
 
 # The panel is a fragile embedded web server with per-session crypto state;
@@ -32,37 +31,42 @@ from .coordinator import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
 # and the API client additionally locks its login sequence).
 PARALLEL_UPDATES = 1
 
-# Status strings observed from GetSecurityStatus. The exit-delay countdown
-# is matched separately below (SECS_REMAINING_RE); anything else
+# The status strings the panel reports, as alarm states. One map serves both
+# sources because both carry the same strings: the push stream's display text
+# is the text GetSecurityStatus returns ("Ready To Arm" disarmed,
+# "59  Secs Remaining" during an exit delay, "Armed Stay" and the rest armed).
+# const.STATUS_STATES holds it as plain text so the coordinator can ask
+# whether a text names a state without importing a platform module; this is
+# the same table with Home Assistant's enum in place of those strings.
+# The countdown is matched separately (COUNTDOWN_RE); anything else
 # unrecognized falls back to None (unknown) rather than guessing.
-# "Not available" is deliberately absent and never arrives here: the
-# coordinator fails the poll on it, so the entity is unavailable for that
-# outage instead of rendering the placeholder as a state.
+# "Not available" is deliberately absent and never arrives here: it is the
+# REST cache's placeholder, the stream cannot produce it, and the coordinator
+# fails the poll on it rather than rendering it as a state.
 STATUS_MAP: dict[str, AlarmControlPanelState] = {
-    "Ready To Arm": AlarmControlPanelState.DISARMED,
-    "Ready Fault": AlarmControlPanelState.DISARMED,
-    "Not Ready": AlarmControlPanelState.DISARMED,
-    "Not Ready Fault": AlarmControlPanelState.DISARMED,
-    "Armed Stay": AlarmControlPanelState.ARMED_HOME,
-    "Armed Stay Fault": AlarmControlPanelState.ARMED_HOME,
-    "Armed Away": AlarmControlPanelState.ARMED_AWAY,
-    "Armed Away Fault": AlarmControlPanelState.ARMED_AWAY,
-    "Armed Night": AlarmControlPanelState.ARMED_NIGHT,
-    "Armed Night Fault": AlarmControlPanelState.ARMED_NIGHT,
-    "Armed Instant": AlarmControlPanelState.ARMED_NIGHT,
-    "Armed Instant Fault": AlarmControlPanelState.ARMED_NIGHT,
-    "Armed Instant Alarm": AlarmControlPanelState.TRIGGERED,
-    "Entry Delay Active": AlarmControlPanelState.PENDING,
-    "Not Ready Alarm": AlarmControlPanelState.TRIGGERED,
-    "Armed Stay Alarm": AlarmControlPanelState.TRIGGERED,
-    "Armed Night Alarm": AlarmControlPanelState.TRIGGERED,
-    "Armed Away Alarm": AlarmControlPanelState.TRIGGERED,
+    text: AlarmControlPanelState(state) for text, state in STATUS_STATES.items()
 }
 
-# Exit-delay countdown while arming, e.g. "59  Secs Remaining" (note the
-# double space - format confirmed against real hardware polling through a
-# full Arm Stay exit delay).
-SECS_REMAINING_RE = re.compile(r"^\d+\s+Secs Remaining$")
+
+def reports_armed(status: TuxedoStatus) -> bool | None:
+    """Whether a reported status means the partition is armed, or arming.
+
+    The push stream says so outright: its 0xFE/0xFF flag is the panel's own
+    answer, independent of the display text. A poll carries display text and
+    nothing else, so the map above decides - and a text neither the map nor
+    the countdown knows settles nothing, which is None rather than False.
+
+    Used to decide whether what the panel just reported is the command that
+    was sent taking effect; see TuxedoTouchCoordinator.async_send_command.
+    """
+    if status.armed is not None:
+        return status.armed
+    state = STATUS_MAP.get(status.status)
+    if state is not None:
+        return state is not AlarmControlPanelState.DISARMED
+    if COUNTDOWN_RE.match(status.status.strip()):
+        return True
+    return None
 
 
 async def async_setup_entry(
@@ -119,14 +123,29 @@ class TuxedoAlarmPanel(
         )
 
     @property
+    def available(self) -> bool:
+        """Available while either source is working.
+
+        Not the CoordinatorEntity default, which follows the poll alone: the
+        stream is the primary source here, and a poll answering the firmware's
+        "Not available" placeholder while the stream is delivering real
+        statuses is not an outage of anything.
+        """
+        return self.coordinator.panel_available
+
+    @property
     def alarm_state(self) -> AlarmControlPanelState | None:
         status = self.coordinator.data
         if status is None:
             return None
         if (state := STATUS_MAP.get(status.status)) is not None:
             return state
-        if SECS_REMAINING_RE.match(status.status.strip()):
+        if COUNTDOWN_RE.match(status.status.strip()):
             return AlarmControlPanelState.ARMING
+        # A text neither map nor countdown knows. The stream's flag says
+        # whether the partition is armed but not in which mode, and naming a
+        # mode the panel did not would be a guess; the next status settles it,
+        # and the poll's own reading is what disambiguates in the meantime.
         return None
 
     @property
@@ -134,7 +153,17 @@ class TuxedoAlarmPanel(
         status = self.coordinator.data
         if status is None:
             return {}
-        return {"tuxedo_status": status.status, "tuxedo_color": status.color}
+        return {
+            "tuxedo_status": status.status,
+            "tuxedo_color": status.color,
+            # Which source reported it: "stream" (the panel pushed it),
+            # "poll" (GetSecurityStatus) or "assumed" (neither could report
+            # the command that was just sent).
+            "tuxedo_source": status.source,
+            # Seconds left of the exit delay, straight from the countdown the
+            # panel pushes once a second; None whenever it is not counting.
+            "arming_seconds_remaining": status.seconds_remaining,
+        }
 
     def _resolve_code(self, code: str | None) -> str:
         resolved = code or self._entry.data.get(CONF_CODE)
@@ -145,31 +174,41 @@ class TuxedoAlarmPanel(
         return resolved
 
     async def _async_command(
-        self, command: Coroutine[Any, Any, dict[str, Any]], optimistic_status: str
+        self,
+        command: Coroutine[Any, Any, dict[str, Any]],
+        expect_armed: bool,
+        assumed_status: str,
     ) -> None:
-        """Run one panel command, then reflect it in the entity immediately.
+        """Run one panel command and wait for the panel to report the change.
 
-        The optimistic update works around the GetSecurityStatus
-        "Not available" quirk - see TuxedoTouchCoordinator.set_optimistic_status.
+        Arm and disarm answer with a zero-byte body; what they did shows up
+        on the push stream. `expect_armed` is what to watch for there - the
+        stream's own armed flag, which needs no display text to be read -
+        and the coordinator falls back to a poll, then to the assumed status,
+        if the panel never reports it.
         """
+
+        def confirms(status: TuxedoStatus) -> bool:
+            return reports_armed(status) is expect_armed
+
         try:
-            await command
+            await self.coordinator.async_send_command(command, confirms, assumed_status)
         except TuxedoTouchError as err:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="command_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
-        self.coordinator.set_optimistic_status(optimistic_status)
 
     async def _async_arm(
-        self, mode: str, optimistic_status: str, code: str | None
+        self, mode: str, assumed_status: str, code: str | None
     ) -> None:
         await self._async_command(
             self.coordinator.client.arm(
                 mode, self._resolve_code(code), self.coordinator.partition
             ),
-            optimistic_status,
+            True,
+            assumed_status,
         )
 
     async def async_alarm_disarm(self, code: str | None = None) -> None:
@@ -177,6 +216,7 @@ class TuxedoAlarmPanel(
             self.coordinator.client.disarm(
                 self._resolve_code(code), self.coordinator.partition
             ),
+            False,
             "Ready To Arm",
         )
 
