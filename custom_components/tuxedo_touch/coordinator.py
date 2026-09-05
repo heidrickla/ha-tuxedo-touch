@@ -566,10 +566,21 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         # the poll's own reading is the only thing that can settle it - this
         # is what a firmware spelling "Armed Instant" some other way would
         # look like. That case falls through and the poll is used.
+        #
+        # Which is why the source has to be the stream's, not merely a status
+        # that names a state. When the stream keeps sending a text this
+        # integration does not know, _async_push_status holds the mode the
+        # poll named and lets the stream's flag corroborate it - so the held
+        # status names a state while the STREAM has still named no mode at
+        # all. Suppressing the poll on that would latch it: the panel could
+        # change mode and the entity would go on reporting the one the poll
+        # last saw, for as long as the stream stayed up. Every 30 s the poll
+        # re-reads the mode, which is the granularity the fallback promises.
         if (
             self.push.connected
             and self._push_status_seen
             and self.data is not None
+            and self.data.source == SOURCE_STREAM
             and status_names_a_state(self.data.status)
         ):
             _LOGGER.debug(

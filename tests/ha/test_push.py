@@ -159,6 +159,18 @@ async def test_a_streamed_text_the_map_does_not_know_leaves_the_poll_to_settle_i
     assert _state(hass).state == "armed_away"
     assert _state(hass).attributes["tuxedo_status"] == "Armed Away"
 
+    # And the poll keeps naming the mode, which is the other half of the
+    # documented fallback. The mode standing here is the POLL's, not
+    # anything the stream said, so suppressing the poll as "the stream is
+    # carrying the state" would latch it: the panel could change mode and the
+    # entity would go on reporting the one the poll last saw.
+    fake_panel.status = "Armed Stay"
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert _state(hass).state == "armed_home"
+    assert _state(hass).attributes["tuxedo_source"] == "poll"
+
 
 async def test_the_entity_is_available_while_either_source_works(
     hass, fake_panel, panel_entry
