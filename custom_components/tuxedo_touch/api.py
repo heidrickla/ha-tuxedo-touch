@@ -76,6 +76,7 @@ class TuxedoStatus:
     """
 
     status: str
+    # Lower case whichever source filled it in: "green", "red", "yellow".
     color: str | None = None
     source: str = SOURCE_POLL
     # None from a poll, which reports display text and nothing else.
@@ -530,8 +531,15 @@ class TuxedoTouchClient:
         perfectly. The push stream does not read it.
         """
         result = await self._call("/GetSecurityStatus", "operation=get")
+        colour = result.get("Color")
         return TuxedoStatus(
-            status=result.get("Status", "Unknown"), color=result.get("Color")
+            status=result.get("Status", "Unknown"),
+            # Normalised here so one vocabulary leaves the client. The panel
+            # capitalises its own word ("Green"); the stream sends a digit
+            # that push.py names in lower case. Left raw, the attribute would
+            # change case with the source and a template comparing it to
+            # "green" would quietly stop matching every time the poll spoke.
+            color=colour.lower() if isinstance(colour, str) else None,
         )
 
     async def arm(self, mode: str, code: str, partition: int = 1) -> dict[str, Any]:

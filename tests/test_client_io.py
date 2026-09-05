@@ -269,7 +269,7 @@ async def test_an_authtoken_without_a_key_is_refused():
 async def test_get_status_logs_in_signs_and_decrypts():
     answers = [
         *login_answers(),
-        FakeResponse(payload=encrypted({"Status": "Armed Away", "Color": "red"})),
+        FakeResponse(payload=encrypted({"Status": "Armed Away", "Color": "Red"})),
     ]
     made, session = client(answers)
 
@@ -285,6 +285,24 @@ async def test_get_status_logs_in_signs_and_decrypts():
     body = kwargs["data"]
     assert body["len"] == str(len(body["param"]))
     assert api.TuxedoTouchClient._aes_decrypt(body["param"], KEY, IV) == "operation=get"
+
+
+@pytest.mark.parametrize(
+    ("sent", "expected"),
+    [("Green", "green"), ("Red", "red"), ("Yellow", "yellow"), (None, None)],
+)
+async def test_the_polls_colour_is_lower_cased_on_the_way_in(sent, expected):
+    """The panel capitalises its colour and the stream sends a digit named in
+    lower case. Both have to leave the client in one vocabulary, or a template
+    comparing the attribute to `green` stops matching whenever the source
+    changes - which it does at every setup and every stream drop."""
+    answer: dict[str, str] = {"Status": "Ready To Arm"}
+    if sent is not None:
+        answer["Color"] = sent
+    answers = [*login_answers(), FakeResponse(payload=encrypted(answer))]
+    made, _ = client(answers)
+
+    assert (await made.get_status()).color == expected
 
 
 async def test_a_second_call_reuses_the_session_rather_than_logging_in_again():

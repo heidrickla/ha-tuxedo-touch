@@ -69,7 +69,7 @@ The entity carries four attributes:
 | Attribute | What it is |
 |---|---|
 | `tuxedo_status` | the panel's own status string, as reported |
-| `tuxedo_color` | the colour the panel showed it in: `green`, `red` or `yellow` |
+| `tuxedo_color` | the colour the panel showed it in: `green`, `red` or `yellow`, **lower case whichever source reported it** (the poll's own word is `Green`, and is lower-cased on the way in) |
 | `tuxedo_source` | where it came from: `stream` (the panel pushed it), `poll` (the 30 s status read) or `assumed` (a command the panel accepted but neither source reported) |
 | `arming_seconds_remaining` | seconds left of the exit delay while the state is `arming`, `null` otherwise |
 
