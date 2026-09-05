@@ -4,6 +4,44 @@ Notable changes to this integration, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version
 numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [0.3.2] - 2026-09-05
+
+### Fixed
+
+- The alarm entity no longer latches on `unknown` when the panel is having one
+  of its `Not available` spells. The panel intermittently answers that instead
+  of a security status - its own firmware quirk, not something this integration
+  can talk it out of - and the entity used to store the placeholder as its state
+  whenever there was no earlier status to keep, which is exactly the case on the
+  first poll after a restart or a reload. Every later `Not available` then
+  preserved that stored placeholder, so the entity sat on `unknown` until
+  somebody armed or disarmed. `Not available` is now treated as a failed read on
+  every poll, the first one included: the entity is `unavailable` for as long as
+  the panel keeps saying it, the last real status is kept underneath, and the
+  first genuine status brings the entity back on its own. The log gets one line
+  when an outage starts and one when it ends, rather than one per poll. Home
+  Assistant skips unavailable entities in service calls, so arming and disarming
+  from Home Assistant are out for the length of an outage as well; the panel's
+  touchscreen is not, and this replaces an entity that read `unknown` while
+  claiming to be fine.
+- The entry still loads while the panel is in one of those spells. A panel that
+  answers `Not available` has answered - the address, port, scheme and
+  credentials are all proven by that reply - so refusing to set the entry up
+  would take the device, the entity and its history away for an outage that can
+  last hours. Only a panel that cannot be read at all still holds setup back.
+- A reconfigure no longer runs its check against the panel while a poll of this
+  integration's own is still in flight. Standing the entry down stops the next
+  poll but says nothing about one already running, and that poll is holding the
+  connection to a unit that serves one client at a time - so the check could
+  still be the second client the panel answers with silence. Unloading now waits
+  for the poll in flight before it returns, which is what the reconfigure form
+  awaits before it dials.
+
+### Changed
+
+- Polls are serialized against each other, so two of them can never be on the
+  panel at once however they were triggered.
+
 ## [0.3.1] - 2026-09-05
 
 ### Fixed
