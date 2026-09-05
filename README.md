@@ -146,7 +146,14 @@ discovered device. Opening it asks only for what a lease cannot say: the web log
 username and password, the keypad code and the partition, plus the port and the HTTPS
 toggle in case you turned "Secured Web Server Access" off. The integration logs in to the
 panel before creating the entry, exactly as the manual form does, and keys the entry on
-the MAC the lease carried. Add the discovered panel once per partition.
+the MAC the lease carried.
+
+**A second partition is added by hand.** Discovery offers a panel once. As soon as one
+entry carries the panel's MAC, later leases from it are treated as a move rather than a
+new device, so the discovered card does not come back for partition 2. Add it with
+Settings -> Devices & Services -> Add integration -> Honeywell Tuxedo Touch, giving the
+same address and the other partition number; the next lease Home Assistant sees for that
+address hands the new entry the panel's MAC, and from then on both entries move together.
 
 **A panel you ignore stays ignored.** Dismissing the discovered card with Ignore keeps
 Home Assistant from raising it again, however often the panel renews its lease. Undo it
