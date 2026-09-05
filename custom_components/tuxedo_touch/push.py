@@ -80,6 +80,13 @@ STATUS_CMDS = frozenset({CMD_PARTITION_STATUS, CMD_UNSOLICITED})
 # sending frames; the buffer is dropped rather than grown without limit.
 MAX_BUFFER = 65536
 
+# How many connections in a row may fail for a reason this module does not
+# name before the stream stops rather than reconnecting. An unexpected
+# exception is a bug in here, not a panel that is down: retrying it on the
+# ordinary backoff is a new connection every few seconds for ever, against a
+# unit that serves one at a time, for an answer that will not change.
+MAX_UNEXPECTED_FAILURES = 3
+
 
 class PushStreamUnsupported(TuxedoTouchError):
     """The panel has no push endpoint - it answered 404 rather than a stream.
@@ -151,7 +158,7 @@ def decode_status_frame(payload: str) -> PushStatus | None:
         countdown = COUNTDOWN_RE.match(text)
         return PushStatus(
             cmd=cmd,
-            partition=int(fields[2]) if fields[2].isdigit() else None,
+            partition=_partition_of(fields[2]),
             armed=armed,
             colour=colour,
             text=text,
@@ -159,6 +166,22 @@ def decode_status_frame(payload: str) -> PushStatus | None:
             raw=payload,
         )
     return None
+
+
+def _partition_of(field: str) -> int | None:
+    """The partition the frame names, or None when it does not name one.
+
+    The conversion IS the guard, rather than a different question asked
+    alongside it. str.isdigit() is not int(): the latin-1 superscripts
+    (0xB9/0xB2/0xB3) satisfy the first and raise ValueError on the second,
+    and latin-1 is how this stream must be decoded, so those bytes are
+    exactly what this decoder can see. That ValueError was raised inside the
+    read loop, where nothing in async_run's except list catches it.
+    """
+    try:
+        return int(field)
+    except ValueError:
+        return None
 
 
 def next_backoff(previous: float) -> float:
@@ -224,6 +247,13 @@ class TuxedoPushStream:
         # the stream has stopped rather than backed off. Only a reauth and the
         # reload it brings starts a stream again.
         self.auth_failed = False
+        # The third terminal state, and the one that says a bug rather than a
+        # panel: the loop failed repeatedly for a reason this module does not
+        # name. Reported in diagnostics beside the other two, so a downloaded
+        # report stops claiming a reconnect is pending for a task that has
+        # stopped.
+        self.stopped = False
+        self.last_error: str | None = None
         self.connection_id: int | None = None
         self.client_count: int | None = None
         self.frames = 0
@@ -236,6 +266,7 @@ class TuxedoPushStream:
         """Keep the stream open for as long as this task is not cancelled."""
         self.reconnect_wait = PUSH_BACKOFF_INITIAL
         expiry_retried = False
+        unexpected_failures = 0
         while True:
             try:
                 await self._async_stream_once()
@@ -244,6 +275,7 @@ class TuxedoPushStream:
                 # (Whether the wait is reset is a higher bar, and is decided
                 # in _async_stream_once: see PUSH_STABLE_AFTER.)
                 expiry_retried = False
+                unexpected_failures = 0
             except asyncio.CancelledError:
                 raise
             except PushStreamUnsupported:
@@ -303,6 +335,41 @@ class TuxedoPushStream:
                 return
             except (TuxedoTouchError, aiohttp.ClientError, TimeoutError) as err:
                 _LOGGER.debug("Push stream dropped (%s); reconnecting", err)
+                unexpected_failures = 0
+            except Exception as err:
+                # Anything this module does not name is a bug in here, and it
+                # used to end the task by propagating - permanently, with no
+                # reconnect, while the finally in _async_stream_once had
+                # already cleared `connected` so the coordinator logged
+                # "reconnecting" and diagnostics reported "backing off" about
+                # a task that was dead. Home Assistant attaches no
+                # error-logging callback to a background task and the
+                # coordinator holds a reference, so even the traceback did
+                # not reach the log until garbage collection.
+                #
+                # CancelledError is re-raised above and is a BaseException, so
+                # this cannot swallow cancellation.
+                unexpected_failures += 1
+                self.last_error = f"{type(err).__name__}: {err}"
+                _LOGGER.exception("The push stream failed unexpectedly")
+                if unexpected_failures >= MAX_UNEXPECTED_FAILURES:
+                    # Terminal, like the 404 and the refused credentials: a
+                    # deterministic fault would otherwise take a new
+                    # connection every few seconds for ever from a panel that
+                    # serves one at a time, and the poll would be contending
+                    # with it for exactly that connection.
+                    self.stopped = True
+                    _LOGGER.warning(
+                        "The panel's push stream has stopped after %s "
+                        "unexpected failures (%s) and will not reconnect on "
+                        "its own. The status poll carries the alarm state by "
+                        "itself from here, which on some firmware reports "
+                        "'Not available' for long stretches; reloading the "
+                        "integration starts a new stream",
+                        unexpected_failures,
+                        self.last_error,
+                    )
+                    return
 
             await asyncio.sleep(self.reconnect_wait)
             self.reconnect_wait = next_backoff(self.reconnect_wait)
@@ -345,7 +412,23 @@ class TuxedoPushStream:
                 async for chunk in resp.content.iter_any():
                     # latin-1, never utf-8: the state flag is a raw byte.
                     for frame in decoder.feed(chunk.decode("latin-1")):
-                        self._handle_frame(frame)
+                        try:
+                            self._handle_frame(frame)
+                        except Exception:
+                            # One frame the panel spelled in a way nothing
+                            # here expected costs that frame, not the stream.
+                            # Contained at the frame rather than in async_run
+                            # deliberately: reconnecting on a decode bug tears
+                            # down a healthy socket and takes another
+                            # connection from a panel that serves one at a
+                            # time, for a fault the next frame is unaffected
+                            # by. The dispatch into the coordinator is inside
+                            # this guard too, because that is where a listener
+                            # can raise.
+                            _LOGGER.exception(
+                                "Dropping a push frame that could not be handled: %r",
+                                frame,
+                            )
             finally:
                 self._set_connected(False)
                 # Whether this connection earned the next outage a fresh

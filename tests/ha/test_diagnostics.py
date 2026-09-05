@@ -73,11 +73,14 @@ async def test_the_report_says_what_the_stream_is_doing(hass, config_entry, read
 
     push = report["push"]
     assert push["connected"] is False
-    # The two terminal states, both of which mean a stream that is down and
+    # The three terminal states, each of which means a stream that is down and
     # staying down. Without them a report cannot tell "reconnecting" from
-    # "stopped on purpose", which is the first thing to know.
+    # "stopped", which is the first thing to know - and a task that had died
+    # of an unexpected exception used to report exactly like one backing off.
     assert push["unsupported"] is False
     assert push["auth_failed"] is False
+    assert push["stopped"] is False
+    assert push["last_error"] is None
     assert push["connection_id"] is None
     assert push["client_count"] is None
     assert push["frames"] == 0

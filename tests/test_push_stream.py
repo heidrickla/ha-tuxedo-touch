@@ -278,6 +278,74 @@ async def test_a_stream_accepted_and_dropped_at_once_is_not_treated_as_healthy(
         await _stop(task)
 
 
+async def test_a_frame_that_cannot_be_handled_costs_a_frame_not_the_stream(
+    panel, session
+):
+    """One bad frame must not end the task that carries the alarm state.
+
+    Nothing in async_run's except list catches an arbitrary exception, so one
+    raised while decoding or dispatching escaped and the background task
+    ended - permanently, with no reconnect, while _set_connected(False) in
+    the finally left the two terminal flags clear so the log said
+    "reconnecting" and the diagnostics download said "backing off" about a
+    task that was dead. The frame is dropped, the connection is kept, and the
+    next frame is read as normal.
+    """
+    collector = Collector()
+    client = await _client(panel, session)
+    raised: list[str] = []
+
+    def explode(status):
+        raised.append(status.text)
+        raise ValueError("something in a callback went wrong")
+
+    stream = push.TuxedoPushStream(client, explode, collector.connection)
+    task = asyncio.create_task(stream.async_run())
+    try:
+        await wait_until(lambda: stream.connected)
+        await panel.push_status_text("Armed Stay", armed=True)
+        await wait_until(lambda: raised)
+
+        await asyncio.sleep(0.1)
+        assert not task.done()
+        assert stream.connected is True
+        assert panel.stream_requests == 1
+
+        # And the connection is still reading.
+        stream._on_status = collector.status
+        await panel.push_status_text("Ready To Arm", armed=False)
+        await wait_until(lambda: collector.statuses)
+    finally:
+        await _stop(task)
+
+
+async def test_a_stream_that_keeps_failing_unexpectedly_stops_and_says_so(
+    panel, session, monkeypatch
+):
+    """An escape has to end somewhere visible rather than in silence.
+
+    Falling into the ordinary backoff would open a new connection every few
+    seconds for ever on a deterministic bug, against a panel that serves one
+    connection at a time; ending without a flag leaves the log and the
+    diagnostics asserting a reconnect that is not coming. So: a few attempts,
+    then stop, with a terminal flag the diagnostics report carries.
+    """
+    monkeypatch.setattr(push, "PUSH_BACKOFF_INITIAL", 0.01)
+    client = await _client(panel, session)
+    stream = push.TuxedoPushStream(client, lambda status: None, lambda up: None)
+
+    async def broken():
+        raise ValueError("a bug, not a panel")
+
+    monkeypatch.setattr(stream, "_async_stream_once", broken)
+    await asyncio.wait_for(stream.async_run(), timeout=5)
+
+    assert stream.stopped is True
+    assert stream.last_error is not None
+    assert "a bug, not a panel" in stream.last_error
+    assert stream.connected is False
+
+
 async def test_cancelling_the_task_closes_the_stream(panel, session):
     """Unloading an entry is exactly this: the request never ends by itself."""
     collector = Collector()
