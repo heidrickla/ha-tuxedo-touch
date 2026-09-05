@@ -204,25 +204,76 @@ async def test_an_unexpected_status_is_retried(panel, session, monkeypatch):
         await _stop(task)
 
 
-async def test_a_connection_that_comes_up_resets_the_reconnect_wait(
+async def test_a_connection_that_held_resets_the_reconnect_wait(
     panel, session, monkeypatch
 ):
     """Otherwise a night of occasional blips ratchets the wait to the ceiling
     and leaves it there, and a stream healthy for hours comes back slowly for
-    a reason that has nothing to do with the panel."""
+    a reason that has nothing to do with the panel.
+
+    What earns the reset is the connection having HELD, not having opened:
+    it has to outlive PUSH_STABLE_AFTER, which is comfortably longer than the
+    panel's own ~33 s status repeat, and to have carried a frame."""
     monkeypatch.setattr(push, "PUSH_BACKOFF_INITIAL", 0.01)
+    monkeypatch.setattr(push, "PUSH_STABLE_AFTER", 0.05)
     collector = Collector()
     stream, task = await _running(panel, session, collector)
     try:
         # A run of refusals with nothing coming up: the wait grows.
         panel.push_status = 500
         panel.drop_stream()
-        await wait_until(lambda: stream.reconnect_wait > 0.04)
+        await wait_until(lambda: stream.reconnect_wait > 0.16)
 
-        # The panel answers again, and the next outage starts from scratch.
+        # The panel answers again and this time the stream stays up, so the
+        # next outage starts from scratch.
         panel.push_status = 200
         await wait_until(lambda: stream.connected)
-        assert stream.reconnect_wait == 0.01
+        await asyncio.sleep(0.1)
+        panel.drop_stream()
+        await wait_until(lambda: not stream.connected)
+        # The floor, or the floor after one doubling if the loop got round to
+        # its sleep first. Either way it is back at the bottom.
+        assert stream.reconnect_wait <= 0.02
+    finally:
+        await _stop(task)
+
+
+async def test_a_stream_accepted_and_dropped_at_once_is_not_treated_as_healthy(
+    panel, session, monkeypatch
+):
+    """The failure that turned the ceiling off.
+
+    The backoff used to be reset the instant the response status was 200 -
+    before a byte of the body had been read - so every failure AFTER the
+    headers returned the wait to its floor: a body that ends at once, an HTML
+    error page, an RST mid-body, a read timeout on a half-open socket. At the
+    shipped five-second floor that is a connection every five seconds, about
+    720 an hour against an intended worst case of twelve, for the life of the
+    config entry, on a unit whose own notes say repeated retries make it
+    worse and prolonged contention can leave it refusing new connections
+    until it is reset.
+
+    Note the panel here still sends its setCid part, so a frame does arrive.
+    Resetting on "something came through" would not have closed this.
+    """
+    monkeypatch.setattr(push, "PUSH_BACKOFF_INITIAL", 0.02)
+    monkeypatch.setattr(push, "PUSH_BACKOFF_MAX", 1.0)
+    panel.stream_ends_at_once = True
+    client = await _client(panel, session)
+    stream = push.TuxedoPushStream(client, lambda status: None, lambda up: None)
+    task = asyncio.create_task(stream.async_run())
+    try:
+        await wait_until(lambda: panel.stream_requests >= 4)
+        # Every one of those connections delivered its setCid part.
+        assert stream.frames >= 3
+        # Four connections in, the wait has doubled its way up rather than
+        # being pinned at the floor.
+        assert stream.reconnect_wait >= 0.08
+        # And it keeps growing rather than settling: a fixed window buys a
+        # handful of connections, not one every floor-length.
+        requests = panel.stream_requests
+        await asyncio.sleep(0.3)
+        assert panel.stream_requests - requests <= 4
     finally:
         await _stop(task)
 
