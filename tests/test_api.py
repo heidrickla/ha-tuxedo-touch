@@ -264,6 +264,23 @@ check(
     issubclass(api.TuxedoTouchConnectionError, api.TuxedoTouchError),
     True,
 )
+# The one subclassing that must NOT hold. A session fault happens behind a
+# login the panel ACCEPTED, so it is not a credential judgement - and the
+# coordinator turns a credential judgement into a permanent flag on the config
+# entry that setup refuses to load past, while the push stream stops for good.
+# Wired under the auth error, one transient key-page 500 condemns the entry and
+# the reauthentication card then refuses the correct stored password without
+# ever asking the panel.
+check(
+    "a session fault is a TuxedoTouchError",
+    issubclass(api.TuxedoTouchSessionError, api.TuxedoTouchError),
+    True,
+)
+check(
+    "a session fault is NOT an auth error",
+    issubclass(api.TuxedoTouchSessionError, api.TuxedoTouchAuthError),
+    False,
+)
 check(
     "status defaults colour to None",
     api.TuxedoStatus(status="Ready To Arm").color,

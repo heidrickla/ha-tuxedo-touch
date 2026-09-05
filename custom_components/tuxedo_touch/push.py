@@ -269,6 +269,14 @@ class TuxedoPushStream:
                     continue
                 _LOGGER.debug("Push stream session expired again; backing off")
             except TuxedoTouchAuthError as err:
+                # Terminal ONLY because this class means the panel compared a
+                # credential and refused it; api.py raises it nowhere else. A
+                # key page that fails behind an accepted login raises
+                # TuxedoTouchSessionError and lands in the ordinary backoff
+                # below, because a stream that stops for good on a transient
+                # HTTP 500 loses the release's primary state source to a
+                # fault that would have healed on the next reconnect.
+                #
                 # Terminal, exactly like the 404 above, and for a harder
                 # reason. Every reconnect here re-runs the full login
                 # handshake - a login GET and a credential POST - against

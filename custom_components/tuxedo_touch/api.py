@@ -55,13 +55,36 @@ _TIMEOUT = aiohttp.ClientTimeout(total=15)
 # web for good.
 LOGIN_ATTEMPT_BUDGET = 1
 
+# Login-POST statuses that can only mean the panel compared a credential and
+# refused it. Not how THIS firmware refuses - it answers 200 with no session
+# cookie (docs/tuxedo_touch_api_notes.md line 92, and tests/fake_panel.py
+# models it) - but a firmware that used the conventional codes would still be
+# understood. Everything else outside (200, 302) is the embedded web server
+# failing above the login logic, which never reached the comparison and must
+# not spend the budget above: one 503 from a busy panel would otherwise
+# condemn the entry for good.
+CREDENTIAL_VERDICT_STATUSES = frozenset({401, 403})
+# Statuses that say "ask again later" rather than anything about the account.
+RETRYABLE_LOGIN_STATUSES = frozenset({408, 429})
+
 
 class TuxedoTouchError(Exception):
     """Base error talking to the panel."""
 
 
 class TuxedoTouchAuthError(TuxedoTouchError):
-    """Login failed - bad username/password."""
+    """The panel judged a credential of ours and said no.
+
+    Raised at exactly the places the panel's own three-strike counter moves,
+    which are the two `_failed_logins += 1` sites in login(). Nothing else may
+    raise it, and that is load-bearing rather than tidy: the coordinator turns
+    this class into a permanent `credentials_rejected` flag on the config
+    entry and the push stream stops for good on it, so a server or session
+    fault wearing this class condemns the entry - and the reauthentication
+    card then refuses the password that was right all along. Faults after an
+    accepted login are TuxedoTouchSessionError; a login POST that answered
+    without judging anything is a connection or panel error.
+    """
 
 
 class TuxedoTouchCredentialsRefused(TuxedoTouchAuthError):
@@ -72,6 +95,19 @@ class TuxedoTouchCredentialsRefused(TuxedoTouchAuthError):
     and its own class so a caller can tell "the panel said no" from "we did
     not ask". Raised before any request is built, so the panel never sees the
     attempt and never counts it.
+    """
+
+
+class TuxedoTouchSessionError(TuxedoTouchError):
+    """An accepted session did not yield what it should have.
+
+    Deliberately NOT a TuxedoTouchAuthError. Every raise site is downstream of
+    a login POST the panel answered with a session cookie - it accepted the
+    credential and counted a SUCCESSFUL login - so the page behind that
+    session answering badly is a server or session fault. It retries like any
+    other fault: the next poll logs in from scratch, which is the right
+    response to one bad key page, and neither the entry nor the stream is
+    condemned for it.
     """
 
 
@@ -281,15 +317,32 @@ class TuxedoTouchClient:
                 timeout=_TIMEOUT,
                 allow_redirects=False,
             ) as resp:
-                if resp.status not in (200, 302):
+                if resp.status in CREDENTIAL_VERDICT_STATUSES:
                     # The panel has now seen a credential and rejected it.
                     # Counted here and at the missing-cookie raise below,
                     # which are the only two places that is true; a connection
-                    # failure never reaches the panel and never counts.
+                    # failure never reaches the panel and never counts, and
+                    # nor does the branch below.
                     self._failed_logins += 1
                     raise TuxedoTouchAuthError(
                         f"Login POST returned HTTP {resp.status}"
                     )
+                if resp.status not in (200, 302):
+                    # A status the panel cannot have reached the credential
+                    # comparison to produce: the embedded web server is busy,
+                    # mid-firmware-write, or answering for something else
+                    # entirely. The login-page GET twenty lines up already
+                    # draws exactly this line; drawing it here too is what
+                    # keeps a server fault from spending the one-login budget
+                    # and latching the entry into "credentials rejected".
+                    transient = (
+                        500 <= resp.status <= 599
+                        or resp.status in RETRYABLE_LOGIN_STATUSES
+                    )
+                    message = f"Login POST returned HTTP {resp.status}"
+                    if transient:
+                        raise TuxedoTouchConnectionError(message)
+                    raise TuxedoTouchError(message)
                 session_cookie = None
                 for name, morsel in resp.cookies.items():
                     if name.startswith("_zFL"):
@@ -308,7 +361,14 @@ class TuxedoTouchClient:
         self._session_cookie = session_cookie
         _LOGGER.debug("Tuxedo Touch login succeeded")
 
-        await self._fetch_keys()
+        try:
+            await self._fetch_keys()
+        except TuxedoTouchError:
+            # A cookie with no key material behind it is not a session, and
+            # leaving one on the client makes every later call carry a
+            # half-built one. Drop it so the next caller starts clean.
+            self._invalidate_session()
+            raise
         # Only a login that ran the whole way through - cookie AND key
         # material - proves the credentials, so only that gives the budget
         # back. A cookie with no usable keys behind it is not a working login.
@@ -334,7 +394,7 @@ class TuxedoTouchClient:
                 timeout=_TIMEOUT,
             ) as resp:
                 if resp.status != 200:
-                    raise TuxedoTouchAuthError(
+                    raise TuxedoTouchSessionError(
                         f"Key fetch returned HTTP {resp.status} - "
                         "session may be invalid"
                     )
@@ -344,7 +404,7 @@ class TuxedoTouchClient:
 
         match = READIT_RE.search(body)
         if not match:
-            raise TuxedoTouchAuthError(
+            raise TuxedoTouchSessionError(
                 "Could not find key material (#readit) in tuxedoapi.html - "
                 "session may not actually be authenticated"
             )

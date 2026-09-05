@@ -419,6 +419,15 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         try:
             status = await self.client.get_status()
         except TuxedoTouchAuthError as err:
+            # This class means one thing and the whole branch rests on it: the
+            # panel compared a credential and said no. api.py raises it at the
+            # two sites its own three-strike counter moves and nowhere else -
+            # a key page that fails behind an ACCEPTED login is a
+            # TuxedoTouchSessionError and falls through to the retry below,
+            # because writing the flag for one server fault condemns the entry
+            # permanently and the reauthentication card then refuses the
+            # correct password without asking the panel.
+            #
             # Halts polling and starts a reauth flow instead of re-running the
             # full login handshake against doomed credentials every poll.
             # Recorded on the entry first, so a restart before the user gets

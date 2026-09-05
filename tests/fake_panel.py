@@ -101,6 +101,21 @@ class FakePanel:
         self.password = password
         self.status = status
         self.colour = colour
+        # A busy or rebooting embedded server, on the two requests that are
+        # not the credential comparison. Neither is the panel judging a
+        # password, and telling them apart from one that is is what several
+        # of these tests are about.
+        #
+        # The key page: `keys_failures_left` requests answer with
+        # `keys_status` and a body carrying no #readit element, so 500 covers
+        # the non-200 case and 200 covers the missing-key-material case.
+        self.keys_status = 200
+        self.keys_failures_left = 0
+        # The credential POST: `login_post_failures_left` requests answer
+        # `login_post_status` INSTEAD of comparing anything. The attempt is
+        # still counted, because the panel was still asked.
+        self.login_post_status = 503
+        self.login_post_failures_left = 0
         # What the stream endpoint answers with: 200 opens a stream, 404 is
         # firmware without one, 302/401 is a dead session cookie.
         self.push_status = push_status
@@ -183,6 +198,11 @@ class FakePanel:
         # Counted BEFORE the comparison: what a panel counts is the attempt,
         # not the outcome.
         self.login_attempts += 1
+        if self.login_post_failures_left:
+            # The web server failing, above the login logic: the request
+            # arrived, and no credential was ever compared.
+            self.login_post_failures_left -= 1
+            return web.Response(status=self.login_post_status, text="busy")
         form = await request.post()
         expected = hmac.new(
             CHALLENGE.encode(),
@@ -208,6 +228,9 @@ class FakePanel:
     async def _keys(self, request: web.Request) -> web.Response:
         if not self._authenticated(request):
             return web.Response(status=302, text="")
+        if self.keys_failures_left:
+            self.keys_failures_left -= 1
+            return web.Response(status=self.keys_status, text="<html>busy</html>")
         return web.Response(text=f'<input id="readit" value="{BLOB}">')
 
     async def _status(self, request: web.Request) -> web.Response:
