@@ -96,8 +96,16 @@ def test_a_payload_without_a_partition_status_decodes_to_nothing(payload):
 
 
 def test_the_armed_text_is_carried_through_as_the_panel_spells_it():
-    """Armed modes arrive as the same display text GetSecurityStatus returns,
-    which is why one status map serves both sources."""
+    """A text arriving with the armed flag is passed on exactly as spelled.
+
+    The spelling used here is GetSecurityStatus's. Only `Ready To Arm` and the
+    countdown have been captured on a real stream, and the stream matching the
+    poll's armed spellings is an assumption, not an observation
+    (docs/tuxedo_touch_api_notes.md, "Which display texts have actually been
+    seen on the stream"). What this pins is the decoder's pass-through, which
+    is what lets one status map serve both sources if the assumption holds -
+    and if it does not, the flag still says armed and the poll names the mode.
+    """
     status = push.decode_status_frame(b"0:21:1:ff:\xff2Armed Stay:2".decode("latin-1"))
     assert status is not None
     assert status.armed is True
