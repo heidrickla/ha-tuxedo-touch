@@ -136,7 +136,7 @@ credentials every thirty seconds.
 ### Discovery and moving addresses
 
 The panel announces nothing on mDNS or SSDP, but it is a DHCP client and its lease is
-distinctive: the unit's Wi-Fi module uses Resideo's `00:D0:2D` OUI and it puts `Tux`
+distinctive: the unit's network interface uses Resideo's `00:D0:2D` OUI and it puts `Tux`
 followed by the twelve hex digits of its own MAC in the lease hostname - for example
 `Tux00D02D4DD7B6`. The manifest matches on both together, so another vendor's device is
 never offered as a Tuxedo panel.
@@ -147,6 +147,10 @@ username and password, the keypad code and the partition, plus the port and the 
 toggle in case you turned "Secured Web Server Access" off. The integration logs in to the
 panel before creating the entry, exactly as the manual form does, and keys the entry on
 the MAC the lease carried. Add the discovered panel once per partition.
+
+**A panel you ignore stays ignored.** Dismissing the discovered card with Ignore keeps
+Home Assistant from raising it again, however often the panel renews its lease. Undo it
+with Settings -> Devices & Services -> the three-dot menu -> Show ignored integrations.
 
 **A panel that moves** is followed automatically. Home Assistant hands over the new lease,
 the stored address is corrected on every entry for that panel - one per partition - and

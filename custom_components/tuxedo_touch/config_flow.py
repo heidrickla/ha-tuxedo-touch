@@ -258,6 +258,12 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         # picks one, so the MAC alone is the flow's id for now; it stops a
         # second lease from opening a second form for the same panel.
         await self.async_set_unique_id(mac)
+        # A panel the user chose to ignore holds an entry keyed on this MAC and
+        # was filtered out of the scans above, which pass include_ignore=False.
+        # Without this the next lease renewal would raise the discovery card
+        # again. No updates= here: an ignore entry carries no host to correct,
+        # and a configured panel's host has already been followed above.
+        self._abort_if_unique_id_configured()
         self.context["title_placeholders"] = {"name": _title_for(host)}
         self._discovered_host = host
         self._discovered_mac = mac

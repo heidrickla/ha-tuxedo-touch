@@ -8,7 +8,7 @@ error mapping, without a socket.
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.config_entries import SOURCE_DHCP, SOURCE_USER
+from homeassistant.config_entries import SOURCE_DHCP, SOURCE_IGNORE, SOURCE_USER
 from homeassistant.const import (
     CONF_CODE,
     CONF_HOST,
@@ -592,6 +592,23 @@ async def test_a_second_lease_does_not_open_a_second_form(hass):
     again = await _dhcp_flow(hass, _lease("10.10.52.61"))
     assert again["type"] is FlowResultType.ABORT
     assert again["reason"] == "already_in_progress"
+
+
+async def test_an_ignored_panel_is_not_offered_again(hass):
+    """The user dismissed the discovery card, so Home Assistant holds an entry
+    with source `ignore` keyed on the panel's MAC. Every later lease renewal
+    has to stay silent; the scans above skip ignored entries deliberately, so
+    the unique-id abort is what makes the dismissal stick."""
+    MockConfigEntry(
+        domain=DOMAIN,
+        source=SOURCE_IGNORE,
+        unique_id=MAC,
+        data={},
+        title="Tuxedo Touch",
+    ).add_to_hass(hass)
+    result = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
 
 
 async def test_dhcp_gives_a_hand_added_entry_the_panels_mac(hass, config_entry):

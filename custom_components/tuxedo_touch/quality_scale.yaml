@@ -133,7 +133,9 @@ rules:
       a Tuxedo panel. async_step_dhcp shows a confirm step asking for the web
       credentials, keypad code and partition - everything the lease cannot
       supply - logs in to the panel before creating the entry, and keys it on
-      the MAC the lease carried.
+      the MAC the lease carried. A panel dismissed with Ignore holds an entry
+      on that same MAC, and the step's _abort_if_unique_id_configured keeps
+      every later lease renewal from raising the card again.
   discovery-update-info:
     status: done
     comment: |
