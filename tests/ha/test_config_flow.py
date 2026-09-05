@@ -8,7 +8,12 @@ error mapping, without a socket.
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.config_entries import SOURCE_DHCP, SOURCE_IGNORE, SOURCE_USER
+from homeassistant.config_entries import (
+    SOURCE_DHCP,
+    SOURCE_IGNORE,
+    SOURCE_USER,
+    ConfigEntryState,
+)
 from homeassistant.const import (
     CONF_CODE,
     CONF_HOST,
@@ -40,6 +45,10 @@ from .conftest import ENTRY_DATA, HOST, MAC, PORT
 LOGIN = "custom_components.tuxedo_touch.api.TuxedoTouchClient.login"
 VALIDATE = "custom_components.tuxedo_touch.config_flow._validate_input"
 SETUP = "custom_components.tuxedo_touch.async_setup_entry"
+# Patched where an entry has to be really loaded: the coordinator's poll then
+# returns a status without a login, leaving `login` free to stand for the
+# flow's probe alone.
+STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"
 # The dhcp component reports a MAC with no separators, which is what the
 # integration's step has to cope with.
 RAW_MAC = MAC.replace(":", "")
@@ -276,6 +285,96 @@ async def test_reconfigure_recovers_from_an_unreachable_panel(hass, config_entry
     assert second["type"] is FlowResultType.ABORT
     assert second["reason"] == "reconfigure_successful"
     assert config_entry.data[CONF_HOST] == "10.10.52.61"
+
+
+async def _load(hass, entry, ready):
+    """Set an entry up for real, so its coordinator is polling the panel."""
+    entry.add_to_hass(hass)
+    with patch(STATUS, return_value=ready):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_reconfigure_does_not_probe_what_it_is_not_changing(hass, config_entry):
+    """The panel serves one connection at a time, so a login that could only
+    confirm what the entry is already doing is one worth not spending.
+
+    Changing the partition or the keypad code touches nothing the login
+    handshake depends on, and the entry itself is the standing check on the
+    fields that do.
+    """
+    config_entry.add_to_hass(hass)
+    with (
+        patch(VALIDATE, AsyncMock(return_value=None)) as validate,
+        patch(SETUP, return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data={**ENTRY_DATA, CONF_PARTITION: 3, CONF_CODE: "4321"},
+        )
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry.data[CONF_PARTITION] == 3
+    assert config_entry.data[CONF_CODE] == "4321"
+    validate.assert_not_awaited()
+
+
+async def test_reconfigure_frees_the_panel_before_probing_it(hass, config_entry, ready):
+    """A loaded entry is polling, and the panel answers one client at a time:
+    a probe alongside the poller hangs until the timeout and reports
+    cannot_connect about a panel that is perfectly well. The entry gives its
+    session up first and takes it back afterwards."""
+    await _load(hass, config_entry, ready)
+
+    seen: list[ConfigEntryState] = []
+
+    async def _probe(hass_, data):
+        seen.append(config_entry.state)
+
+    with (
+        patch(VALIDATE, AsyncMock(side_effect=_probe)),
+        patch(STATUS, return_value=ready),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+        )
+        await hass.async_block_till_done()
+
+    assert seen == [ConfigEntryState.NOT_LOADED]
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry.state is ConfigEntryState.LOADED
+
+
+async def test_a_reconfigure_that_fails_its_probe_puts_the_entry_back(
+    hass, config_entry, ready
+):
+    """The address was a typo, so the panel at the old one is still there and
+    still worth polling. An entry left unloaded would cost more than the
+    defect this stops."""
+    await _load(hass, config_entry, ready)
+
+    with (
+        patch(LOGIN, side_effect=TuxedoTouchConnectionError("down")),
+        patch(STATUS, return_value=ready),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
+            data={**ENTRY_DATA, CONF_HOST: "10.10.52.99"},
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert config_entry.data[CONF_HOST] == HOST
+    assert config_entry.state is ConfigEntryState.LOADED
 
 
 async def test_the_reconfigure_form_never_shows_the_stored_secrets(hass, config_entry):

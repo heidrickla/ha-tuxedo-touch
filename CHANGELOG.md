@@ -4,6 +4,20 @@ Notable changes to this integration, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version
 numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [0.3.1] - 2026-09-05
+
+### Fixed
+
+- Reconfigure no longer competes with the entry's own polling for the panel's
+  one connection. The panel serves a single client at a time and contention
+  shows up as a hang, so the check the form ran could time out and report
+  "Failed to connect" about a panel that was answering the poller perfectly.
+  Changing only the keypad code or the partition now contacts the panel not at
+  all - nothing the login depends on changed - and changing the address, port,
+  scheme, username or password unloads the entry for the moment the check
+  takes, then sets it up again: on the new settings if they worked, on the old
+  ones if they did not.
+
 ## [0.3.0] - 2026-09-05
 
 ### Added
