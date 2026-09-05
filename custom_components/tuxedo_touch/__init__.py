@@ -29,9 +29,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: TuxedoTouchConfigEntry) 
     coordinator = TuxedoTouchCoordinator(hass, entry)
     # Registered before the first refresh: if it raises ConfigEntryNotReady
     # (panel unreachable at HA start) or ConfigEntryAuthFailed, HA still runs
-    # the on_unload callbacks, so the dedicated session is closed instead of
-    # leaking once per setup retry.
-    entry.async_on_unload(coordinator.async_close)
+    # the on_unload callbacks, so the session is released instead of leaking
+    # once per setup retry.
+    entry.async_on_unload(coordinator.async_release_session)
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
@@ -111,7 +111,7 @@ async def _async_adopt_mac_identity(
 async def async_unload_entry(
     hass: HomeAssistant, entry: TuxedoTouchConfigEntry
 ) -> bool:
-    # The session is closed by the async_on_unload callback registered in
+    # The session is released by the async_on_unload callback registered in
     # async_setup_entry, which HA runs after the platforms unload.
     unloaded: bool = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     return unloaded

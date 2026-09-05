@@ -11,6 +11,7 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNA
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import (
@@ -37,13 +38,13 @@ type TuxedoTouchConfigEntry = ConfigEntry[TuxedoTouchCoordinator]
 
 
 class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
-    """Polls panel status and owns the API client + its dedicated HTTP session.
+    """Polls panel status and owns the API client and its HTTP session.
 
-    A dedicated aiohttp session (rather than Home Assistant's shared one) is
-    used for cookie isolation - the panel sets a session cookie with a random
-    name per login - and so the connector below can be tuned for this device.
-    (The client's custom SSLContext is passed per-request and would work on
-    any session; it is not the reason for the dedicated session.)
+    The session comes from Home Assistant's helper, so it runs on the shared
+    connector. It is a session of its own only for its cookie jar: the panel
+    sets a session cookie with a random name per login. (The client's custom
+    SSLContext is passed per-request and would work on any session; it is not
+    the reason for a separate session.)
     """
 
     def __init__(self, hass: HomeAssistant, entry: TuxedoTouchConfigEntry) -> None:
@@ -59,24 +60,16 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         # optional, and every use here is on an entry that certainly exists.
         self._entry = entry
         self.partition = entry.data.get(CONF_PARTITION, DEFAULT_PARTITION)
-        # keep-alive must outlive SCAN_INTERVAL: aiohttp's default (15s) would
-        # guarantee a fresh TCP + legacy-TLS handshake - by far the most
-        # expensive part of talking to this panel - on every 30s poll, since
-        # the pooled connection always expires client-side first. Whether the
-        # panel's embedded server honors keep-alive is its call; the client at
-        # least must not preclude it. limit=2 lets a user arm/disarm go out
-        # while a poll is in flight without ever opening more than two
-        # connections against the embedded server.
         # DummyCookieJar: the client manages cookies by hand, and the panel
         # names its session cookie randomly per login - a real jar accumulates
         # one dead cookie per re-login and aiohttp overlays jar cookies over
         # the client's explicit Cookie header.
-        self.session = aiohttp.ClientSession(
+        # auto_cleanup=False because the entry releases the session on unload,
+        # which is sooner than Home Assistant's own shutdown hook.
+        self.session = async_create_clientsession(
+            hass,
+            auto_cleanup=False,
             cookie_jar=aiohttp.DummyCookieJar(),
-            connector=aiohttp.TCPConnector(
-                keepalive_timeout=SCAN_INTERVAL.total_seconds() + 15,
-                limit=2,
-            ),
         )
         self._https_issue_raised = False
         self.client = TuxedoTouchClient(
@@ -203,5 +196,13 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
 
         return status
 
-    async def async_close(self) -> None:
-        await self.session.close()
+    @callback
+    def async_release_session(self) -> None:
+        """Give the session up on unload.
+
+        detach(), not close(): the session runs on Home Assistant's shared
+        connector, so closing it would close that pool for every integration.
+        Home Assistant replaces close() with a warn-and-no-op wrapper for
+        exactly this reason. A detached session reports itself closed.
+        """
+        self.session.detach()
