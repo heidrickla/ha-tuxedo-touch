@@ -1,9 +1,9 @@
 """Decoding the panel's push frames, byte for byte.
 
 The two payloads asserted here are the ones captured from the panel across a
-live arm/disarm cycle (iot-protocol-tools/TUXEDO-FINDINGS.md, "The push frame
-format, decoded byte-exact"), including the raw 0xFE/0xFF state byte that
-makes the latin-1 decoding load-bearing.
+live arm/disarm cycle (iot-protocol-tools/TUXEDO-HA-ENRICHMENT.md, "The push
+frame format, decoded byte-exact"), including the raw 0xFE/0xFF state byte
+that makes the latin-1 decoding load-bearing.
 """
 
 import pytest
