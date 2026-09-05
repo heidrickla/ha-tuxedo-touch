@@ -141,7 +141,15 @@ def _without_secrets(data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
-    """Attempt a real login against the panel; raises on failure."""
+    """Attempt a real login against the panel; raises on failure.
+
+    A session of its own for its cookie jar, but on Home Assistant's shared
+    connector - the same pool an entry's coordinator uses. With one SSLContext
+    shared by every client (see api._legacy_ssl_context) that pool key matches
+    the coordinator's, so this login lands on the connection the entry left
+    behind rather than opening a second one to a panel that serves one at a
+    time.
+    """
     session = async_create_clientsession(hass, auto_cleanup=False)
     try:
         client = TuxedoTouchClient(
@@ -208,9 +216,16 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
           already logging in with them, and one that is failing to set up
           reports why on its own card.
         - otherwise the entry is stood down first, which stops the poll loop
-          or the pending setup retry and releases the session, and set up
-          again if the probe fails. A probe that succeeds leaves it unloaded
-          for the caller's reload, which is the next thing to happen.
+          and cancels any pending setup retry, and set up again if the probe
+          fails. A probe that succeeds leaves it unloaded for the caller's
+          reload, which is the next thing to happen.
+
+        Standing the entry down stops it starting new work; it does not close
+        the socket it last used, which Home Assistant's pool holds as idle for
+        fifteen seconds. That socket is the one this probe then uses: every
+        client shares an SSLContext, so the pool key matches (see
+        api._legacy_ssl_context) and the two take turns on one connection
+        instead of the panel seeing a second.
 
         Not shared with the reauth step: there "unchanged" means the password
         the panel has just rejected, which is exactly what has to be probed.

@@ -25,6 +25,7 @@ import ssl
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from typing import Any
 
 import aiohttp
@@ -70,6 +71,7 @@ class TuxedoStatus:
     color: str | None = None
 
 
+@cache
 def _legacy_ssl_context() -> ssl.SSLContext:
     """Build an SSLContext that tolerates this device's ancient cert/handshake.
 
@@ -79,6 +81,17 @@ def _legacy_ssl_context() -> ssl.SSLContext:
     are required to complete the handshake at all. Confirmed working against
     real hardware with CPython 3.13 / OpenSSL 3.x - no external OpenSSL config
     file needed, unlike getting the system `openssl` CLI to cooperate.
+
+    ONE context object for every client, and that is load-bearing rather than
+    a saving. aiohttp keys its connection pool on the ssl argument as well as
+    the host and port, and SSLContext defines no equality, so two contexts are
+    two pool keys: a client built with its own context opens a second socket
+    to a panel that serves ONE connection at a time, even though Home
+    Assistant's pool already holds an idle connection to it. Sharing the
+    object puts the config flow's probe and an entry's poller on the same key,
+    so they take turns on one connection instead of contending for the unit.
+    Nothing here is per-panel - hostname checking and verification are both
+    off - so there is nothing to keep apart.
     """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False

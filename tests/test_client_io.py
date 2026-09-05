@@ -22,6 +22,7 @@ import types
 
 import aiohttp
 import pytest
+from aiohttp.client_reqrep import ConnectionKey
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMP = os.path.join(ROOT, "custom_components", "tuxedo_touch")
@@ -452,3 +453,61 @@ async def test_a_missing_cookie_is_simply_not_sent():
     made._ensure_authenticated = _already_authenticated
     await made.get_status()
     assert "Cookie" not in session.calls[0][2]["headers"]
+
+
+# ------------------------------------------------- the panel's one connection
+
+
+def _pool_key(ssl_arg, host="10.0.0.5", port=443):
+    """The key aiohttp files a connection under, built from aiohttp's own type.
+
+    Constructed from _fields rather than positionally so that a future aiohttp
+    adding a member does not quietly turn this into a different assertion.
+    """
+    fields = dict.fromkeys(ConnectionKey._fields)
+    fields.update(host=host, port=port, is_ssl=True, ssl=ssl_arg)
+    return ConnectionKey(**fields)
+
+
+async def test_the_probe_and_the_poller_land_on_one_pool_key():
+    """Two clients for one panel must share Home Assistant's pooled connection.
+
+    The unit serves one connection at a time and answers a second with
+    silence, so the config flow's probe has to reuse the socket the entry's
+    coordinator left in the pool rather than open its own. aiohttp keys that
+    pool on the ssl argument as well as the host and port, so this holds only
+    while every client passes the SAME context object.
+    """
+    poller, poller_session = client(login_answers())
+    probe, probe_session = client(login_answers())
+    await poller.login()
+    await probe.login()
+
+    poller_ssl = poller_session.calls[0][2]["ssl"]
+    probe_ssl = probe_session.calls[0][2]["ssl"]
+    assert poller_ssl is probe_ssl
+    assert _pool_key(poller_ssl) == _pool_key(probe_ssl)
+    assert hash(_pool_key(poller_ssl)) == hash(_pool_key(probe_ssl))
+
+
+def test_a_context_per_client_would_split_the_pool():
+    """The control for the test above: it is the sharing that does the work.
+
+    Built from the undecorated function, which is what a per-client context
+    would be. Two contexts are two keys - a second socket to the panel - so
+    the assertion above is not passing on the host and port alone.
+    """
+    own = api._legacy_ssl_context.__wrapped__()
+    assert own is not api._legacy_ssl_context()
+    assert _pool_key(own) != _pool_key(api._legacy_ssl_context())
+
+
+async def test_plain_http_clients_share_a_pool_key_too():
+    """No context is built at all for HTTP, so both send the same plain True."""
+    first, first_session = client(login_answers(), use_https=False, port=80)
+    second, second_session = client(login_answers(), use_https=False, port=80)
+    await first.login()
+    await second.login()
+
+    assert first._ssl_ctx is None and second._ssl_ctx is None
+    assert first_session.calls[0][2]["ssl"] is second_session.calls[0][2]["ssl"] is True

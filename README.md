@@ -142,6 +142,13 @@ competes with the entry for the panel's only connection, and contention on this 
 a hang rather than a refusal: the form waits out its timeout and reports "Failed to
 connect" about a panel that is perfectly well.
 
+Standing the entry down stops it starting new work, and the check then takes over the
+connection it was using rather than opening a second one: every request this integration
+makes goes out on the same key in Home Assistant's connection pool, so a socket left
+idle by the poller is the socket the check picks up. That matters because the unit
+counts connections, not sessions - a second one is accepted and then answered with
+silence.
+
 When the panel starts refusing the stored credentials, Home Assistant stops polling and
 asks for them again rather than re-running the login handshake against doomed
 credentials every thirty seconds.
@@ -203,11 +210,17 @@ otherwise fine (on at least one unit, persistently). That answer is treated as n
 information: the last known state is kept rather than overwritten. On a restart with no
 prior state to keep, the entity reads `unknown` until the panel says something else.
 
-Requests go out on Home Assistant's own HTTP session pool rather than a connection pool
-of this integration's own. That pool keeps an idle connection for fifteen seconds, so a
-thirty-second poll opens a fresh connection each time and pays for the panel's slow
-legacy TLS handshake once per poll. The unit serves one web session at a time, and
-nothing of ours is holding one open between polls.
+Requests go out on Home Assistant's own HTTP connection pool rather than a pool of this
+integration's own, and every client here - each entry's poller, and the checks the setup
+and reconfigure forms run - shares one pool key, so at most one connection to a given
+panel is ours at any moment. That is the point rather than a detail: the unit serves one
+connection at a time and answers a second with silence, so anything of ours that opened
+its own would starve the poller instead of queueing behind it.
+
+The pool keeps an idle connection for fifteen seconds. A thirty-second poll therefore
+opens a fresh one each time and pays for the panel's slow legacy TLS handshake once per
+poll, and for the second half of every interval nothing of ours is connected to the
+panel at all.
 
 ## Repairs
 

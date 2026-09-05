@@ -201,6 +201,15 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
   new connections with RST until it is reset. **Before concluding the panel is broken,
   close every other client and test once.**
 
+  The limit is counted in *connections*, not logins, which makes it an implementation
+  constraint rather than a caveat: two clients of ours can be two connections. Home
+  Assistant pools connections and keys that pool on the ssl argument as well as the
+  address, and two `SSLContext` objects never compare equal - so the permissive context
+  this unit's certificate needs is built once and shared (`api._legacy_ssl_context`,
+  cached). With one key, a config flow's login check reuses the socket an entry's poller
+  left idle in the pool rather than opening its own beside it. Anything added here that
+  talks to the panel should take that same context.
+
 - **A panel reset disables web access per user; it does not delete the accounts.** After
   resetting the unit, existing users survive but each one's web-access flag comes back
   **off**, and the web UI shows: *"Web access has been deactivated. Go to your Tuxedo's

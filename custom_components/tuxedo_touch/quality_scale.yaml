@@ -201,7 +201,10 @@ rules:
       otherwise runs with the entry unloaded - whether it was polling or
       retrying its setup: the panel serves one client at a time, so a check
       alongside either one hangs and reports cannot_connect on a healthy
-      panel.
+      panel. Unloading stops the entry starting new work; what keeps the check
+      off a second connection is that every client shares one TLS context and
+      so one connection-pool key, leaving the check to reuse the socket the
+      poller left idle in Home Assistant's pool.
   repair-issues:
     status: done
     comment: |

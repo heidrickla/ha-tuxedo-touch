@@ -205,6 +205,15 @@ check(
     _client(use_https=False, port=80)._ssl_ctx,
     None,
 )
+# One object for every client, because aiohttp keys its connection pool on the ssl
+# argument: a context per client is a second socket to a panel that serves one at a
+# time. tests/test_client_io.py checks the pool key that follows from this.
+check("the context is cached, not rebuilt", api._legacy_ssl_context() is ctx, True)
+check(
+    "every client is handed that same context",
+    _client()._ssl_ctx is _client()._ssl_ctx is ctx,
+    True,
+)
 
 print()
 print("=== error hierarchy (callers catch the base class) ===")

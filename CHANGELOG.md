@@ -20,6 +20,15 @@ numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
   same way as one that is polling - that is the state you most often
   reconfigure from, and the retry on the clock logs into the panel just as a
   poll does.
+- Every request this integration makes now shares one connection-pool key per
+  panel, so a form's check takes over the connection the poller was using
+  rather than opening a second one beside it. Home Assistant's pool holds an
+  idle connection for fifteen seconds after a poll, and it keys that pool on
+  the TLS context object as well as the address - so the HTTPS clients, which
+  each built a context of their own, were landing on separate keys and could
+  hold two connections to a unit that accepts a second one and then answers it
+  with silence. The permissive context this panel's 2009-era certificate needs
+  is now built once and shared.
 
 ## [0.3.0] - 2026-09-05
 
