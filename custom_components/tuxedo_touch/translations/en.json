@@ -111,6 +111,9 @@
     "command_failed": {
       "message": "Tuxedo Touch command failed: {error}"
     },
+    "command_not_carried_out": {
+      "message": "The panel did not carry out the command: it reports {reported} where {requested} was asked for. Arm and disarm answer without saying whether the panel acted, so this is the status poll's own reading afterwards. A faulted zone refuses an arm, and a code the panel does not accept refuses a disarm; the alarm entity keeps showing what the panel reports."
+    },
     "auth_failed": {
       "message": "The panel rejected the stored web login credentials: {error}"
     },
