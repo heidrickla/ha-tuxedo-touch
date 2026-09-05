@@ -19,10 +19,10 @@
   ],
   "documentation": "https://github.com/heidrickla/ha-tuxedo-touch",
   "integration_type": "device",
-  "iot_class": "local_polling",
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/heidrickla/ha-tuxedo-touch/issues",
   "requirements": [
     "cryptography"
   ],
-  "version": "0.3.2"
+  "version": "0.4.0"
 }

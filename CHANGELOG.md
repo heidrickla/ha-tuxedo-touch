@@ -4,6 +4,53 @@ Notable changes to this integration, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version
 numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [0.4.0] - 2026-09-05
+
+### Added
+
+- **The panel's state now arrives by push.** The integration holds one long-lived
+  request open to the panel's event stream for the life of an entry, and the panel
+  reports partition status on it as it happens - an arm, a disarm, and the exit-delay
+  countdown a second at a time. A change made at the keypad reaches Home Assistant in
+  seconds instead of at the next poll. The 30-second status read stays as the first
+  read at setup and as the fallback whenever the stream is not connected.
+- `arming_seconds_remaining`, an entity attribute carrying the seconds left of the exit
+  delay while the state is `arming`. A 30-second poll used to miss the countdown
+  entirely.
+- `tuxedo_source`, an entity attribute saying where the shown state came from:
+  `stream`, `poll`, or `assumed` for a command the panel accepted but neither source
+  reported.
+
+### Fixed
+
+- **`Not available` can no longer reach the entity at all on firmware that has the
+  event stream.** The panel's `GetSecurityStatus` endpoint reads a cache its firmware
+  fills only from a message on the alarm bus, and answers that placeholder while the
+  cache is empty - on a quiet house, for hours. The event stream does not read that
+  cache, so a client on it never sees the condition this integration has been working
+  around. The workaround stays for firmware that answers 404 to the stream: such a poll
+  is still a failed read rather than a state, on the first poll after a load as much as
+  on the hundredth.
+- The entity is now available while **either** source is working, and unavailable only
+  when both are down. A poll answering `Not available` while the stream is delivering
+  real statuses is not an outage of anything, and no longer shows as one.
+- A command the panel accepted but has not carried out is no longer reported as done.
+  Arm and disarm answer HTTP 200 with an empty body - the panel says what it did on the
+  event stream, not in the reply - so a command now waits for that report, falls back to
+  a poll, and only if neither could say anything shows the state that was asked for,
+  marked `assumed`. Up to 0.3.2 the requested state was written through as soon as the
+  request returned.
+- An empty response body is read correctly. `aiohttp` returns nothing rather than
+  raising for such a body, so the handling meant to accept a command's empty answer
+  never ran.
+
+### Changed
+
+- `iot_class` is now `local_push`. The push stream is the primary source of state and
+  the poll is the fallback under it.
+- Losing the event stream is logged the way losing the poll already was: one line when
+  it drops and one when it returns, not one per reconnect attempt.
+
 ## [0.3.2] - 2026-09-05
 
 ### Fixed
