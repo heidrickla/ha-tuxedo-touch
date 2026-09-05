@@ -378,6 +378,69 @@ def main() -> int:
         f"const.py issues {sorted(issue_consts)} != strings.json issues "
         f"{sorted(declared_issues)}",
     )
+    # An issue the user can act on needs a fix flow, and a fix flow needs the
+    # repairs component loaded: a missing dependency is a runtime failure the
+    # moment the user clicks the notification.
+    sources = {f: read(COMP, f) for f in sorted(os.listdir(COMP)) if f.endswith(".py")}
+    created = {
+        name
+        for src in sources.values()
+        for name in re.findall(
+            r"async_create_issue\((?:.|\n)*?translation_key=(\w+)", src
+        )
+    }
+    unknown_issues = created - set(constants(const_src, "ISSUE_"))
+    check(
+        not unknown_issues,
+        f"async_create_issue uses keys {sorted(unknown_issues)} that const.py "
+        "does not define as ISSUE_ constants",
+    )
+    fixable = any("is_fixable=True" in src for src in sources.values())
+    repairs_path = os.path.join(COMP, "repairs.py")
+    if fixable:
+        check(
+            os.path.isfile(repairs_path),
+            "an issue is created with is_fixable=True but repairs.py is missing",
+        )
+        check(
+            "repairs" in manifest.get("dependencies", []),
+            "a fix flow needs 'repairs' in the manifest's dependencies",
+        )
+    if os.path.isfile(repairs_path):
+        check(
+            "async_create_fix_flow" in read(repairs_path),
+            "repairs.py defines no async_create_fix_flow",
+        )
+        # Every step and abort a fix flow can reach needs its own text under
+        # the issue's fix_flow, or the user gets a raw key.
+        repairs_src = read(repairs_path)
+        for key in issue_consts:
+            flow = strings.get("issues", {}).get(key, {}).get("fix_flow")
+            if flow is None:
+                continue
+            steps = set(flow.get("step", {}))
+            aborts = set(flow.get("abort", {}))
+            used_steps = set(re.findall(r'step_id="([^"]+)"', repairs_src))
+            used_aborts = set(re.findall(r'reason="([^"]+)"', repairs_src))
+            check(
+                used_steps <= steps,
+                f"issues.{key}.fix_flow is missing steps {sorted(used_steps - steps)}",
+            )
+            check(
+                used_aborts <= aborts,
+                f"issues.{key}.fix_flow is missing aborts "
+                f"{sorted(used_aborts - aborts)}",
+            )
+
+    # ----------------------------------------------------- the coverage gate
+    # test-coverage is claimed on a threshold CI enforces. A workflow that
+    # only reports coverage would let the claim rot silently.
+    workflow = os.path.join(ROOT, ".github", "workflows", "tests.yml")
+    if os.path.isfile(workflow):
+        check(
+            "--cov-fail-under=95" in read(workflow),
+            "the GitHub Tests workflow does not gate coverage at 95%",
+        )
 
     # ------------------------------------------------------------ platforms
     init_src = read(COMP, "__init__.py")
