@@ -107,7 +107,7 @@ with a message that says which.
 Access" in the unit's settings. The unit's command endpoints redirect to HTTPS regardless
 of the scheme you request whenever that setting is on, so mixing an HTTP login with
 HTTPS-only commands would silently break arming and disarming. The integration detects
-the redirect and reports it as an error telling you to switch. See
+the redirect and raises a repair notification that switches the entry over for you. See
 [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md) for the full writeup.
 
 ### Reconfiguring
@@ -126,9 +126,9 @@ credentials every thirty seconds.
 ### Removing it
 
 Settings -> Devices & Services -> Honeywell Tuxedo Touch -> the entry's menu -> Delete.
-That removes the entry, its device and its entity. Nothing is written to the panel at
-any point, so there is nothing to undo on the unit; the web login account you used stays
-as it was.
+That removes the entry, its device, its entity and any repair notification it raised.
+Nothing is written to the panel at any point, so there is nothing to undo on the unit;
+the web login account you used stays as it was.
 
 ## How it updates
 
@@ -142,6 +142,25 @@ The panel's status endpoint intermittently answers `Not available` on a unit tha
 otherwise fine (on at least one unit, persistently). That answer is treated as no new
 information: the last known state is kept rather than overwritten. On a restart with no
 prior state to keep, the entity reads `unknown` until the panel says something else.
+
+Requests go out on Home Assistant's own HTTP session pool rather than a connection pool
+of this integration's own. That pool keeps an idle connection for fifteen seconds, so a
+thirty-second poll opens a fresh connection each time and pays for the panel's slow
+legacy TLS handshake once per poll. The unit serves one web session at a time, and
+nothing of ours is holding one open between polls.
+
+## Repairs
+
+Two conditions cannot be cleared by retrying, so they arrive as repair notifications
+under Settings -> System -> Repairs rather than as log lines.
+
+| Notification | What it does |
+|---|---|
+| **Tuxedo Touch needs HTTPS** | The panel redirected the API to HTTPS because "Secured Web Server Access" is on. Opening the notification and submitting turns on Use HTTPS for that entry, moves port 80 to 443 (any other port is left as you set it) and reloads the integration. |
+| **Two Tuxedo Touch entries reach one panel** | Two entries reach the same panel and partition by different addresses, so only one of them can hold the panel's identity. The notification names both entries; remove whichever you do not want and the other adopts the panel's MAC on its next start. |
+
+Both disappear on their own when the condition goes - including when you fix the panel's
+HTTPS setting from the touchscreen instead - and when the entry is deleted.
 
 ## Examples
 
@@ -244,11 +263,11 @@ script:
 | Setup says "Failed to connect" | Home Assistant cannot reach the address and port, or the panel's single web session is held by a browser tab. Close any tab open on the unit and retry; check the port matches the HTTPS setting (443 on, 80 off). |
 | Setup says "Invalid username or password" and they are right | Web access for that user was disabled, which a panel reset does. Re-enable it on the touchscreen under Setup -> Account, or use the Login settings page to set the credentials again. |
 | Setup says the panel answered but the response could not be used | The login page came back without the challenge headers, or the key page was short: firmware this client does not know. The log line names which. Open an issue with the firmware version from the touchscreen's About page. |
-| The entity is unavailable and the log says the API call was redirected to HTTPS | "Secured Web Server Access" is on and the entry uses HTTP. Reconfigure with Use HTTPS on and port 443. |
+| The entity is unavailable and the API call was redirected to HTTPS | "Secured Web Server Access" is on and the entry uses HTTP. A repair notification offers to switch the entry over; see [Repairs](#repairs). Reconfiguring by hand with Use HTTPS on and port 443 does the same thing. |
 | Home Assistant asks to re-authenticate | The panel rejected the stored web login. Enter the current username and password; the address and code are kept. |
 | The entity reads `unknown` after a restart | The panel is answering `Not available` and there is no earlier state to keep. It corrects itself on the first real status, or on your first arm or disarm. |
 | The entity does not follow the keypad | The status feed is stuck on `Not available` (see Known limitations). Arm or disarm from Home Assistant to resync, or use an ECP-bus integration for status. |
-| Two entries for one panel, one warning about not adopting the MAC | Two entries reach the same panel and partition by different addresses. Remove one; the other adopts the panel's identity on its next start. |
+| Two entries for one panel | A repair notification names both entries. Remove one; the other adopts the panel's identity on its next start. See [Repairs](#repairs). |
 | Arm or disarm fails with "Tuxedo Touch command failed" | The panel refused: usually a wrong keypad code or a faulted zone when arming away. The message carries the panel's own reason. |
 
 ```yaml
@@ -264,15 +283,19 @@ and code redacted and the panel's raw status strings included.
 
 ```
 python tests/test_api.py          # the client's pure logic, no Home Assistant needed
-python -m pytest tests/ha -q      # the Home Assistant layer; needs the test harness, Linux
+python -m pytest tests -q         # the whole suite; tests/ha needs the harness, Linux
+python -m pytest tests -q --cov=custom_components/tuxedo_touch --cov-fail-under=95
 python -m mypy custom_components/tuxedo_touch
 python tools/validate_local.py    # the offline stand-in for hassfest and HACS
 ```
 
-`tests/ha` needs `pytest-homeassistant-custom-component` and skips where it is absent;
-the GitHub Tests workflow runs it, mypy in strict mode and the validator on every push.
-A local mypy run without Home Assistant installed reports its classes as `Any`; that is
-the missing package, not the code.
+`tests/ha` needs `pytest-homeassistant-custom-component` and skips where it is absent, so
+a run on Windows covers the client only. The GitHub Tests workflow runs the whole suite,
+gates coverage of the integration at 95%, and runs mypy in strict mode and the validator
+on every push. A local mypy run without Home Assistant installed reports its classes as
+`Any`; that is the missing package, not the code.
+
+Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Quality scale
 
