@@ -25,6 +25,13 @@ everything below is what you get by installing from the default branch.
   every thirty seconds.
 - Downloadable diagnostics, with the host, MAC, username, password and keypad
   code redacted and the panel's raw status strings kept.
+- A panel that takes a new DHCP lease is followed automatically. Home
+  Assistant reports leases for MAC addresses it already has devices for, and
+  the integration corrects the stored address on every entry for that panel -
+  one per partition - and reloads. It needs the panel's MAC, so it works where
+  Home Assistant shares a network segment with the unit. A panel that is not
+  set up yet is still added by hand: the unit announces nothing on mDNS or
+  SSDP, and no matcher for its Wi-Fi module has been measured.
 - The README gained installation parameters, the update cadence, example
   automations, use cases, troubleshooting and removal instructions.
 

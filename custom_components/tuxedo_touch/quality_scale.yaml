@@ -114,19 +114,27 @@ rules:
   discovery:
     status: todo
     comment: |
-      The panel announces nothing over mDNS or SSDP, but it is a DHCP client,
-      so a dhcp matcher would work on either the Wi-Fi module's OUI or the
-      hostname it puts in its lease. Neither has been measured: nothing in
-      this repository carries the unit's real MAC prefix or DHCP hostname,
-      and guessing a matcher would discover other vendors' devices as Tuxedo
-      panels. It needs one reading from a host on the panel's segment.
+      This rule is about finding a panel nobody has set up yet, and that is
+      the half still open. The panel announces nothing over mDNS or SSDP but
+      it is a DHCP client, so a matcher on the Wi-Fi module's OUI or on the
+      hostname it puts in its lease would work. Neither has been measured:
+      nothing in this repository carries the unit's real MAC prefix or DHCP
+      hostname, and a guessed matcher would offer other vendors' devices as
+      Tuxedo panels. It needs one reading from a host on the panel's segment.
+      The address-update half is done - see discovery-update-info.
   discovery-update-info:
-    status: todo
+    status: done
     comment: |
-      Follows discovery: with no matcher there is no discovery payload to
-      update the host from. The mechanism it would use already exists - the
-      entry is keyed on the panel's MAC and the config flow updates the
-      address when a known MAC turns up at a new one.
+      manifest.json asks for `{"registered_devices": true}`, the DHCP
+      matcher that fires only for MACs already in the device registry, which
+      needs no OUI and no hostname. The entry's device carries the panel's
+      MAC as a CONNECTION_NETWORK_MAC connection (alarm_control_panel.py), so
+      a lease for that MAC starts async_step_dhcp, which corrects the stored
+      host - on every partition entry of the same panel - and reloads.
+      tests/ha/test_config_flow.py drives the step for a move, a lease at the
+      address already stored, a MAC no entry holds, a renamed entry and a
+      two-partition panel; tools/validate_local.py refuses a matcher without
+      the step, or registered_devices without the MAC in device info.
   docs-data-update: done
   docs-examples: done
   docs-known-limitations: done
@@ -202,8 +210,10 @@ rules:
       an operating-system call with no asyncio equivalent in Home Assistant
       or on PyPI that does not want raw sockets, so this cannot be closed by
       swapping libraries. The routes out are a panel-side identifier found by
-      reading a real unit, or the DHCP matcher blocked under `discovery`,
-      which would have Home Assistant supply the MAC. The rule allows no
+      reading a real unit, or the OUI/hostname DHCP matcher blocked under
+      `discovery`, which would have Home Assistant hand over the MAC at setup.
+      The registered_devices matcher this integration does ship cannot: it
+      only fires for a MAC the integration already holds. The rule allows no
       exemption, so it stays todo rather than being filed as met.
   inject-websession:
     status: done
@@ -219,7 +229,10 @@ rules:
   strict-typing:
     status: done
     comment: |
-      pyproject.toml sets strict with nothing switched off underneath it -
-      the only override is ignore_missing_imports scoped to getmac, which
-      ships no stubs - and the Tests workflow runs mypy against the whole
-      integration with Home Assistant installed on every push.
+      pyproject.toml sets strict with nothing switched off underneath it: the
+      file's one override is ignore_missing_imports scoped to getmac, which
+      ships no stubs, and supplying types for a dependency relaxes no check
+      here. tools/validate_local.py fails the run if strict is dropped or if
+      any override carries a key other than that one, and the Tests workflow
+      runs mypy against the whole integration with Home Assistant installed
+      on every push.

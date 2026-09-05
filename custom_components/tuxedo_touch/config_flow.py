@@ -18,6 +18,8 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from .api import (
     TuxedoTouchAuthError,
@@ -200,6 +202,43 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
             errors=errors,
         )
+
+    async def async_step_dhcp(
+        self, discovery_info: DhcpServiceInfo
+    ) -> ConfigFlowResult:
+        """Follow a configured panel to the address its DHCP lease now holds.
+
+        The manifest asks for `registered_devices` only, so Home Assistant
+        starts this step just for MACs already in the device registry - never
+        for a panel that is not set up yet. One panel can hold several entries
+        (one per partition), all of which move together, so every entry
+        carrying this MAC is corrected rather than only the first.
+        """
+        mac = format_mac(discovery_info.macaddress)
+        matched = [
+            entry
+            for entry in self._async_current_entries(include_ignore=False)
+            if entry.data.get(CONF_MAC) == mac
+        ]
+        if not matched:
+            # Only reachable if the device registry holds a MAC that no entry
+            # stores, which the setup path does not produce.
+            return self.async_abort(reason="unknown_panel")
+        for entry in matched:
+            if entry.data[CONF_HOST] == discovery_info.ip:
+                continue
+            # The title names the host, so it follows the move - unless the
+            # user renamed the entry, in which case their name stays.
+            title = entry.title
+            if title == _title_for(entry.data[CONF_HOST]):
+                title = _title_for(discovery_info.ip)
+            self.hass.config_entries.async_update_entry(
+                entry,
+                data={**entry.data, CONF_HOST: discovery_info.ip},
+                title=title,
+            )
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        return self.async_abort(reason="already_configured")
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
