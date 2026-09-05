@@ -20,6 +20,11 @@ numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 - `tuxedo_source`, an entity attribute saying where the shown state came from:
   `stream`, `poll`, or `assumed` for a command the panel accepted but neither source
   reported.
+- The diagnostics download reports the stream: whether it is connected, whether the
+  firmware answered 404 and has no stream at all, the connection id, the client count,
+  how many frames have arrived and how far a failing stream has backed off, alongside
+  which source produced the status shown. A report naming only the poll could not
+  distinguish a stream that never came up from a panel that is not answering.
 
 ### Fixed
 
