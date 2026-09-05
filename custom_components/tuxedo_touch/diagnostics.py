@@ -47,6 +47,11 @@ async def async_get_config_entry_diagnostics(
         # terminal state: the panel refused the credentials, so the stream
         # stopped rather than spend more failed logins on them, and a report
         # carrying it explains a stream that is down and staying down.
+        # `stopped` is the third, and it says a bug rather than a panel: the
+        # loop failed repeatedly for a reason the module does not name and
+        # gave up, with `last_error` naming it. Without those two a report of
+        # a task that has died reads exactly like one of a stream that is
+        # briefly down and backing off, which is what it used to do.
         # `frames` separates a stream that is up and silent from one that
         # never carried anything, and `reconnect_wait` says how far a failing
         # one has backed off. None of it is user data, so none is redacted.
@@ -54,6 +59,8 @@ async def async_get_config_entry_diagnostics(
             "connected": push.connected,
             "unsupported": push.unsupported,
             "auth_failed": push.auth_failed,
+            "stopped": push.stopped,
+            "last_error": push.last_error,
             "connection_id": push.connection_id,
             "client_count": push.client_count,
             "frames": push.frames,

@@ -80,6 +80,25 @@ def test_the_second_partition_is_reported_as_its_own():
     assert status.partition == 2
 
 
+def test_a_partition_field_that_is_not_a_number_decodes_to_no_partition():
+    """str.isdigit() and int() are not the same question.
+
+    The latin-1 superscripts 0xB9/0xB2/0xB3 satisfy isdigit() and raise on
+    int(), and latin-1 is how this stream MUST be decoded - the state flag is
+    a raw byte, so those characters are exactly what this decoder can see.
+    Guarding the conversion with a different predicate put an unhandled
+    ValueError inside the read loop, where nothing in async_run's except list
+    catches it: one such frame ended the stream task for the life of the
+    entry while the log and the diagnostics both said it was reconnecting.
+    """
+    status = push.decode_status_frame(
+        b"0:21:1\xb2:fe:\xfe1Ready To Arm:2".decode("latin-1")
+    )
+    assert status is not None
+    assert status.partition is None
+    assert status.text == "Ready To Arm"
+
+
 @pytest.mark.parametrize(
     "payload",
     [
