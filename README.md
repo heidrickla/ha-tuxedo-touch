@@ -17,6 +17,12 @@ It gives you one `alarm_control_panel` entity per partition, with Arm Home (Stay
 Away, Arm Night and Disarm, using the reverse-engineered login and encryption flow
 documented in [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md).
 
+Since 0.4.0 the panel **pushes** its state: the integration holds the unit's own event
+stream open, so an arm or a disarm at the keypad shows up in seconds, the exit-delay
+countdown is visible while it runs, and the firmware's long-standing `Not available`
+answer - which used to leave the entity with nothing to show - cannot reach the entity
+at all. See [How it updates](#how-it-updates).
+
 ## Supported devices
 
 | Device | Notes |
@@ -43,14 +49,25 @@ name carried the partition keeps whatever entity id it already had.
 | `NN  Secs Remaining` (exit delay) | `arming` |
 | Entry Delay Active | `pending` |
 | Not Ready Alarm, Armed Stay Alarm, Armed Away Alarm, Armed Night Alarm, Armed Instant Alarm | `triggered` |
-| `Not available` | `unavailable` - the panel reported no status at all; see [How it updates](#how-it-updates) |
+| `Not available` | `unavailable` - the panel's status cache was empty, and only the 30 s poll can ever see this; see [How it updates](#how-it-updates) |
 | Anything else | `unknown` |
+
+The panel spells the same strings on both of the sources described in
+[How it updates](#how-it-updates), so the table applies to whichever reported the state.
 
 Commands are the alarm panel domain's own actions: `alarm_control_panel.alarm_arm_home`
 (Stay), `alarm_arm_away`, `alarm_arm_night` and `alarm_disarm`. Each takes an optional
-`code`; without one the keypad code stored at setup is used. The raw strings the panel
-returned are exposed as the `tuxedo_status` and `tuxedo_color` attributes. There are no
-actions, triggers or conditions of this integration's own.
+`code`; without one the keypad code stored at setup is used. There are no actions,
+triggers or conditions of this integration's own.
+
+The entity carries four attributes:
+
+| Attribute | What it is |
+|---|---|
+| `tuxedo_status` | the panel's own status string, as reported |
+| `tuxedo_color` | the colour the panel showed it in: `green`, `red` or `yellow` |
+| `tuxedo_source` | where it came from: `stream` (the panel pushed it), `poll` (the 30 s status read) or `assumed` (a command the panel accepted but neither source reported) |
+| `arming_seconds_remaining` | seconds left of the exit delay while the state is `arming`, `null` otherwise |
 
 ## Use cases
 
@@ -62,6 +79,8 @@ actions, triggers or conditions of this integration's own.
   interface (Envisalink or similar) attached.
 - Keep the Tuxedo's lighting, thermostat and lock features out of Home Assistant while
   still owning the alarm from it - only security is implemented here.
+- Count the exit delay down on a dashboard, or hold a "leaving the house" scene until
+  `arming_seconds_remaining` reaches zero - the panel pushes it once a second.
 
 ## Requirements
 
@@ -200,29 +219,60 @@ the web login account you used stays as it was.
 
 ## How it updates
 
-Every 30 seconds the integration reads the panel's security status. A successful arm or
-disarm updates the entity immediately with the state just commanded, and a poll that was
-already in flight when the command went out is discarded rather than allowed to flip the
-entity back. When the panel is unreachable the entity becomes unavailable; the log has
-one line when that happens and one when it recovers.
+**The panel pushes its state, and that is what the entity shows.** As soon as an entry
+is set up, the integration opens one long-lived request to the panel's event stream and
+holds it open for the life of the entry. The panel reports partition status on it as it
+happens - an arm, a disarm, and the exit-delay countdown a second at a time - so a
+change made at the keypad reaches Home Assistant in seconds rather than at the next
+poll. The `tuxedo_source` attribute says `stream` when the state came from there.
 
-The panel's status endpoint intermittently answers `Not available` on a unit that is
-otherwise fine, and on some units for long stretches. That is the panel's own behaviour
-and this integration does not try to talk it out of it; what it does is treat the answer
-as a failed read rather than a state. The entity goes `unavailable` for as long as the
-panel keeps saying it, the last real status is kept underneath, and the first genuine
-status brings the entity back by itself with no help from you. The log gets one line
-when an outage starts and one when it ends. Note that Home Assistant skips unavailable
-entities in service calls, so arming and disarming from Home Assistant are unavailable
-too for the length of an outage - the panel's own touchscreen is not.
+The 30-second status read is still there, doing two smaller jobs: it is the first read
+at setup, which is what proves the address, the scheme and the credentials, and it is
+the fallback whenever the stream is not connected. While the stream is delivering, what
+the poll reads is ignored rather than written over the pushed status - with one
+exception, described below.
 
-Up to 0.3.1 that answer was instead stored as the entity's data when there was nothing
-earlier to keep, so an entry that loaded during an outage latched: every later
-`Not available` preserved the placeholder and the entity read `unknown` until somebody
-armed or disarmed. It no longer stores it at all, on the first poll or any other. The
-entry itself still loads through an outage, because a panel that answers `Not available`
+**This closes the `Not available` story.** The panel's `GetSecurityStatus` endpoint
+reads a cache its firmware can fill only from a message on the alarm bus, and answers
+the literal `Not available` while that cache is empty; on a quiet house that could last
+hours, and it is what used to leave the entity with nothing to show. The event stream
+does not read that cache. A client on it cannot see `Not available` at all, so on
+firmware that has the stream the condition no longer reaches the entity. It is still
+handled for firmware that does not: a poll answering `Not available` is a failed read,
+not a state, on the first poll after a load as much as on the hundredth.
+
+The entity is available while **either** source is working, and unavailable only when
+both are down - so a poll answering `Not available` while the stream is up is not an
+outage of anything. When the stream drops it reconnects on its own, with a wait that
+doubles up to five minutes and resets the moment a connection comes up; the log gets one
+line when it goes and one when it returns. A panel whose firmware has no such endpoint
+answers 404, the stream stops asking, and the integration runs on the poll alone exactly
+as it did before 0.4.0.
+
+### Arming and disarming
+
+Arm and disarm answer HTTP 200 with an empty body: the panel says what it did on the
+event stream, seconds later, and not in the reply. So a command waits for the panel's
+own report, for up to eight seconds. If none arrives, the integration polls; if the poll
+cannot show the change either, the entity shows the state that was asked for and marks
+it `assumed` in `tuxedo_source`, because nothing confirmed it. The next real status from
+either source replaces it. A poll that was already in flight when the command went out
+is discarded rather than allowed to flip the entity back.
+
+### When the two sources disagree
+
+The stream says outright whether the partition is armed, but never in which mode - the
+mode comes from the display text. A display text this integration does not recognise
+therefore settles nothing, and that is the one case where the poll's own reading is let
+through to settle it. Everything in the table under
+[Supported functions](#supported-functions) is recognised on both sources; a firmware
+spelling a mode some other way would take this path rather than showing `unknown` for
+ever.
+
+The entry loads through an outage of either kind. A panel that answers `Not available`
 has answered - address, port, scheme and credentials are all proven by that reply - so
-the device, the entity and its history stay where they were.
+refusing to set the entry up would take the device, the entity and its history away for
+as long as it lasted.
 
 Requests go out on Home Assistant's own HTTP connection pool rather than a pool of this
 integration's own, and every client here - each entry's poller, and the checks the setup
@@ -238,8 +288,16 @@ queueing behind it.
 
 The pool keeps an idle connection for fifteen seconds. A thirty-second poll therefore
 opens a fresh one each time and pays for the panel's slow legacy TLS handshake once per
-poll, and for the second half of every interval nothing of ours is connected to the
-panel at all.
+poll, and for the second half of every interval nothing of ours is polling the panel.
+
+The event stream is a second connection and it is held open permanently, which sounds
+like exactly the contention described above and is not: the panel's stream endpoint is
+measurably not subject to that limit. Two clients have each held a stream while commands
+went out on a separate request, all three served at once, and six connect-disconnect
+cycles on one session reclaimed their slot every time. So the stream can be held while
+the poll, a setup check and the panel's own web UI all work. Unloading an entry cancels
+it and waits for the cancellation, so a returned unload still means nothing of ours is
+on the panel - which is what the reconfigure form relies on before it dials.
 
 ## Repairs
 
@@ -320,19 +378,48 @@ script:
           code: "{{ code }}"
 ```
 
+Announce the exit delay as the panel counts it down, and again when it has armed:
+
+```yaml
+automation:
+  - alias: Call the exit delay out loud
+    triggers:
+      - trigger: state
+        entity_id: alarm_control_panel.honeywell_tuxedo_touch_partition_1
+        attribute: arming_seconds_remaining
+    conditions:
+      - condition: template
+        value_template: >
+          {{ trigger.to_state.attributes.arming_seconds_remaining in [30, 10] }}
+    actions:
+      - action: tts.speak
+        target:
+          entity_id: tts.piper
+        data:
+          media_player_entity_id: media_player.hallway
+          message: >
+            {{ trigger.to_state.attributes.arming_seconds_remaining }} seconds
+            to leave.
+```
+
 ## Known limitations
 
 - Only security arm/disarm/status is implemented. The panel's API also exposes lighting,
   thermostat, door lock, scene, and garage door control - untested and unimplemented here,
   though they should follow the same request-signing pattern.
-- **The status feed can go quiet.** While the panel answers `Not available` it is
-  reporting no status at all, so the entity is `unavailable`: it cannot see changes made
-  at the physical keypad or by another integration, and because Home Assistant skips
-  unavailable entities in service calls, it cannot be armed or disarmed from Home
-  Assistant either until the panel reports a real status again. The panel's own
-  touchscreen is unaffected throughout - the command path and the status-reporting path
-  fail independently on this firmware. If you have a working ECP-bus alarm integration
-  (Envisalink, esphome-vistaECP, etc.) on the same panel, prefer that one for status.
+- **The event stream carries the alarm state and nothing else.** Zone-level detail and
+  the event log are not obtainable from this panel over HTTP by any route: there is no
+  zone endpoint, the configuration files are not served, and the one command that would
+  report zones is accepted and answered by nothing. For zones, use an ECP-bus
+  integration (Envisalink, esphome-vistaECP) on the same panel.
+- **The status feed can still go quiet on firmware without the stream.** While the poll
+  is the only source and the panel answers `Not available`, it is reporting no status at
+  all, so the entity is `unavailable`: it cannot see changes made at the physical keypad,
+  and because Home Assistant skips unavailable entities in service calls, it cannot be
+  armed or disarmed from Home Assistant either until a real status arrives. The panel's
+  own touchscreen is unaffected throughout - the command path and the status-reporting
+  path fail independently on this firmware. On firmware that has the event stream this
+  cannot happen: that path does not read the cache the placeholder comes from.
 - Status is polled without a partition parameter (the firmware's `GetSecurityStatus`
   doesn't take one), so on multi-partition panels the reported status is whatever the
   Tuxedo module itself reports; arm/disarm do target the configured partition.
@@ -368,8 +455,9 @@ script:
 | Setup says the panel answered but the response could not be used | The login page came back without the challenge headers, or the key page was short: firmware this client does not know. The log line names which. Open an issue with the firmware version from the touchscreen's About page. |
 | The entity is unavailable and the API call was redirected to HTTPS | "Secured Web Server Access" is on and the entry uses HTTP. A repair notification offers to switch the entry over; see [Repairs](#repairs). Reconfiguring by hand with Use HTTPS on and port 443 does the same thing. |
 | Home Assistant asks to re-authenticate | The panel rejected the stored web login. Enter the current username and password; the address and code are kept. |
-| The entity is unavailable and the panel is up | It is answering `Not available` instead of a status - its own firmware quirk, not a fault of the connection. The log says so once per outage, and the entity comes back on the first real status without anything from you. |
-| The entity does not follow the keypad | The status feed is stuck on `Not available` (see Known limitations), which also means Home Assistant will not arm or disarm it. Use the panel's touchscreen, or an ECP-bus integration for status. |
+| The entity is unavailable and the panel is up | Both sources are down: the event stream is not connected and the poll is failing or answering `Not available`. The log says so once per outage for each, and the entity comes back on the first real status without anything from you. |
+| The entity does not follow the keypad | Check `tuxedo_source` on the entity. `stream` means the panel is pushing changes and they should arrive in seconds. `poll` means the stream is not connected - the log says why, and a firmware without the endpoint says so once at setup - so changes wait for the 30-second read and can be masked by `Not available`. |
+| The log says the panel has no push stream | That firmware does not serve the endpoint (it answers 404). Nothing is broken; the integration runs on the 30-second poll alone, with the `Not available` behaviour described in Known limitations. |
 | Two entries for one panel | A repair notification names both entries. Remove one; the other adopts the panel's identity on the panel's next DHCP lease. See [Repairs](#repairs). |
 | The panel moved to a new IP and stayed unavailable | The stored address is only corrected automatically where Home Assistant sees the panel's DHCP lease. On a routed install, or where the panel holds a static address and issues no lease, reconfigure the entry with the new address. |
 | The panel is not discovered | Home Assistant only discovers it from a DHCP lease. Check that the panel is on DHCP rather than a static address set on its touchscreen, and that Home Assistant is on the same network segment. Add it by hand otherwise; it works exactly the same, it is just keyed on the address. |
@@ -400,8 +488,11 @@ the coverage figure from such a run measures the skip rather than the code. What
 harness needs is the Python version, not the platform: 2026.x is written for 3.14 and
 will not install under 3.12. Given 3.14 the whole suite runs on Windows as it does on
 Linux, measured here on 2026-09-05 with `pytest-homeassistant-custom-component`
-0.13.357, Home Assistant 2026.8.3 and CPython 3.14.7 - 119 tests, 99% coverage, mypy
-strict clean. The GitHub Tests workflow is still the gate: it runs the whole suite,
+0.13.357, Home Assistant 2026.8.3 and CPython 3.14.7 - 183 tests, 99% coverage, mypy
+strict clean. Several of them stand a fake panel up on 127.0.0.1 and talk to it over a
+real socket, which the test harness blocks by default; those ask for the `socket_enabled`
+fixture, and the harness's own guard still allows nothing but 127.0.0.1. The GitHub Tests
+workflow is still the gate: it runs the whole suite,
 holds coverage of the integration at 95%, and runs mypy in strict mode and the validator
 on every push. A mypy run without Home Assistant installed reports its classes as `Any`;
 that is the missing package, not the code.

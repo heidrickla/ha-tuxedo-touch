@@ -136,6 +136,140 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
   login challenge's `Random` header was also observed at 31 hex chars (not always 32) -
   treat it as opaque text.
 
+## The push stream
+
+This is where the alarm state comes from as of 0.4.0, and it is the answer to the
+`"Not available"` bug described under Known device quirks: it does not read the cache
+that produces that placeholder, so a client on this stream cannot see it at all.
+
+```
+GET /SimpleDebugger.interface/G.     <- works
+GET /SimpleDebugger.interfaceG.      <- 404
+```
+
+**The slash before `G.` is the whole trick.** The vendor's own client appends `G.` to a
+base URL that already ends in one, which is why it is easy to get wrong and why this
+endpoint was written off as absent for a long time. Authentication is the **session
+cookie alone**: no `authtoken`, no `identity` header, no encrypted body, no query string.
+
+The reply is `multipart/x-mixed-replace; boundary="EH912ZZ"`, one part per event, and
+the request never ends by itself.
+
+**Decode it latin-1, never utf-8.** The state flag is a raw `0xFE`/`0xFF` byte; utf-8
+turns it into U+FFFD and the field carrying the display text can no longer be located at
+all, so the frame decodes to nothing rather than decoding wrongly.
+
+Three frame shapes:
+
+```
+['setCid', <connection id>]
+['ud','SimpleDbgServer2ClientIntf','noOfClient',[<n>]]
+['ud','SimpleDbgServer2ClientIntf','statusMessageText',["<payload>"]]
+```
+
+The payload is colon-delimited:
+
+```
+0:21:1:fe:\xfe1Ready To Arm:2
+0:21:1:ff:\xff259  Secs Remaining:2
+|  |  | |   |  ||
+|  |  | |   |  |+- display text
+|  |  | |   |  +-- colour: 1 green, 2 red, 3 yellow (the REST API's "Color")
+|  |  | |   +----- the same flag again, as a RAW BYTE
+|  |  | +--------- state flag as hex TEXT: fe ready/disarmed, ff arming/armed
+|  |  +----------- partition number
+|  +-------------- command id
++----------------- 0 in everything observed
+```
+
+Command ids in field 2: **21** partition status (the useful one), **18** home partition,
+**504** initial/registration data on connect, **-1** unsolicited status update. Only 21
+and -1 carry the flag byte, so only those decode to a partition status here.
+
+Read the colour digit carefully: it sits between the flag byte and the text, so
+`\xff259  Secs Remaining` is *colour 2* and *59 seconds*, not 259 seconds.
+
+Behaviour worth relying on, all measured on the reference unit:
+
+- **An idle panel is not a silent stream.** It repeats the partition status on its own
+  timer roughly every 33 seconds - 81 frames over a five-minute hold, the last at
+  t+296 s. So silence much longer than that means the socket is dead, which is what
+  `PUSH_READ_TIMEOUT` is set from rather than guessed at.
+- **Reconnecting is cheap.** Six connect-disconnect cycles on one session held
+  `noOfClient` at 1 every time and left the session usable; slots are reclaimed on
+  disconnect.
+- **Streams coexist with everything else.** Two clients each held a stream while
+  commands went out on a separate request, `noOfClient` peaking at 2 with neither
+  starved. This is the one place the unit's usual one-connection-at-a-time behaviour
+  (below) does not apply, which is what makes holding a stream open for the life of an
+  entry safe.
+- **It is not faster than a tight poll** - push saw an arm at t+1.70 s against t+1.92 s
+  for a poll in a loop; the panel itself takes about 1.7 s. The case for it is that it
+  cannot hit the `"Not available"` fault, it needs no polling loop, and it reports
+  transitional states such as the exit-delay countdown that a 30-second poll misses.
+- **It carries partition/alarm state and nothing else.** Commands 12 (all zone status),
+  17 (event log), 22, 51, 134, 155 and 500 were issued while listening and produced
+  nothing, on the stream or inline. Zone data is not reachable over HTTP on this
+  firmware by any route tested.
+
+Wire format, the live capture and the reference reader:
+`iot-protocol-tools/TUXEDO-HA-ENRICHMENT.md` section "The push frame format, decoded
+byte-exact" and `tuxedo_push.py` in the same repository. The endpoint list this belongs
+to is `TUXEDO-FINDINGS.md` section "The complete local API surface", and the cache
+mechanism the stream bypasses is `TUXEDO-FIRMWARE.md` section 6. Those documents are the
+source; this section summarises rather than duplicates them.
+
+## What the REST surface actually answers
+
+Measured live against the unit, and it is much smaller than the vendor's own API
+reference suggests. Where static documentation and this section disagree, believe this
+section. Full enumeration in `iot-protocol-tools/TUXEDO-FINDINGS.md` section "The
+complete local API surface", taken from `script/tuxapi.js` inside the panel's own
+firmware image.
+
+- **Only about six endpoints answer with data**: `GetSecurityStatus`, `GetSceneList`,
+  `GetOccupancyMode`, `AdvancedMultimedia/GetCameraList`,
+  `AdvancedAutomation/DoorBell/getDoorBell`, and the two `Administration/View*` calls,
+  which refuse with `"This services are accessable local only"`.
+- **`GetOccupancyMode` is misrouted.** It returns the security status verbatim -
+  byte-identical to `GetSecurityStatus` - whatever parameters it is given. The handler is
+  wired to the wrong function.
+- **Most documented endpoints are not implemented.** They return the built-in test
+  console's *input form* for that endpoint - its own documentation page, not a handler.
+  Supplying the parameter changes nothing, in the encrypted body or the query string.
+  A few (`GetThermostatClock`, `GetThermostatSchedule`, `GetVideoEvents`) answer HTTP 200
+  with an HTML page containing `{"ErrorCode":"404"}`.
+- **There is no version, model or firmware endpoint, and no status-refresh endpoint** -
+  established by enumerating the vendor's own client, not by probing. This is why
+  `sw_version` and `model_id` are left blank on the device rather than synthesised.
+- **`GetSecurityStatus` is POST-only.** A GET returns 405. An **empty body** works: the
+  vendor's client sends nothing, this integration sends `operation=get`, and both are
+  accepted, so the parameter is ignored for that endpoint.
+- **Commands return nothing inline.** `ArmWithCode` and `DisarmWithCode` answer HTTP 200
+  with a **zero-byte body**; the result arrives on the push stream. Note that `aiohttp`
+  returns `None` from `resp.json()` for an empty body rather than raising, so code that
+  only catches a decode error never sees this case.
+- **`tokenkey` is not required.** Commands are accepted with an empty token, and it was
+  absent from every page checked.
+- **`/Config/` is not reachable.** `panelinfo.txt` and `P<N>Info.txt` are 404 on every
+  casing - no auth challenge, nothing served.
+- **The key blob is served on both** `/tuxedoapi.html` and
+  `/authenticated/index.html?url=tuxedoapi.html`, with the session cookie, on this
+  firmware.
+- **`Random` is 31 hex characters, reproducibly** - not 32, and not an opaque
+  fixed-width field. **`RandomID` increments on every fetch of the login page**, so its
+  meaning is not established; it is echoed back as `identity` in the login POST and
+  nothing here depends on its shape.
+- **The session cookie's name encodes the panel's boot time** (`z9ZAqJtI_<timestamp>`,
+  observed February 2014 on a unit whose clock starts in the past). For
+  `/handlerequest.html`, the `sessionid` that page expects is **the first 8 hex
+  characters of the cookie value read as a SIGNED 32-bit integer** - computed unsigned it
+  is a value the panel does not recognise. This integration does not use that endpoint;
+  it is recorded because it is the trap anything reaching for the second API will hit.
+- **The same web application is served on ports 80, 443 and 6280.** All three are gated
+  by the same session cookie, so the plaintext ports are a confidentiality problem
+  (the alarm user code travels in a query string on the second API), not an access one.
+
 ## Known device quirks
 
 - **`"Status":"Not available"`**: an intermittent, documented bug (also called out in the
@@ -159,29 +293,35 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
   don't assume a stuck "Not available" means arm/disarm aren't working, and don't assume
   arm/disarm working means status will start reporting correctly.
 
-  **Integration workaround** (see `TuxedoTouchCoordinator._async_poll` and
-  `TuxedoTouchCoordinator.set_optimistic_status` in `coordinator.py`): the coordinator
-  treats a polled `"Not available"` as a *failed read* - it raises `UpdateFailed` on every
-  poll that returns it, the first one after a load included, so the entity is unavailable
-  while the panel is answering it and the last real status is kept underneath rather than
-  overwritten. Up to 0.3.1 the placeholder was instead stored as data when there was
-  nothing earlier to keep, which latched: every later `"Not available"` then preserved
-  that stored placeholder and the entity read `unknown` until a command replaced it.
-  Separately, each arm/disarm call immediately pushes the *requested* status into the
-  coordinator via `async_set_updated_data()` right after the command succeeds, rather than
-  waiting on (and trusting) the next poll. That belongs to the healthy-feed case: a poll
-  already in flight when the command goes out carries an answer that predates the command,
-  and writing it through would flip the entity straight back to the state the user has just
-  changed. The optimistic value stops that, and the next fresh poll overrides it normally
+  **This is a property of `GetSecurityStatus` only.** The firmware fills that cache from
+  a message on the ECP bus and has no on-demand refresh, so the endpoint answers its
+  compiled-in default whenever nothing has filled it; polling cannot wake it. The push
+  stream described above does not read that cache, so from 0.4.0 the condition does not
+  reach the entity on firmware that serves the stream. See
+  `iot-protocol-tools/TUXEDO-FIRMWARE.md` section 6 for the mechanism in the binary.
+
+  **Integration handling** (see `TuxedoTouchCoordinator._async_poll` in `coordinator.py`):
+  a polled `"Not available"` is a *failed read* - `UpdateFailed` on every poll that
+  returns it, the first one after a load included - so the last real status is kept
+  underneath rather than overwritten. Up to 0.3.1 the placeholder was instead stored as
+  data when there was nothing earlier to keep, which latched: every later
+  `"Not available"` then preserved that stored placeholder and the entity read `unknown`
+  until a command replaced it. The entity is unavailable only when the stream is down
+  too; while the stream is connected, a poll answering the placeholder changes nothing.
+
+  Commands are confirmed rather than assumed (`async_send_command`): arm and disarm
+  return a zero-byte body, so the coordinator waits for the panel's own report on the
+  stream, falls back to a poll, and only then shows the requested status marked
+  `assumed`. A poll already in flight when the command goes out carries an answer that
+  predates it and is discarded rather than allowed to flip the entity back
   (`tests/ha/test_init.py::test_a_poll_in_flight_when_a_command_lands_is_discarded`).
-  It is not a way to drive the panel through an outage. While the feed is answering
-  `"Not available"` the entity is `unavailable`, and Home Assistant skips unavailable
-  entities in service calls, so no arm or disarm can be sent from Home Assistant until a
-  real status comes back - the entity cannot reflect a command it was never given. The
-  panel's own touchscreen is unaffected.
+  On firmware with no push stream this remains the pre-0.4.0 situation: while the feed
+  is answering `"Not available"` the entity is `unavailable`, Home Assistant skips
+  unavailable entities in service calls, and no arm or disarm can be sent from Home
+  Assistant until a real status comes back. The panel's own touchscreen is unaffected.
   If you have a working ECP-bus alarm integration (Envisalink, esphome-vistaECP, etc.) on
-  the same panel, prefer that one for status - this integration's status reporting is only
-  as good as the Tuxedo module's own connection to the panel.
+  the same panel, prefer that one for zone-level data, which the Tuxedo's web interface
+  cannot supply at all.
 - A GET to any endpoint (including the raw API endpoints, unauthenticated) redirects to
   `https://<ip>:443/tuxedoapi.html` regardless of the port/scheme requested when HTTPS
   access is enabled on the unit.
@@ -219,6 +359,12 @@ For every `/system_http_api/API_REV01/<endpoint>` call:
   left idle in the pool rather than opening its own beside it. Anything added here that
   talks to the panel should take that same context.
 
+  **The push stream is the exception, measured.** Two clients each holding a stream while
+  commands went out on a third request were all served at once (`noOfClient` peaked at
+  2, neither starved), and disconnecting reclaimed the slot every time. So holding a
+  stream open for the life of an entry does not starve the poll, the config flow's check
+  or the panel's own web UI - which is what makes the 0.4.0 design possible at all.
+
 - **A panel reset disables web access per user; it does not delete the accounts.** After
   resetting the unit, existing users survive but each one's web-access flag comes back
   **off**, and the web UI shows: *"Web access has been deactivated. Go to your Tuxedo's
@@ -252,17 +398,29 @@ coaxed into the legacy handshake with a temp config enabling `UnsafeLegacyRenego
 plus `-cipher 'DEFAULT@SECLEVEL=0'` - see the Hubitat repo's notes for the exact recipe used
 during initial reverse engineering.
 
-## Other endpoints in the official API (untested here)
+## Other endpoints in the official API
 
 Honeywell's own API reference (not reproduced here) documents a much larger surface than
-security arm/disarm/status - lighting, thermostats, door locks, scenes, garage doors, and
-water valves, all addressed by a Z-Wave `nodeID` rather than partition ID. These should
-follow the exact same request-signing/encryption/session pattern documented above - only
-the endpoint path and plaintext parameter shape change. Not implemented in this integration
-(security-only) and not verified against real hardware.
+security arm/disarm/status - lighting, thermostats, door locks, scenes, garage doors and
+water valves, all addressed by a Z-Wave `nodeID` rather than a partition ID. They would
+follow the same request-signing/encryption/session pattern documented above; only the
+endpoint path and the plaintext parameter shape change.
+
+Earlier revisions of this document called them "untested here". They have since been
+tested, and most of them **are not implemented on this firmware at all** - see "What the
+REST surface actually answers" above. Nothing in that group is worth building against
+without checking first that the endpoint answers with data rather than its own
+documentation form.
 
 ## References
 
+- `iot-protocol-tools` (private, not in this repository) - the reverse-engineering
+  record this document cites rather than duplicates. `TUXEDO-HA-ENRICHMENT.md` section
+  "The push frame format, decoded byte-exact" and its reference reader `tuxedo_push.py`
+  for the stream; `TUXEDO-FINDINGS.md` section "The complete local API surface" for the
+  endpoint enumeration taken from the panel's own client; `TUXEDO-FIRMWARE.md` section 6
+  for the status cache in the binary, with every claim tagged CONFIRMED, LIKELY or
+  UNKNOWN.
 - [homebridge-honeywell-tuxedo-touch](https://github.com/lockpicker/homebridge-honeywell-tuxedo-touch) -
   working reference for the unauthenticated-`/tuxedoapi.html` (older firmware) flow; where
   the "HMAC key = literal hex text" quirk and the `MACID:Browser,Path:API_REV01<endpoint>`

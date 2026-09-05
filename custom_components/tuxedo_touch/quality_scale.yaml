@@ -8,10 +8,16 @@ rules:
   appropriate-polling:
     status: done
     comment: |
-      Thirty seconds. The panel is an embedded web server with a legacy TLS
-      handshake on every new connection; a command is reflected immediately
-      through an optimistic update, so the poll only has to catch changes
-      made at the keypad.
+      Thirty seconds, and since 0.4.0 the poll is the fallback rather than
+      the source. The panel pushes partition status on its event stream as it
+      happens, so while that stream is connected the poll only proves the
+      panel is still answering and its reading is not written over what was
+      pushed. It is still the first read at setup - the one that proves the
+      address, the scheme and the credentials - and it is the only source on
+      firmware that does not serve the stream. Thirty seconds suits that
+      role: the panel is an embedded web server paying for a legacy TLS
+      handshake on every new connection, and no command waits for a poll to
+      be seen.
   brands:
     status: done
     comment: |
@@ -63,7 +69,9 @@ rules:
     comment: |
       The entity is a CoordinatorEntity, which subscribes to the coordinator
       in async_added_to_hass and unsubscribes on removal. Nothing else is
-      subscribed to.
+      subscribed to: the push stream belongs to the coordinator, which runs
+      it as a background task on the config entry and cancels it on unload,
+      so no entity holds a subscription of its own.
   entity-unique-id: done
   has-entity-name:
     status: done
@@ -101,12 +109,15 @@ rules:
   config-entry-unloading:
     status: done
     comment: |
-      Platforms are unloaded, the session is released by an on_unload
-      callback, and async_unload_entry additionally awaits the coordinator's
-      poll lock: unloading cancels the next poll but not one already in
-      flight, and that poll holds the panel's single connection. A caller
-      that has awaited the unload can therefore treat the panel as free -
-      which the reconfigure flow does before it checks new settings.
+      Platforms are unloaded and the session is released by an on_unload
+      callback. async_unload_entry additionally cancels the push stream's
+      task and awaits the cancellation - the stream is a request that never
+      ends by itself, so nothing short of that closes it - and then awaits
+      the coordinator's poll lock, because unloading cancels the next poll
+      but not one already in flight and that poll holds the panel's single
+      connection. A caller that has awaited the unload can therefore treat
+      the panel as free, which the reconfigure flow does before it checks new
+      settings.
   docs-configuration-parameters:
     status: exempt
     comment: No options flow; the connection details are edited by reconfigure.
@@ -114,36 +125,55 @@ rules:
   entity-unavailable:
     status: done
     comment: |
-      The entity is a CoordinatorEntity and follows the coordinator's
-      last_update_success. Every way a read can fail fails the poll, the
-      firmware's "Not available" answer included: that is a read that
-      returned no status rather than a status, so the entity is unavailable
-      while it lasts instead of publishing a placeholder or presenting the
-      last good state as current.
+      Two sources, so availability is not the CoordinatorEntity default: the
+      entity is available while the push stream is connected OR the last poll
+      succeeded, and unavailable only when both are down
+      (TuxedoTouchCoordinator.panel_available). Every way a read can fail
+      still fails the poll, the firmware's "Not available" answer included -
+      that is a read that returned no status rather than a status - but a
+      poll answering it while the stream is delivering real statuses is not
+      an outage of anything, and the stream cannot produce that answer at
+      all. Nothing publishes the placeholder or presents the last good state
+      as current.
   integration-owner: done
   log-when-unavailable:
     status: done
     comment: |
-      The coordinator logs an unreachable panel once, via UpdateFailed, and
-      once more when it recovers. A panel that answers "Not available"
-      instead of a status is the same shape and is logged the same way - one
-      info line naming the quirk when the outage starts, one when a real
-      status returns - rather than one line per 30 s poll for as long as it
-      runs, which on this unit can be hours.
+      Once per outage per source, and once on recovery. The coordinator logs
+      an unreachable panel once via UpdateFailed; a panel answering "Not
+      available" instead of a status is the same shape and gets one info line
+      naming the quirk when the outage starts and one when a real status
+      returns - including when the status that ends it arrives on the stream
+      rather than a poll - rather than one line per 30 s poll for as long as
+      it runs, which on this unit can be hours. The push stream is logged the
+      same way: one info line when it drops, one when it is connected again,
+      not one per reconnect attempt, and one line for firmware that answers
+      404 and therefore has no stream at all.
   parallel-updates: done
   reauthentication-flow: done
   test-coverage:
     status: done
     comment: |
       The Tests workflow runs the whole suite under coverage on every push
-      and fails below 95% (`--cov-fail-under=95`). tests/test_client_io.py
-      covers the client's login, key fetch and call paths through a session
-      stand-in; tests/ha covers setup, the entity, the config flow,
-      diagnostics, identity, the repair issues, the in-flight poll discard,
-      the "Not available" answer on the first poll and on a later one with
-      its recovery, and a stalled poll holding the reconfigure check off the
-      panel until it finishes. tools/validate_local.py refuses a workflow
-      that drops the gate.
+      and fails below 95% (`--cov-fail-under=95`); it measures 99%.
+      tests/test_client_io.py covers the client's login, key fetch and call
+      paths through a session stand-in; tests/ha covers setup, the entity,
+      the config flow, diagnostics, identity, the repair issues, the
+      in-flight poll discard, the "Not available" answer on the first poll
+      and on a later one with its recovery, and a stalled poll holding the
+      reconfigure check off the panel until it finishes.
+      tests/fake_panel.py stands a real server up on 127.0.0.1 speaking the
+      panel's whole wire format, so tests/test_push_stream.py and
+      tests/ha/test_push.py drive the actual request, multipart reading,
+      frame decoding, reconnect and re-login rather than a mock of them: the
+      stream becoming the state source, the exit-delay countdown, a poll not
+      written over a pushed status, an unrecognised text letting the poll
+      settle the mode, availability with each source failing in turn, a
+      command confirmed by the stream, one falling back to a poll, one
+      nothing confirms, and an unload leaving no task behind. The two frame
+      payloads from the live capture are asserted byte for byte with utf-8 as
+      the positive control. tools/validate_local.py refuses a workflow that
+      drops the gate.
 
   # Gold
   devices:
