@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigEntryState,
+    ConfigFlow,
+    ConfigFlowResult,
+)
 from homeassistant.const import (
     CONF_CODE,
     CONF_HOST,
@@ -52,6 +57,12 @@ _PASSWORD = selector.TextSelector(
 # reaches the frontend, where the field can reveal it, and is also applied
 # when the user clears the field.
 SECRETS = (CONF_PASSWORD, CONF_CODE)
+
+# Everything the login handshake depends on. A reconfigure that changes none
+# of these - a different partition, a new keypad code - has nothing to prove
+# against the panel, and on this device an unnecessary probe is not free: see
+# _async_validate_reconfigure.
+PROBED = (CONF_HOST, CONF_PORT, CONF_USE_HTTPS, CONF_USERNAME, CONF_PASSWORD)
 
 STEP_USER_SCHEMA = vol.Schema(
     {
@@ -162,6 +173,44 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Unexpected error validating Tuxedo Touch connection")
             return {"base": "unknown"}
         return {}
+
+    async def _async_validate_reconfigure(
+        self, entry: ConfigEntry[Any], data: dict[str, Any]
+    ) -> dict[str, str]:
+        """Validate a reconfigure without fighting this entry for the panel.
+
+        The unit serves ONE connection at a time and contention presents as a
+        hang rather than a refusal (see docs/tuxedo_touch_api_notes.md), so a
+        probe run while this entry's coordinator is polling can time out
+        against a panel that is answering perfectly and report cannot_connect
+        on every attempt. Two things keep the probe out of the poller's way:
+
+        - nothing the login depends on changed, so there is nothing to probe.
+          The entry itself is the check on those fields - a loaded one is
+          already logging in with them, and one that is failing to set up
+          reports why on its own card.
+        - otherwise the entry is unloaded first, which stops the poll loop and
+          releases its session, and set up again if the probe fails. A probe
+          that succeeds leaves it unloaded for the caller's reload, which is
+          the next thing to happen.
+
+        Not shared with the reauth step: there "unchanged" means the password
+        the panel has just rejected, which is exactly what has to be probed.
+        """
+        if all(data.get(field) == entry.data.get(field) for field in PROBED):
+            return {}
+        if entry.state is not ConfigEntryState.LOADED:
+            return await self._async_validate(data)
+
+        unloaded = await self.hass.config_entries.async_unload(entry.entry_id)
+        restore = True
+        try:
+            errors = await self._async_validate(data)
+            restore = bool(errors)
+            return errors
+        finally:
+            if unloaded and restore:
+                self.hass.config_entries.async_schedule_reload(entry.entry_id)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -374,33 +423,35 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                         merged[secret] = entry.data[secret]
                     else:
                         merged.pop(secret, None)
-            errors = await self._async_validate(merged)
+            # Nothing on this form can learn the panel's MAC - only a DHCP
+            # lease has one - so a reconfigure neither gains nor loses it.
+            # The stored identity is carried across unchanged, which is
+            # what makes an address change a move rather than a new panel.
+            if mac := entry.data.get(CONF_MAC):
+                merged[CONF_MAC] = mac
+            unique_id = build_unique_id(
+                merged.get(CONF_MAC),
+                user_input[CONF_HOST],
+                user_input[CONF_PORT],
+                user_input[CONF_PARTITION],
+            )
+            # Settled before the probe: a form that cannot be saved should not
+            # cost the panel a login, and on a loaded entry buying that login
+            # means stopping the poller for it.
+            if any(
+                other.entry_id != entry.entry_id and other.unique_id == unique_id
+                for other in self._async_current_entries()
+            ):
+                return self.async_abort(reason="already_configured")
+            errors = await self._async_validate_reconfigure(entry, merged)
             if not errors:
-                data = dict(merged)
-                # Nothing on this form can learn the panel's MAC - only a DHCP
-                # lease has one - so a reconfigure neither gains nor loses it.
-                # The stored identity is carried across unchanged, which is
-                # what makes an address change a move rather than a new panel.
-                if mac := entry.data.get(CONF_MAC):
-                    data[CONF_MAC] = mac
-                unique_id = build_unique_id(
-                    data.get(CONF_MAC),
-                    user_input[CONF_HOST],
-                    user_input[CONF_PORT],
-                    user_input[CONF_PARTITION],
-                )
-                if any(
-                    other.entry_id != entry.entry_id and other.unique_id == unique_id
-                    for other in self._async_current_entries()
-                ):
-                    return self.async_abort(reason="already_configured")
                 # The title names the host, so it follows a move - unless the
                 # user renamed the entry, in which case their name stays.
                 title = entry.title
                 if title == _title_for(entry.data[CONF_HOST]):
                     title = _title_for(user_input[CONF_HOST])
                 return self.async_update_reload_and_abort(
-                    entry, data=data, unique_id=unique_id, title=title
+                    entry, data=merged, unique_id=unique_id, title=title
                 )
 
         return self.async_show_form(

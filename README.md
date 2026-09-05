@@ -129,6 +129,16 @@ the panel identity it already has - a reconfigure moves an entry, it never turns
 a different panel - and its title follows the new address unless you renamed the entry.
 There are no options beyond these.
 
+The panel answers one client at a time, so the form takes care not to compete with the
+polling it is reconfiguring. Changing only the keypad code or the partition contacts the
+panel not at all: nothing the login depends on has changed, and the entry is already
+proof that what it does depend on works. Changing the address, port, scheme, username or
+password does need a login, so the entry is unloaded for the moment that check takes and
+set up again straight afterwards - on the new settings if they worked, on the old ones
+if they did not. Without that, the check competes with the poller for the panel's only
+connection, and contention on this unit is a hang rather than a refusal: the form waits
+out its timeout and reports "Failed to connect" about a panel that is perfectly well.
+
 When the panel starts refusing the stored credentials, Home Assistant stops polling and
 asks for them again rather than re-running the login handshake against doomed
 credentials every thirty seconds.
@@ -314,6 +324,7 @@ script:
 | Symptom | Cause and fix |
 |---|---|
 | Setup says "Failed to connect" | Home Assistant cannot reach the address and port, or the panel's single web session is held by a browser tab. Close any tab open on the unit and retry; check the port matches the HTTPS setting (443 on, 80 off). |
+| Reconfigure says "Failed to connect" | The new address, port, scheme or credentials did not answer. The entry has already been put back on its old settings and is polling again, so correct the form and submit it once more. It is not the entry's own poll getting in the way: the check runs with the entry unloaded. |
 | Setup says "Invalid username or password" and they are right | Web access for that user was disabled, which a panel reset does. Re-enable it on the touchscreen under Setup -> Account, or use the Login settings page to set the credentials again. |
 | Setup says the panel answered but the response could not be used | The login page came back without the challenge headers, or the key page was short: firmware this client does not know. The log line names which. Open an issue with the firmware version from the touchscreen's About page. |
 | The entity is unavailable and the API call was redirected to HTTPS | "Secured Web Server Access" is on and the entry uses HTTP. A repair notification offers to switch the entry over; see [Repairs](#repairs). Reconfiguring by hand with Use HTTPS on and port 443 does the same thing. |

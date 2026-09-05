@@ -196,7 +196,11 @@ rules:
     status: done
     comment: |
       Address, port, scheme, credentials, code and partition; the entry title
-      follows the host unless the user renamed the entry.
+      follows the host unless the user renamed the entry. The check against
+      the panel is skipped when nothing the login depends on changed, and
+      otherwise runs with the entry unloaded: the panel serves one client at
+      a time, so a check alongside the poller hangs and reports
+      cannot_connect on a healthy panel.
   repair-issues:
     status: done
     comment: |
