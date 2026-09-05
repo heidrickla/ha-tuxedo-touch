@@ -224,8 +224,17 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         The entity is unavailable only when both are down. A poll answering
         "Not available" while the stream is up is not an outage at all - the
         stream is reading a path that placeholder cannot appear on.
+
+        The stream counts once it has something to show, not merely once the
+        socket is open. An entry that loads during a "Not available" spell
+        has no status at all until the first frame arrives, and an entity
+        that is available with nothing to show reads `unknown` - which is the
+        state this release exists to remove. A second of `unavailable` while
+        the stream opens is the honest answer instead.
         """
-        return self.last_update_success or self.push.connected
+        return self.last_update_success or (
+            self.push.connected and self.data is not None
+        )
 
     # ------------------------------------------------------------------
     # Commands

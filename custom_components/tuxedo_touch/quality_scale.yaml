@@ -126,9 +126,13 @@ rules:
     status: done
     comment: |
       Two sources, so availability is not the CoordinatorEntity default: the
-      entity is available while the push stream is connected OR the last poll
-      succeeded, and unavailable only when both are down
-      (TuxedoTouchCoordinator.panel_available). Every way a read can fail
+      entity is available while the push stream has a status to show OR the
+      last poll succeeded, and unavailable only when both are down
+      (TuxedoTouchCoordinator.panel_available). The stream counts once it has
+      delivered rather than once its socket is open, so an entry loading
+      during an outage stays unavailable for the second before the first
+      frame instead of reading "unknown" with nothing behind it. Every way a
+      read can fail
       still fails the poll, the firmware's "Not available" answer included -
       that is a read that returned no status rather than a status - but a
       poll answering it while the stream is delivering real statuses is not

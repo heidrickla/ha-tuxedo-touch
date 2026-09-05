@@ -243,7 +243,10 @@ not a state, on the first poll after a load as much as on the hundredth.
 
 The entity is available while **either** source is working, and unavailable only when
 both are down - so a poll answering `Not available` while the stream is up is not an
-outage of anything. When the stream drops it reconnects on its own, with a wait that
+outage of anything. The stream counts once it has something to show rather than the
+moment its socket opens: an entry that loads during a `Not available` spell stays
+`unavailable` for the second or two before the first pushed status, instead of going
+`unknown` with nothing behind it. When the stream drops it reconnects on its own, with a wait that
 doubles up to five minutes and resets the moment a connection comes up; the log gets one
 line when it goes and one when it returns. A panel whose firmware has no such endpoint
 answers 404, the stream stops asking, and the integration runs on the poll alone exactly

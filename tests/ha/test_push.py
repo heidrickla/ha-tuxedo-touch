@@ -149,6 +149,23 @@ async def test_the_entity_is_available_while_either_source_works(
         assert _state(hass).state == "unavailable"
 
 
+async def test_an_entry_loading_during_an_outage_never_shows_unknown(
+    hass, fake_panel, panel_entry
+):
+    """The stream opening is not by itself something to show. An entity that
+    is available with no status reads `unknown`, which is the state this
+    release exists to remove; it stays unavailable until a status arrives."""
+    fake_panel.status = "Not available"
+    coordinator = await _setup(hass, panel_entry)
+    assert coordinator.data is None
+    assert coordinator.push.connected
+    assert _state(hass).state == "unavailable"
+
+    await fake_panel.push_status_text("Ready To Arm", armed=False)
+    await wait_until(lambda: _state(hass).state == "disarmed")
+    assert _state(hass).attributes["tuxedo_source"] == "stream"
+
+
 async def test_the_stream_dropping_and_returning_is_logged_once_each_way(
     hass, fake_panel, panel_entry, caplog
 ):
