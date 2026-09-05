@@ -6,20 +6,23 @@ import logging
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 from .const import (
     DOMAIN,
+    ISSUE_CREDENTIALS_REJECTED,
     ISSUE_DUPLICATE_ENTRY,
     ISSUE_HTTPS_REDIRECT,
+    OPT_CREDENTIALS_REJECTED,
     issue_id,
 )
 from .coordinator import (
     PanelStatusUnavailable,
     TuxedoTouchConfigEntry,
     TuxedoTouchCoordinator,
+    async_note_credentials_rejected,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,6 +31,19 @@ PLATFORMS: list[Platform] = [Platform.ALARM_CONTROL_PANEL]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: TuxedoTouchConfigEntry) -> bool:
+    if entry.options.get(OPT_CREDENTIALS_REJECTED):
+        # The panel has already refused these credentials, and it counts the
+        # refusals: three of them disable every web account on unpatched
+        # firmware, permanently and only clearable at the touchscreen. So this
+        # setup spends nothing - no login page, no credential POST, not even a
+        # connection to a unit that serves one at a time - and goes straight to
+        # asking the user. The issue is re-raised because the reauth card has
+        # no room for the warning that guessing is the danger.
+        async_note_credentials_rejected(hass, entry)
+        raise ConfigEntryAuthFailed(
+            translation_domain=DOMAIN,
+            translation_key="credentials_rejected_no_retry",
+        )
     await _migrate_entity_unique_ids(hass, entry)
     coordinator = TuxedoTouchCoordinator(hass, entry)
     # Registered before the first refresh: if it raises ConfigEntryNotReady
@@ -108,5 +124,9 @@ async def async_remove_entry(
     Nothing is written to the panel, so deleting the entry has nothing else
     to undo; an issue left behind would outlive the thing it is about.
     """
-    for key in (ISSUE_DUPLICATE_ENTRY, ISSUE_HTTPS_REDIRECT):
+    for key in (
+        ISSUE_CREDENTIALS_REJECTED,
+        ISSUE_DUPLICATE_ENTRY,
+        ISSUE_HTTPS_REDIRECT,
+    ):
         ir.async_delete_issue(hass, DOMAIN, issue_id(key, entry.entry_id))

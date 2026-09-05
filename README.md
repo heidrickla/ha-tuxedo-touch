@@ -308,16 +308,55 @@ on the panel - which is what the reconfigure form relies on before it dials.
 
 ## Repairs
 
-Two conditions cannot be cleared by retrying, so they arrive as repair notifications
+Three conditions cannot be cleared by retrying, so they arrive as repair notifications
 under Settings -> System -> Repairs rather than as log lines.
 
 | Notification | What it does |
 |---|---|
 | **Tuxedo Touch needs HTTPS** | The panel redirected the API to HTTPS because "Secured Web Server Access" is on. Opening the notification and submitting turns on Use HTTPS for that entry, moves port 80 to 443 (any other port is left as you set it) and reloads the integration. |
 | **Two Tuxedo Touch entries reach one panel** | Two entries reach the same panel and partition - by different addresses, or by the same address on ports 80 and 443 - so only one of them can hold the panel's identity. The notification names both entries; remove whichever you do not want and the other adopts the panel's MAC on the panel's next DHCP lease. |
+| **Tuxedo Touch is refusing the stored credentials** | Credentials that used to work are being refused, most often because the web password was changed at the keypad. It stands beside the re-authentication card and carries what the card has no room for: that Home Assistant has stopped trying deliberately, and that guessing is itself the danger. See [One login attempt, then it waits for you](#one-login-attempt-then-it-waits-for-you). |
 
-Both disappear on their own when the condition goes - including when you fix the panel's
-HTTPS setting from the touchscreen instead - and when the entry is deleted.
+They disappear on their own when the condition goes - including when you fix the panel's
+HTTPS setting from the touchscreen instead, or re-authenticate successfully - and when
+the entry is deleted.
+
+## One login attempt, then it waits for you
+
+**Home Assistant makes at most one automatic login attempt per set of credentials, and
+then stops until you give it different ones.** Not one per poll, not one per stream
+reconnect and not one per restart: one, for the life of those credentials.
+
+The panel counts failed web logins and acts on the count. On unpatched firmware **three
+failed logins disable every web account it has** - permanently, with no timeout and no
+self-clear. The only way back is at the unit: Setup, then the account screen, re-enable
+web access, Enable All, Apply. Patched firmware allows five and clears itself after five
+minutes, and the panel publishes its version nowhere a client can read, so this
+integration behaves as though every panel is the unforgiving kind.
+
+A longer retry interval would not do instead. Anything that retries automatically
+reaches three eventually; only stopping avoids it. So when the panel refuses the stored
+credentials - a web password changed at the keypad, an account disabled - the poll stops,
+the event stream stops rather than backing off, the refusal is written on the config
+entry so a restart spends nothing either, and Home Assistant asks you.
+
+At the keyboard that means:
+
+- **Submitting the credentials that are already stored is answered without asking the
+  panel.** They are the ones it has refused, so sending them again would cost an attempt
+  and learn nothing.
+- **Each different username or password you submit costs exactly one attempt.** Type the
+  one you believe is right rather than working through a list.
+- **Reconfigure works as a way back too**, on the same terms: it probes once when you
+  change something the login depends on, and a probe the panel accepts clears the entry's
+  refused state. Changing only the partition or the keypad code probes nothing and
+  changes nothing here.
+- If you restored the *same* password at the panel, neither form will re-test it - by
+  design, since it is the one the panel refused. Delete the entry and add it again, which
+  logs in once as any new entry does.
+- If the panel refuses credentials you are sure of, its web accounts are most likely
+  disabled already. Re-enable web access at the touchscreen. Waiting five minutes and
+  trying once more helps only on patched firmware, where the lockout clears itself.
 
 ## Examples
 
@@ -461,7 +500,8 @@ automation:
 | Setup says "Invalid username or password" and they are right | Web access for that user was disabled, which a panel reset does. Re-enable it on the touchscreen under Setup -> Account, or use the Login settings page to set the credentials again. |
 | Setup says the panel answered but the response could not be used | The login page came back without the challenge headers, or the key page was short: firmware this client does not know. The log line names which. Open an issue with the firmware version from the touchscreen's About page. |
 | The entity is unavailable and the API call was redirected to HTTPS | "Secured Web Server Access" is on and the entry uses HTTP. A repair notification offers to switch the entry over; see [Repairs](#repairs). Reconfiguring by hand with Use HTTPS on and port 443 does the same thing. |
-| Home Assistant asks to re-authenticate | The panel rejected the stored web login. Enter the current username and password; the address and code are kept. |
+| Home Assistant asks to re-authenticate | The panel rejected the stored web login. Enter the current username and password; the address and code are kept. Home Assistant has already stopped trying on its own, so nothing is being spent while the card waits - but each submission costs one login attempt against a panel that disables its web accounts after three, so submit the one you believe is right rather than a series of guesses. See [One login attempt, then it waits for you](#one-login-attempt-then-it-waits-for-you). |
+| Re-authentication says the panel may have locked its web accounts | The credentials it accepted before are being refused now. Either the web password was changed at the keypad, or the accounts are already disabled - in which case no password is the right one until they are re-enabled at the touchscreen (Setup, then the account screen, re-enable web access, Enable All, Apply). On patched firmware the lockout clears itself after five minutes. |
 | The entity is unavailable and the panel is up | Both sources are down: the event stream is not connected and the poll is failing or answering `Not available`. The log says so once per outage for each, and the entity comes back on the first real status without anything from you. |
 | The entity does not follow the keypad | Check `tuxedo_source` on the entity. `stream` means the panel is pushing changes and they should arrive in seconds. `poll` means the stream is not connected - the log says why, and a firmware without the endpoint says so once at setup - so changes wait for the 30-second read and can be masked by `Not available`. |
 | The log says the panel has no push stream | That firmware does not serve the endpoint (it answers 404). Nothing is broken; the integration runs on the 30-second poll alone, with the `Not available` behaviour described in Known limitations. |
@@ -479,10 +519,12 @@ logger:
 Download diagnostics from the entry's menu for a report with the host, MAC, credentials
 and code redacted. It carries the panel's raw status strings, which source spelled them,
 and the stream's own account of itself: whether it is connected, whether the firmware
-answered 404 and has no stream at all, the connection id the panel handed out, how many
-clients it thinks it has, how many frames have arrived, and how far a failing stream has
-backed off - beside the fallback poll's interval and last result. The two sources fail
-differently, so which one was speaking is the first thing to read.
+answered 404 and has no stream at all, whether it stopped because the panel refused the
+credentials, the connection id the panel handed out, how many clients it thinks it has,
+how many frames have arrived, and how far a failing stream has backed off - beside the
+fallback poll's interval and last result. The two sources fail differently, so which one
+was speaking is the first thing to read, and the two terminal flags are what separate a
+stream that is reconnecting from one that has stopped on purpose.
 
 ## Development
 
@@ -506,7 +548,7 @@ and CPython 3.14: `homeassistant.runner` imports `fcntl` and `resource`, neither
 which exists on Windows, and the proactor event loop builds its self-pipe from an AF_INET
 `socket.socketpair()`, which the harness's socket guard refuses. Stub `fcntl` and
 `resource` modules plus a `sitecustomize.py` rebinding `socket.socketpair` to the real
-socket class, all on `PYTHONPATH`, carry the whole suite through - 191 tests, 99%
+socket class, all on `PYTHONPATH`, carry the whole suite through - 207 tests, 99%
 coverage, mypy strict clean. The replacement `socketpair` has to accept the connection
 itself, from `_accept()` and the saved class: `socket.accept()` builds its return value
 from the name `socket` inside the socket module, which is the very name the guard

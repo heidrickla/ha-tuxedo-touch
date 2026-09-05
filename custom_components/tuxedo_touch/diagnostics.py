@@ -43,13 +43,17 @@ async def async_get_config_entry_diagnostics(
         "panel_color": status.color if status else None,
         # The primary source's own account of itself. `unsupported` is the
         # firmware having answered 404 - permanent, and the whole reason an
-        # install would be back on the poll alone. `frames` separates a
-        # stream that is up and silent from one that never carried anything,
-        # and `reconnect_wait` says how far a failing one has backed off.
-        # None of it is user data, so none of it is redacted.
+        # install would be back on the poll alone. `auth_failed` is the other
+        # terminal state: the panel refused the credentials, so the stream
+        # stopped rather than spend more failed logins on them, and a report
+        # carrying it explains a stream that is down and staying down.
+        # `frames` separates a stream that is up and silent from one that
+        # never carried anything, and `reconnect_wait` says how far a failing
+        # one has backed off. None of it is user data, so none is redacted.
         "push": {
             "connected": push.connected,
             "unsupported": push.unsupported,
+            "auth_failed": push.auth_failed,
             "connection_id": push.connection_id,
             "client_count": push.client_count,
             "frames": push.frames,

@@ -37,7 +37,9 @@ from custom_components.tuxedo_touch.const import (
     CONF_PARTITION,
     CONF_USE_HTTPS,
     DOMAIN,
+    ISSUE_CREDENTIALS_REJECTED,
     ISSUE_DUPLICATE_ENTRY,
+    OPT_CREDENTIALS_REJECTED,
     issue_id,
 )
 
@@ -645,6 +647,190 @@ async def test_reauth_recovers_from_a_wrong_password(hass, config_entry):
     assert done["type"] is FlowResultType.ABORT
     assert done["reason"] == "reauth_successful"
     assert config_entry.data[CONF_PASSWORD] == "right"
+
+
+def _rejected_entry(fake_panel, password):
+    """An entry the panel has already refused, addressed to the fake panel."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Tuxedo Touch (127.0.0.1)",
+        unique_id=f"127.0.0.1:{fake_panel.port}:1",
+        data={
+            CONF_HOST: "127.0.0.1",
+            CONF_PORT: fake_panel.port,
+            CONF_USE_HTTPS: False,
+            CONF_USERNAME: fake_panel.username,
+            CONF_PASSWORD: password,
+            CONF_CODE: "1234",
+            CONF_PARTITION: 1,
+        },
+        options={OPT_CREDENTIALS_REJECTED: True},
+    )
+
+
+async def test_resubmitting_the_stored_credentials_asks_the_panel_nothing(
+    hass, fake_panel
+):
+    """The user's submission is the last place a login is spent, and it is
+    not spent on this.
+
+    Sending back exactly what is stored is sending the credentials the panel
+    has already refused. Probing them again buys no information and costs one
+    of the three strikes that disable the panel's web accounts, so the form
+    answers it without a request.
+    """
+    entry = _rejected_entry(fake_panel, "no longer the password")
+    entry.add_to_hass(hass)
+    result = await entry.start_reauth_flow(hass)
+
+    again = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_USERNAME: fake_panel.username,
+            CONF_PASSWORD: "no longer the password",
+        },
+    )
+
+    assert again["type"] is FlowResultType.FORM
+    assert again["errors"] == {"base": "invalid_auth"}
+    assert fake_panel.login_attempts == 0
+
+
+async def test_a_rejection_after_a_rejection_says_the_panel_may_be_locked(
+    hass, fake_panel
+):
+    """Two failures that need two different instructions.
+
+    A wrong password on a working account is one thing. A panel refusing
+    credentials that used to work is another: the account may already be
+    disabled, in which case no password is the right one and typing more of
+    them is itself the harm. The second message says that, and says how to
+    clear it at the touchscreen.
+    """
+    entry = _rejected_entry(fake_panel, "no longer the password")
+    entry.add_to_hass(hass)
+    result = await entry.start_reauth_flow(hass)
+
+    again = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_USERNAME: fake_panel.username, CONF_PASSWORD: "another guess"},
+    )
+
+    assert again["type"] is FlowResultType.FORM
+    assert again["errors"] == {"base": "possibly_locked_out"}
+    # One attempt, because the user asked for it. Nothing automatic follows.
+    assert fake_panel.login_attempts == 1
+
+
+async def test_a_reauth_that_works_clears_the_flag_and_reloads(hass, fake_panel):
+    """The way out.
+
+    Setup reads the flag before it touches the network, so a flag left
+    standing after a successful reauthentication would refuse a working entry
+    for ever. The issue has to go with it.
+    """
+    entry = _rejected_entry(fake_panel, "no longer the password")
+    entry.add_to_hass(hass)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id(ISSUE_CREDENTIALS_REJECTED, entry.entry_id),
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=ISSUE_CREDENTIALS_REJECTED,
+        translation_placeholders={"title": entry.title},
+    )
+    result = await entry.start_reauth_flow(hass)
+
+    done = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_USERNAME: fake_panel.username, CONF_PASSWORD: fake_panel.password},
+    )
+    await hass.async_block_till_done()
+
+    assert done["type"] is FlowResultType.ABORT
+    assert done["reason"] == "reauth_successful"
+    assert entry.data[CONF_PASSWORD] == fake_panel.password
+    assert OPT_CREDENTIALS_REJECTED not in entry.options
+    assert (
+        ir.async_get(hass).async_get_issue(
+            DOMAIN, issue_id(ISSUE_CREDENTIALS_REJECTED, entry.entry_id)
+        )
+        is None
+    )
+    # And the entry really comes back, rather than being left refusing its
+    # own setup on a flag nothing cleared.
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_a_reconfigure_that_proves_new_credentials_clears_the_flag(
+    hass, fake_panel
+):
+    """The other door out of a refused entry, and it has to open too.
+
+    A reconfigure that changes anything the login depends on probes the
+    panel, so a probe that succeeded is the panel accepting these
+    credentials. A flag left standing would have the reload refuse its own
+    setup and send the user back to correct a password that was already
+    right.
+    """
+    entry = _rejected_entry(fake_panel, "no longer the password")
+    entry.add_to_hass(hass)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id(ISSUE_CREDENTIALS_REJECTED, entry.entry_id),
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=ISSUE_CREDENTIALS_REJECTED,
+        translation_placeholders={"title": entry.title},
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": entry.entry_id},
+        data={**dict(entry.data), CONF_PASSWORD: fake_panel.password},
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert OPT_CREDENTIALS_REJECTED not in entry.options
+    assert (
+        ir.async_get(hass).async_get_issue(
+            DOMAIN, issue_id(ISSUE_CREDENTIALS_REJECTED, entry.entry_id)
+        )
+        is None
+    )
+    assert entry.state is ConfigEntryState.LOADED
+    # One for the probe the user asked for, one for the entry that then
+    # loaded. Neither is automatic retrying.
+    assert fake_panel.login_attempts == 2
+
+
+async def test_a_reconfigure_that_probes_nothing_leaves_the_flag_alone(
+    hass, fake_panel
+):
+    """Changing the partition proves nothing about the credentials.
+
+    The reconfigure step deliberately skips the probe when nothing the login
+    depends on changed - it would be a login spent for no information. So
+    there is nothing to clear the flag on, and it must not be cleared anyway:
+    the panel is still refusing what is stored.
+    """
+    entry = _rejected_entry(fake_panel, "no longer the password")
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": entry.entry_id},
+        data={**dict(entry.data), CONF_PARTITION: 2},
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.options[OPT_CREDENTIALS_REJECTED] is True
+    assert fake_panel.login_attempts == 0
 
 
 async def test_the_reauth_form_suggests_the_username_but_not_the_password(

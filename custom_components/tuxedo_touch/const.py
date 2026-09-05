@@ -9,10 +9,19 @@ CONF_MAC = "mac"
 CONF_PARTITION = "partition"
 CONF_USE_HTTPS = "use_https"
 
+# Set on the entry's OPTIONS once the panel has refused the stored credentials.
+# On the options rather than in memory because surviving a restart is the whole
+# point: a client's failed-login budget dies with the process, so without this
+# every restart would spend a fresh login on credentials already known to be
+# refused - and three refused logins disable the panel's web accounts. Cleared
+# by a reauthentication that works.
+OPT_CREDENTIALS_REJECTED = "credentials_rejected"
+
 # Repair issue translation keys. The issue id appends the entry id so two
 # entries can be in the same state without sharing one issue.
 ISSUE_HTTPS_REDIRECT = "https_redirect"
 ISSUE_DUPLICATE_ENTRY = "duplicate_entry"
+ISSUE_CREDENTIALS_REJECTED = "credentials_rejected"
 
 DEFAULT_PARTITION = 1
 DEFAULT_PORT_HTTP = 80

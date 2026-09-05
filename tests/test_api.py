@@ -13,6 +13,7 @@ Assistant. That keeps this suite runnable on a bare Python with only aiohttp and
 cryptography installed -- the same reason it can run in CI in seconds.
 """
 
+import asyncio
 import base64
 import hashlib
 import importlib.util
@@ -214,6 +215,42 @@ check(
     _client()._ssl_ctx is _client()._ssl_ctx is ctx,
     True,
 )
+
+print()
+print("=== the failed-login budget: one attempt per credential set, ever ===")
+# The panel counts failed WEB logins and disables every web account at three:
+# no timeout, no self-clear, recovery only by walking to the touchscreen.
+# Patched firmware allows five and clears itself after 300 s, and the panel
+# publishes no version anywhere, so the number has to be safe on the stricter
+# one. Frozen here, so raising it is a deliberate act with a failing test
+# attached rather than a quiet edit.
+check("budget is one attempt", api.LOGIN_ATTEMPT_BUDGET, 1)
+check("a fresh client has spent none of it", _client()._failed_logins, 0)
+# Every existing `except TuxedoTouchAuthError` routes the refusal, so nothing
+# that already handles a rejection has to learn that this class exists.
+check(
+    "a refusal is an auth error",
+    issubclass(api.TuxedoTouchCredentialsRefused, api.TuxedoTouchAuthError),
+    True,
+)
+# The refusal comes before the login-page GET, and this PROVES that rather
+# than asserting it: the client below is built with session=None, so any
+# request at all - the GET included - would come out as an AttributeError
+# instead. Not taking the connection is part of the fix, because the panel
+# serves one at a time and the poll needs it.
+_spent = _client()
+_spent._failed_logins = 1
+try:
+    asyncio.run(_spent.login())
+    _refusal = "no exception at all"
+except api.TuxedoTouchCredentialsRefused:
+    _refusal = "refused"
+except Exception as err:
+    _refusal = f"{type(err).__name__}: {err}"
+check("a spent budget refuses before any request is built", _refusal, "refused")
+# How many attempts the PANEL sees, and that a login which succeeds hands the
+# budget back, are in tests/test_login_budget.py: counting them needs a server
+# to count against, which this file deliberately has not got.
 
 print()
 print("=== error hierarchy (callers catch the base class) ===")

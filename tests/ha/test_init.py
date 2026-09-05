@@ -5,7 +5,15 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import (
+    CONF_CODE,
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_USERNAME,
+)
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.tuxedo_touch.api import (
@@ -16,8 +24,12 @@ from custom_components.tuxedo_touch.api import (
 from custom_components.tuxedo_touch.const import (
     CONF_MAC,
     CONF_PARTITION,
+    CONF_USE_HTTPS,
     DOMAIN,
+    ISSUE_CREDENTIALS_REJECTED,
+    OPT_CREDENTIALS_REJECTED,
     SOURCE_ASSUMED,
+    issue_id,
 )
 from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
 
@@ -128,6 +140,82 @@ async def test_rejected_credentials_start_a_reauth_flow(hass, config_entry):
     assert config_entry.state is ConfigEntryState.SETUP_ERROR
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert [f for f in flows if f["context"].get("source") == "reauth"]
+
+
+async def test_a_rejection_at_runtime_is_written_down_without_a_reload(
+    hass, config_entry, ready
+):
+    """The state Home Assistant leaves this integration in, and why it has to
+    be recorded on the entry.
+
+    A poll that raises ConfigEntryAuthFailed on a LOADED entry does not
+    unload it: update_coordinator sets last_update_success, starts the reauth
+    flow, and leaves everything running. So the entry survives to the next
+    restart, and without something written down that restart would open with
+    a fresh login handshake against the credentials the panel has just
+    refused - a second strike out of the three that disable its web accounts.
+
+    Writing the option must not itself reload the entry, or the reload would
+    spend the very login this is preventing. The coordinator identity is what
+    proves it: a reload builds a new one.
+    """
+    with patch(STATUS, return_value=ready):
+        await _setup(hass, config_entry)
+    coordinator = config_entry.runtime_data
+
+    with patch(STATUS, side_effect=TuxedoTouchAuthError("password changed")):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert config_entry.options[OPT_CREDENTIALS_REJECTED] is True
+    assert config_entry.state is ConfigEntryState.LOADED
+    assert config_entry.runtime_data is coordinator
+    # The card cannot carry the "do not keep guessing" warning, so the issue
+    # stands beside it.
+    issue = ir.async_get(hass).async_get_issue(
+        DOMAIN, issue_id(ISSUE_CREDENTIALS_REJECTED, config_entry.entry_id)
+    )
+    assert issue is not None
+    assert issue.severity is ir.IssueSeverity.ERROR
+
+
+async def test_a_flagged_entry_spends_no_login_at_setup(hass, fake_panel):
+    """A restart with credentials already known to be refused costs nothing.
+
+    The whole point of persisting the flag: setup refuses before the client
+    is even built, so the panel sees no login page request and no credential
+    POST. It still ends where the user needs it to - the reauthentication
+    card and the issue beside it - because SETUP_ERROR from
+    ConfigEntryAuthFailed is what starts the flow.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Tuxedo Touch (127.0.0.1)",
+        unique_id=f"127.0.0.1:{fake_panel.port}:1",
+        data={
+            CONF_HOST: "127.0.0.1",
+            CONF_PORT: fake_panel.port,
+            CONF_USE_HTTPS: False,
+            CONF_USERNAME: fake_panel.username,
+            CONF_PASSWORD: "no longer the password",
+            CONF_CODE: "1234",
+            CONF_PARTITION: 1,
+        },
+        options={OPT_CREDENTIALS_REJECTED: True},
+    )
+    await _setup(hass, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert fake_panel.login_attempts == 0
+    assert fake_panel.polls == 0
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert [f for f in flows if f["context"].get("source") == "reauth"]
+    assert (
+        ir.async_get(hass).async_get_issue(
+            DOMAIN, issue_id(ISSUE_CREDENTIALS_REJECTED, entry.entry_id)
+        )
+        is not None
+    )
 
 
 async def test_the_session_is_closed_when_setup_never_completes(hass, config_entry):

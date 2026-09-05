@@ -279,11 +279,24 @@ async def test_a_frame_that_is_not_a_partition_status_is_ignored(panel, session)
 
 
 async def test_bad_credentials_do_not_hammer_the_panel(panel, session, monkeypatch):
-    """The poll raises ConfigEntryAuthFailed on the same credentials and
-    starts a reauth flow; the stream waits rather than re-running a doomed
-    handshake."""
+    """ONE credential POST, and then the task ENDS. Not a slower loop.
+
+    This is the failure the login budget exists for. The panel counts failed
+    web logins and disables every web account at three - permanently, on
+    unpatched firmware, recoverable only at the touchscreen - so a stream
+    that reconnects on a rejected password walks the unit off that cliff in
+    minutes and then goes on knocking at a door it has bricked shut. A longer
+    backoff is not a fix: it only spaces out the attempts that reach three.
+
+    Both waits are shrunk to a hundredth of a second and then a full second
+    is allowed to pass: a hundred backoff periods, against a loop whose first
+    iteration would already have been the second attempt. What is counted is
+    what the PANEL counts - `panel.logins` records only successful logins and
+    stays at zero however hard a wrong password is hammered, so a test
+    written against it would pass while the panel was being disabled.
+    """
     monkeypatch.setattr(push, "PUSH_BACKOFF_INITIAL", 0.01)
-    monkeypatch.setattr(push, "PUSH_BACKOFF_MAX", 30.0)
+    monkeypatch.setattr(push, "PUSH_BACKOFF_MAX", 0.01)
     client = api.TuxedoTouchClient(
         session=session,
         host="127.0.0.1",
@@ -294,9 +307,15 @@ async def test_bad_credentials_do_not_hammer_the_panel(panel, session, monkeypat
     )
     stream = push.TuxedoPushStream(client, lambda status: None, lambda up: None)
     task = asyncio.create_task(stream.async_run())
-    try:
-        await asyncio.sleep(0.1)
-        assert panel.stream_requests == 0
-        assert stream.connected is False
-    finally:
-        await _stop(task)
+    # The task FINISHES rather than idling, so `_stop` is not usable here -
+    # it requires a task still running, and that assertion inverts with the
+    # fix. Waiting on task.done() is the fix's own claim.
+    await wait_until(lambda: task.done())
+    await asyncio.sleep(1.0)
+
+    assert panel.login_attempts == 1
+    assert task.done()
+    assert stream.auth_failed is True
+    # It never reached the stream endpoint at all: the refusal is at the login.
+    assert panel.stream_requests == 0
+    assert stream.connected is False
