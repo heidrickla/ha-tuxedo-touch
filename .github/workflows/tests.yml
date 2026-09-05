@@ -55,12 +55,15 @@ jobs:
       - name: Pure tests
         run: .venv/bin/python tests/test_api.py
 
-      # Coverage is reported, not yet gated; the threshold lands once the
-      # known gaps are closed.
-      - name: Home Assistant layer tests
+      # The whole suite under one coverage run: the Home Assistant layer in
+      # tests/ha and the client's request handling in tests/test_client_io.py.
+      # The gate is the quality scale's own number, so a change that leaves
+      # new code untested fails here rather than being noticed later.
+      - name: Tests and coverage
         run: >
-          .venv/bin/python -m pytest tests/ha -q
+          .venv/bin/python -m pytest tests -q
           --cov=custom_components/tuxedo_touch --cov-report=term-missing
+          --cov-fail-under=95
 
       # With Home Assistant installed this is the strict run that means
       # something; pyproject.toml carries no relaxations.
