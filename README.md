@@ -52,8 +52,12 @@ name carried the partition keeps whatever entity id it already had.
 | `Not available` | `unavailable` - the panel's status cache was empty, and only the 30 s poll can ever see this; see [How it updates](#how-it-updates) |
 | Anything else | `unknown` |
 
-The panel spells the same strings on both of the sources described in
-[How it updates](#how-it-updates), so the table applies to whichever reported the state.
+The table applies to whichever of the two sources in [How it updates](#how-it-updates)
+reported the state. `Ready To Arm` and the exit-delay countdown are the texts that have
+been observed arriving on the push stream; the armed spellings are the ones the 30 s poll
+returns, and the stream is assumed to spell them the same way. If it turns out not to,
+the stream still says whether the partition is armed, and the poll is let through to name
+the mode - the state stays right, at the poll's granularity.
 
 Commands are the alarm panel domain's own actions: `alarm_control_panel.alarm_arm_home`
 (Stay), `alarm_arm_away`, `alarm_arm_night` and `alarm_disarm`. Each takes an optional

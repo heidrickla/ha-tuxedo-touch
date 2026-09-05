@@ -376,11 +376,19 @@ async def test_firmware_without_a_push_stream_runs_on_the_poll_alone(
         ("Entry Delay Active", False, "pending"),
     ],
 )
-async def test_each_mode_arrives_on_the_stream_as_the_panel_spells_it(
+async def test_each_mode_the_map_knows_is_taken_from_a_streamed_text(
     hass, fake_panel, panel_entry, text, armed, expected
 ):
-    """The stream's display text is the text GetSecurityStatus returns, which
-    is why one status map serves both sources."""
+    """One status map serves both sources, so a text the map knows must reach
+    the entity as that state whichever source carried it.
+
+    Only `Ready To Arm` and the countdown have been captured on a real
+    stream; the armed spellings here are GetSecurityStatus's, and the fake
+    spells them on the stream because the integration assumes the panel does
+    (docs/tuxedo_touch_api_notes.md, "Which display texts have actually been
+    seen on the stream"). This test pins the mapping, not the assumption -
+    what happens when the assumption is wrong is the test above, where a text
+    outside the map leaves the poll to settle the mode."""
     await _setup(hass, panel_entry)
     await fake_panel.push_status_text(text, armed=armed)
     await wait_until(lambda: _state(hass).state == expected)

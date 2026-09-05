@@ -32,9 +32,12 @@ from .coordinator import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
 PARALLEL_UPDATES = 1
 
 # The status strings the panel reports, as alarm states. One map serves both
-# sources because both carry the same strings: the push stream's display text
-# is the text GetSecurityStatus returns ("Ready To Arm" disarmed,
-# "59  Secs Remaining" during an exit delay, "Armed Stay" and the rest armed).
+# sources. "Ready To Arm" and the exit-delay countdown ("59  Secs Remaining")
+# are the texts seen on the push stream; the armed spellings are the ones
+# GetSecurityStatus returns, and the stream is assumed - not observed - to
+# spell them the same way. If it does not, a streamed text outside this map
+# settles nothing and the poll is let through to name the mode, so the
+# assumption being wrong costs granularity rather than correctness.
 # const.STATUS_STATES holds it as plain text so the coordinator can ask
 # whether a text names a state without importing a platform module; this is
 # the same table with Home Assistant's enum in place of those strings.
