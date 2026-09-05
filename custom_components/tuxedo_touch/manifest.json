@@ -10,6 +10,10 @@
   ],
   "dhcp": [
     {
+      "hostname": "tux*",
+      "macaddress": "00D02D*"
+    },
+    {
       "registered_devices": true
     }
   ],
@@ -18,8 +22,7 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/heidrickla/ha-tuxedo-touch/issues",
   "requirements": [
-    "cryptography",
-    "getmac==0.9.5"
+    "cryptography"
   ],
   "version": "0.3.0"
 }

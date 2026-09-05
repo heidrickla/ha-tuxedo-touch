@@ -32,16 +32,16 @@ jobs:
 
       # 0.13.357 pins Home Assistant 2026.8.3, the release on the HA VM. It
       # brings pytest, pytest-cov, the asyncio and aiohttp plugins and PyYAML
-      # with it; pinning those again makes pip's resolution impossible.
-      # getmac is the integration's own requirement, which the harness does
-      # not install. Everything goes in a venv so the runner's own packages
+      # with it; pinning those again makes pip's resolution impossible. The
+      # integration's one remaining requirement, cryptography, comes in with
+      # Home Assistant. Everything goes in a venv so the runner's own packages
       # cannot change what a run means.
       - name: Install
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install "mypy==1.18.2" "ruff==0.15.21" \
-            "pytest-homeassistant-custom-component==0.13.357" "getmac==0.9.5"
+            "pytest-homeassistant-custom-component==0.13.357"
 
       - name: Ruff check
         run: .venv/bin/ruff check .
@@ -66,9 +66,8 @@ jobs:
           --cov-fail-under=95
 
       # With Home Assistant installed this is the strict run that means
-      # something. pyproject.toml carries no relaxations - its one mypy
-      # override only supplies missing types for getmac - and the validator
-      # step below fails if that changes.
+      # something. pyproject.toml carries no relaxations and no mypy override
+      # at all, and the validator step below fails if that changes.
       - name: mypy strict
         run: .venv/bin/python -m mypy custom_components/tuxedo_touch
 

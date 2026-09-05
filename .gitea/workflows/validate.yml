@@ -83,13 +83,12 @@ jobs:
           python-version: "3.14"
 
       # 0.13.357 pins Home Assistant 2026.8.3 and brings pytest and pytest-cov
-      # with it. getmac is the integration's own requirement.
+      # with it, along with cryptography - the integration's one requirement.
       - name: Install
         run: |
           python -m pip install --quiet --upgrade pip
           python -m pip install --quiet "mypy==1.18.2" \
-            "pytest-homeassistant-custom-component==0.13.357" \
-            "getmac==0.9.5"
+            "pytest-homeassistant-custom-component==0.13.357"
 
       # A check() script rather than pytest functions, so running it directly
       # is the honest invocation. Everything else in tests/ is pytest.
