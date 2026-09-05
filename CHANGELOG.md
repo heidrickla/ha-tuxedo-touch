@@ -58,6 +58,12 @@ numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
   the poll is the fallback under it.
 - Losing the event stream is logged the way losing the poll already was: one line when
   it drops and one when it returns, not one per reconnect attempt.
+- The `tuxedo_color` attribute is lower case whichever source reported the status. The
+  panel's REST answer carries its own capitalised word (`Green`) and the stream carries a
+  digit this integration names in lower case; the REST word is now lower-cased as it is
+  read, so a template comparing the attribute to `green` keeps matching when the source
+  changes - which it does at every setup, at every stream drop, and permanently on
+  firmware with no stream.
 
 ## [0.3.2] - 2026-09-05
 

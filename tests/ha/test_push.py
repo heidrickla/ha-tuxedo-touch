@@ -67,6 +67,25 @@ async def test_the_entry_loads_and_the_stream_becomes_the_state_source(
     assert coordinator.push.connection_id == 7
 
 
+async def test_both_sources_report_the_colour_in_one_vocabulary(
+    hass, fake_panel, panel_entry
+):
+    """The panel spells its own colour `Green`; the stream sends a digit this
+    integration names in lower case. The attribute has to read the same either
+    way, or a template comparing it to `green` stops matching every time the
+    source changes - at setup, at a stream drop, and for good on firmware that
+    has no stream."""
+    await _setup(hass, panel_entry)
+    # What the panel itself sent, before the client read it.
+    assert fake_panel.colour == "Green"
+    assert _state(hass).attributes["tuxedo_source"] == "poll"
+    assert _state(hass).attributes["tuxedo_color"] == "green"
+
+    await fake_panel.push_status_text("Ready To Arm", armed=False)
+    await wait_until(lambda: _state(hass).attributes["tuxedo_source"] == "stream")
+    assert _state(hass).attributes["tuxedo_color"] == "green"
+
+
 async def test_the_exit_delay_countdown_is_exposed_while_it_runs(
     hass, fake_panel, panel_entry
 ):

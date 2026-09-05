@@ -189,6 +189,12 @@ and -1 carry the flag byte, so only those decode to a partition status here.
 Read the colour digit carefully: it sits between the flag byte and the text, so
 `\xff259  Secs Remaining` is *colour 2* and *59 seconds*, not 259 seconds.
 
+The two sources spell the colour differently: the stream sends the digit above, while
+`GetSecurityStatus` sends the panel's own capitalised word (`"Color":"Green"`). The
+integration lower-cases the REST word as it reads it, so the `tuxedo_color` attribute
+carries one vocabulary - `green`, `red`, `yellow` - no matter which source produced the
+status.
+
 ### Which display texts have actually been seen on the stream
 
 Two, and only two: **`Ready To Arm`** and the exit-delay countdown
