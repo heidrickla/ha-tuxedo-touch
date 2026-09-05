@@ -191,8 +191,18 @@ class TuxedoAlarmPanel(
         if the panel never reports it.
         """
 
-        def confirms(status: TuxedoStatus) -> bool:
-            return reports_armed(status) is expect_armed
+        def confirms(status: TuxedoStatus) -> bool | None:
+            """Three answers, because the panel gives three.
+
+            True the panel reports what was asked for, False it reports the
+            opposite, None the reading settles nothing. `reports_armed`
+            already computes exactly that; collapsing it with `is
+            expect_armed` made a refusal and a silence the same answer, and
+            the coordinator then wrote the requested status over a poll that
+            had just reported the partition in the other state.
+            """
+            armed = reports_armed(status)
+            return None if armed is None else armed is expect_armed
 
         try:
             await self.coordinator.async_send_command(command, confirms, assumed_status)

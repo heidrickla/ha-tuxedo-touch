@@ -14,6 +14,7 @@ import pytest
 from homeassistant.components.alarm_control_panel import DOMAIN as ALARM_DOMAIN
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import ATTR_ENTITY_ID
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.tuxedo_touch.api import TuxedoTouchError
 from tests.fake_panel import COUNTDOWN_FRAME, status_frame, wait_until
@@ -307,20 +308,88 @@ async def test_the_stream_ends_a_not_available_outage(
 async def test_a_command_neither_source_reports_is_marked_assumed(
     hass, fake_panel, panel_entry
 ):
-    """The command itself succeeded, so the entity shows what was asked for -
-    labelled as assumed, because nothing confirmed it."""
+    """The command itself succeeded and nothing could say what it did.
+
+    This is the only case the assumed rung is for: the poll answered with a
+    text that names no state, so it neither confirmed the command nor refuted
+    it. The stream's flag would settle whether the partition is armed, but no
+    frame arrived - so the entity shows what was asked for, labelled assumed.
+
+    The status here has to be one the map does not know. A poll answering
+    "Ready To Arm" after an arm is a refutation, not a silence, and this test
+    used to use exactly that - asserting the entity showed armed_away while
+    the panel was reporting itself disarmed.
+    """
     await _setup(hass, panel_entry)
 
+    fake_panel.status = "Armed With Some New Word"
     with patch(CONFIRM_TIMEOUT, 0.05):
         await hass.services.async_call(
             ALARM_DOMAIN, "alarm_arm_away", {ATTR_ENTITY_ID: PANEL}, blocking=True
         )
         await hass.async_block_till_done()
 
-    # The panel kept answering "Ready To Arm", so the poll refuted nothing
-    # and confirmed nothing.
     assert _state(hass).state == "armed_away"
     assert _state(hass).attributes["tuxedo_source"] == "assumed"
+
+
+async def test_an_arm_the_poll_refutes_is_not_reported_as_done(
+    hass, fake_panel, panel_entry
+):
+    """A refused arm is the ordinary one: a faulted zone.
+
+    Arm and disarm answer HTTP 200 with a zero-byte body whether or not the
+    panel acted, so "the command succeeded" is not evidence of anything. The
+    poll that follows is the only evidence there is, and a poll that reports
+    the partition in the opposite state is a refutation - not the silence the
+    assumed rung was written for. Writing the assumed status over it put
+    armed_away on a disarmed house, fired a state-change event, and returned
+    success to the caller.
+    """
+    fake_panel.status = "Not Ready Fault"
+    await _setup(hass, panel_entry)
+    polls_before = fake_panel.polls
+
+    with patch(CONFIRM_TIMEOUT, 0.05), pytest.raises(HomeAssistantError) as raised:
+        await hass.services.async_call(
+            ALARM_DOMAIN, "alarm_arm_away", {ATTR_ENTITY_ID: PANEL}, blocking=True
+        )
+    await hass.async_block_till_done()
+
+    # The poll ran and succeeded; its answer is what stands.
+    assert fake_panel.polls > polls_before
+    assert fake_panel.commands == ["ArmWithCode"]
+    assert _state(hass).state == "disarmed"
+    assert _state(hass).attributes["tuxedo_status"] == "Not Ready Fault"
+    assert _state(hass).attributes["tuxedo_source"] == "poll"
+    assert "Not Ready Fault" in str(raised.value)
+
+
+async def test_a_disarm_the_poll_refutes_is_not_reported_as_done(
+    hass, fake_panel, panel_entry
+):
+    """The mirror image, and the dangerous direction.
+
+    A disarm the panel will not carry out - a code it does not accept, a
+    partition that will not disarm - used to leave the entity reading
+    disarmed on an armed house, which is what any "when the alarm disarms,
+    unlock the doors" automation acts on.
+    """
+    fake_panel.status = "Armed Away"
+    coordinator = await _setup(hass, panel_entry)
+    await fake_panel.push_status_text("Armed Away", armed=True)
+    await wait_until(lambda: _state(hass).state == "armed_away")
+
+    with patch(CONFIRM_TIMEOUT, 0.05), pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            ALARM_DOMAIN, "alarm_disarm", {ATTR_ENTITY_ID: PANEL}, blocking=True
+        )
+    await hass.async_block_till_done()
+
+    assert coordinator.last_update_success
+    assert fake_panel.status == "Armed Away"
+    assert _state(hass).state == "armed_away"
+    assert _state(hass).attributes["tuxedo_source"] == "poll"
 
 
 async def test_a_status_for_another_partition_is_not_this_entry(

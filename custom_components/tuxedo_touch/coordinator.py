@@ -13,7 +13,7 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -169,9 +169,10 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         # is the only one there is.
         self._push_status_seen = False
         self._push_loss_logged = False
-        # Commands waiting for the panel to report what they asked for.
+        # Commands waiting for the panel to report what they asked for. The
+        # callable is tri-state: see async_send_command.
         self._command_waiters: list[
-            tuple[Callable[[TuxedoStatus], bool], asyncio.Future[None]]
+            tuple[Callable[[TuxedoStatus], bool | None], asyncio.Future[None]]
         ] = []
 
     # ------------------------------------------------------------------
@@ -224,7 +225,11 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             seconds_remaining=status.seconds_remaining,
         )
         for confirms, future in list(self._command_waiters):
-            if not future.done() and confirms(data):
+            # Only a positive report ends the wait. `is True` rather than a
+            # truth test because the callable now answers None for a reading
+            # that settles nothing, and a frame that settles nothing is not
+            # the panel confirming anything.
+            if not future.done() and confirms(data) is True:
                 future.set_result(None)
         if self._not_available_logged:
             # The poll was in an outage and the stream has just said what the
@@ -283,7 +288,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
     async def async_send_command(
         self,
         command: Coroutine[Any, Any, dict[str, Any]],
-        confirms: Callable[[TuxedoStatus], bool],
+        confirms: Callable[[TuxedoStatus], bool | None],
         assumed_status: str,
     ) -> None:
         """Send one command and let the panel say whether it took effect.
@@ -293,10 +298,19 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         ladder is the panel's own report first (`confirms` reads it), a poll
         second, and only if neither could say anything, the status that was
         asked for - marked as assumed, because nothing confirmed it.
+
+        `confirms` answers True, False or None, and the difference between
+        the last two is the whole of the ladder's bottom rung. A zero-byte
+        200 says nothing about whether the panel obeyed, so a poll reporting
+        the partition in the OPPOSITE state is the panel refusing - the
+        commonest way for that to happen being an arm on a faulted zone or a
+        code the panel will not take. Writing the assumed status over it is
+        reporting an alarm state the panel never reported, in the direction
+        the caller wanted, which is the one direction it must never be wrong.
         """
-        waiter: tuple[Callable[[TuxedoStatus], bool], asyncio.Future[None]] | None = (
-            None
-        )
+        waiter: (
+            tuple[Callable[[TuxedoStatus], bool | None], asyncio.Future[None]] | None
+        ) = None
         if self.push.connected:
             # Registered before the command goes out: the panel can push the
             # new status before the request that caused it has returned.
@@ -330,11 +344,36 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 self._drop_waiter(waiter)
 
         await self.async_refresh()
-        if self.last_update_success and self.data is not None and confirms(self.data):
-            return
-        # Neither the stream nor the poll could show the change. The command
-        # itself succeeded, so show what it asked for and mark it assumed;
-        # the next real status from either source replaces it.
+        if self.last_update_success and self.data is not None:
+            verdict = confirms(self.data)
+            if verdict is True:
+                return
+            if verdict is False:
+                # The poll ran, succeeded, and named the opposite state. That
+                # is the panel's own account of what it did with the command,
+                # and it is the best evidence there is - so it stays in
+                # self.data and the entity keeps showing it. The call fails
+                # too: a service that returns success on a command the panel
+                # refused is what an automation acts on.
+                reported = self.data.status
+                _LOGGER.warning(
+                    "The panel did not carry out the command: it reports '%s' "
+                    "where '%s' was asked for",
+                    reported,
+                    assumed_status,
+                )
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="command_not_carried_out",
+                    translation_placeholders={
+                        "requested": assumed_status,
+                        "reported": reported,
+                    },
+                )
+        # Neither the stream nor the poll could say anything: no frame
+        # arrived, and the poll either failed or answered with a text that
+        # names no state. The command itself succeeded, so show what it asked
+        # for and mark it assumed; the next real status replaces it.
         _LOGGER.debug(
             "Neither the stream nor a poll reported the command; assuming %s",
             assumed_status,
@@ -361,7 +400,9 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
     @callback
     def _drop_waiter(
         self,
-        waiter: tuple[Callable[[TuxedoStatus], bool], asyncio.Future[None]] | None,
+        waiter: (
+            tuple[Callable[[TuxedoStatus], bool | None], asyncio.Future[None]] | None
+        ),
     ) -> None:
         if waiter is not None and waiter in self._command_waiters:
             self._command_waiters.remove(waiter)
