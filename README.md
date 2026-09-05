@@ -345,9 +345,15 @@ python tools/validate_local.py    # the offline stand-in for hassfest and HACS
 ```
 
 `tests/ha` needs `pytest-homeassistant-custom-component` and skips where it is absent, so
-a run on Windows covers the client only. The GitHub Tests workflow runs the whole suite,
-gates coverage of the integration at 95%, and runs mypy in strict mode and the validator
-on every push. A local mypy run without Home Assistant installed reports its classes as
+a run on Windows covers the client only, and the coverage figure from such a run measures
+the skip rather than the code. The harness installs on Windows, but Home Assistant itself
+does not run there: `homeassistant/runner.py` imports `fcntl` and
+`homeassistant/util/resource.py` imports `resource`, both POSIX-only, and with those
+shimmed every test still ends in `HASocketBlockedError` because the Windows event loop
+opens a socketpair that the harness re-blocks for each test. Linux, WSL or the GitHub
+runner is the way to run these. The GitHub Tests workflow runs the whole suite, gates
+coverage of the integration at 95%, and runs mypy in strict mode and the validator on
+every push. A local mypy run without Home Assistant installed reports its classes as
 `Any`; that is the missing package, not the code.
 
 Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
