@@ -22,7 +22,8 @@ numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
   reported.
 - The diagnostics download reports the stream: whether it is connected, whether the
   firmware answered 404 and has no stream at all, whether it stopped because the panel
-  refused the credentials, the connection id, the client count,
+  refused the credentials, whether it stopped after repeated unexpected failures and
+  what the last one was, the connection id, the client count,
   how many frames have arrived and how far a failing stream has backed off, alongside
   which source produced the status shown. A report naming only the poll could not
   distinguish a stream that never came up from a panel that is not answering.
@@ -46,6 +47,24 @@ numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
   happened beside the re-authentication card. Patched firmware allows five attempts and
   clears itself after five minutes, but the panel publishes no version anywhere, so the
   behaviour has to be safe on the stricter one.
+- **Only the panel refusing a credential counts as the panel refusing a credential.**
+  A key page that answers 500, a key page missing its key material, and a login POST
+  answering 5xx are all faults of a busy embedded web server rather than verdicts on
+  an account - the first two happen behind a login the panel accepted and counted as
+  successful. Treating them as refusals spent the one-login budget, recorded the
+  refusal on the config entry for good, stopped the event stream permanently and had
+  setup refuse before touching the network, so one transient HTTP error cost the alarm
+  entity until the entry was deleted and re-added. They are now ordinary faults: the
+  next poll retries and a healthy panel recovers by itself.
+- **The re-authentication card can retry the credentials that are stored.** Submitting
+  them unchanged used to be answered "invalid username or password" without the panel
+  being contacted, and a reconfigure that changed nothing the login depends on cleared
+  nothing - so an owner whose panel had been reset, and who had re-enabled web access
+  at the touchscreen exactly as the card told them to, had no way to say so. The only
+  submission that reached the panel was a different password, which is a real refused
+  login on a unit that disables every web account at three. Submitting the stored
+  credentials now asks for confirmation, naming what it costs, and spends one login if
+  you confirm. Nothing automatic gains a retry.
 - **`Not available` can no longer reach the entity at all on firmware that has the
   event stream.** The panel's `GetSecurityStatus` endpoint reads a cache its firmware
   fills only from a message on the alarm bus, and answers that placeholder while the
@@ -66,6 +85,42 @@ numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
   a poll, and only if neither could say anything shows the state that was asked for,
   marked `assumed`. Up to 0.3.2 the requested state was written through as soon as the
   request returned.
+- **A command the panel REFUSED now says so instead of reporting success.** The
+  commonest refusals are the everyday ones: an arm on a faulted zone, a disarm with a
+  code the panel will not take. The fallback poll that follows such a command reports
+  the partition in the opposite state, and that answer used to be discarded exactly as
+  if the poll had been unable to say anything - so the entity showed `armed_away` on a
+  disarmed house, or `disarmed` on an armed one, fired a state-change event that any
+  "when the alarm disarms" automation acts on, and the service call returned success.
+  A poll that names the opposite state is now the panel's own account of what it did:
+  the entity keeps showing it and the service call fails with the two statuses in the
+  message.
+- **A stream that is accepted and then dropped backs off.** The reconnect wait was
+  reset the moment the response status said 200, before a byte of the body had been
+  read, so every failure after the headers - a body that ends at once, an error page,
+  a reset mid-body, a read timeout on a half-open socket - looked like a healthy
+  connection and returned the wait to its five-second floor. That is a connection every
+  five seconds indefinitely, on a unit that serves one at a time and whose contention
+  behaviour needs a reset to clear. The wait is now reset when a connection ends, and
+  only if it lasted a minute and carried a frame.
+- **A status frame that does not name a partition is no longer taken as this entry's.**
+  The panel's unsolicited status record carries no partition field, and every entry
+  accepted it whatever partition it was configured for - so on a two-partition install
+  one partition's state landed on the other's entity, latched there because a pushed
+  status suppresses the poll that would correct it, and could confirm the wrong
+  partition's arm or disarm.
+- **A streamed status text this integration does not recognise no longer erases the
+  mode the poll named.** The stream's flag says whether the partition is armed but
+  never in which mode, so such a text settles nothing - and writing it through meant
+  the poll's correct answer survived only until the panel's next status repeat, about
+  33 seconds, with the entity reading `unknown` in between. It now corroborates the
+  poll's reading when the two agree about arming, and replaces it when they do not.
+- **One unreadable frame costs a frame, not the event stream.** A partition field the
+  decoder could not convert raised inside the read loop, where nothing caught it: the
+  background task ended for the life of the entry while the log said "reconnecting" and
+  the diagnostics download said the stream was backing off. Bad frames are now dropped
+  and logged, the connection is kept, and a stream that keeps failing for a reason the
+  integration cannot name stops with a flag that says so.
 - An empty response body is read correctly. `aiohttp` returns nothing rather than
   raising for such a body, so the handling meant to accept a command's empty answer
   never ran.
