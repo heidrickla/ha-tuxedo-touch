@@ -77,10 +77,14 @@ def issue_id(key: str, entry_id: str) -> str:
 # map here lets the coordinator - which must not import a platform module -
 # ask whether a display text names a state at all.
 #
-# One map serves BOTH sources, because both carry the same strings: the push
-# stream's display text is the text GetSecurityStatus returns. See
-# ../../../docs/tuxedo_touch_api_notes.md for where the list came from and
-# what each source spells for each mode.
+# One map serves BOTH sources. Only "Ready To Arm" and the exit-delay
+# countdown have been captured on the push stream; the armed spellings below
+# are GetSecurityStatus's, and the stream is ASSUMED to match them - an
+# assumption, not an observation. Nothing rests on it: a streamed text this
+# map does not know settles nothing, so the coordinator lets the poll through
+# to name the mode rather than guessing. See
+# ../../../docs/tuxedo_touch_api_notes.md, "The push stream", for where the
+# list came from and which texts each source has actually been seen to spell.
 STATUS_STATES: dict[str, str] = {
     "Ready To Arm": "disarmed",
     "Ready Fault": "disarmed",

@@ -189,6 +189,27 @@ and -1 carry the flag byte, so only those decode to a partition status here.
 Read the colour digit carefully: it sits between the flag byte and the text, so
 `\xff259  Secs Remaining` is *colour 2* and *59 seconds*, not 259 seconds.
 
+### Which display texts have actually been seen on the stream
+
+Two, and only two: **`Ready To Arm`** and the exit-delay countdown
+(**`NN  Secs Remaining`**, double space). The capture behind this section is a single
+arm/disarm cycle, and it ends with the panel disarmed, so no armed status was ever
+watched arriving on the stream.
+
+The armed spellings in the status table - `Armed Stay`, `Armed Away`, `Armed Night`,
+`Armed Instant` and their `Fault` and `Alarm` variants - are what `GetSecurityStatus`
+returns. The integration **assumes** the stream spells them identically, which is why
+one status map serves both sources. That assumption is unconfirmed and stays unconfirmed
+until someone holds the stream open while the panel sits armed.
+
+Nothing rests on it being right. The stream's `0xFE`/`0xFF` flag says whether the
+partition is armed without reference to the display text, and a text the status map does
+not recognise settles nothing: the coordinator then stops suppressing the
+`GetSecurityStatus` poll and lets it name the mode instead of guessing. If the streamed
+spellings do turn out to differ, that fallback is the designed answer, the entity is
+correct throughout on the poll's 30-second granularity, and the fix is to add the
+streamed spellings to `STATUS_STATES` in `const.py`.
+
 Behaviour worth relying on, all measured on the reference unit:
 
 - **An idle panel is not a silent stream.** It repeats the partition status on its own
