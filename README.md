@@ -497,11 +497,18 @@ python tools/validate_local.py    # the offline stand-in for hassfest and HACS
 `tests/ha` needs `pytest-homeassistant-custom-component`, which brings Home Assistant
 with it, and skips where it is absent - so a run without it covers the client only, and
 the coverage figure from such a run measures the skip rather than the code. What the
-harness needs is the Python version, not the platform: 2026.x is written for 3.14 and
-will not install under 3.12. Given 3.14 the whole suite runs on Windows as it does on
-Linux, measured here on 2026-09-05 with `pytest-homeassistant-custom-component`
-0.13.357, Home Assistant 2026.8.3 and CPython 3.14.7 - 183 tests, 99% coverage, mypy
-strict clean. Several of them stand a fake panel up on 127.0.0.1 and talk to it over a
+harness needs first is the Python version: 2026.x is written for 3.14 and will not
+install under 3.12.
+
+It needs a POSIX platform too, and on Windows that costs three stand-ins. Measured on
+2026-09-05 with `pytest-homeassistant-custom-component` 0.13.357, Home Assistant 2026.8.3
+and CPython 3.14.7: `homeassistant.runner` imports `fcntl` and `resource`, neither of
+which exists on Windows, and the proactor event loop builds its self-pipe from an AF_INET
+`socket.socketpair()`, which the harness's socket guard refuses. Stub `fcntl` and
+`resource` modules plus a `sitecustomize.py` rebinding `socket.socketpair` to the real
+socket class, all on `PYTHONPATH`, carry the whole suite through - 186 tests, 99%
+coverage, mypy strict clean. That scaffolding belongs outside the repository, and Linux
+needs none of it. Several tests stand a fake panel up on 127.0.0.1 and talk to it over a
 real socket, which the test harness blocks by default; those ask for the `socket_enabled`
 fixture, and the harness's own guard still allows nothing but 127.0.0.1. The GitHub Tests
 workflow is still the gate: it runs the whole suite,
