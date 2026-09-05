@@ -502,13 +502,19 @@ install under 3.12.
 
 It needs a POSIX platform too, and on Windows that costs three stand-ins. Measured on
 2026-09-05 with `pytest-homeassistant-custom-component` 0.13.357, Home Assistant 2026.8.3
-and CPython 3.14.7: `homeassistant.runner` imports `fcntl` and `resource`, neither of
+and CPython 3.14: `homeassistant.runner` imports `fcntl` and `resource`, neither of
 which exists on Windows, and the proactor event loop builds its self-pipe from an AF_INET
 `socket.socketpair()`, which the harness's socket guard refuses. Stub `fcntl` and
 `resource` modules plus a `sitecustomize.py` rebinding `socket.socketpair` to the real
-socket class, all on `PYTHONPATH`, carry the whole suite through - 186 tests, 99%
-coverage, mypy strict clean. That scaffolding belongs outside the repository, and Linux
-needs none of it. Several tests stand a fake panel up on 127.0.0.1 and talk to it over a
+socket class, all on `PYTHONPATH`, carry the whole suite through - 191 tests, 99%
+coverage, mypy strict clean. The replacement `socketpair` has to accept the connection
+itself, from `_accept()` and the saved class: `socket.accept()` builds its return value
+from the name `socket` inside the socket module, which is the very name the guard
+replaced, so calling it puts the guard back in the path one line after stepping around
+it. Put the virtualenv at a short path as well - `pip` unpacking Home Assistant's
+`components/overkiz` tree fails with `Errno 2` against Windows' 260-character path limit
+from a deep one. That scaffolding belongs outside the repository, and Linux needs none
+of it. Several tests stand a fake panel up on 127.0.0.1 and talk to it over a
 real socket, which the test harness blocks by default; those ask for the `socket_enabled`
 fixture, and the harness's own guard still allows nothing but 127.0.0.1. The GitHub Tests
 workflow is still the gate: it runs the whole suite,
