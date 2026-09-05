@@ -7,8 +7,15 @@ import logging
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 
-from .const import CONF_MAC, DOMAIN
+from .const import (
+    CONF_MAC,
+    DOMAIN,
+    ISSUE_DUPLICATE_ENTRY,
+    ISSUE_HTTPS_REDIRECT,
+    issue_id,
+)
 from .coordinator import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
 from .identity import async_panel_mac, build_unique_id
 
@@ -61,6 +68,7 @@ async def _async_adopt_mac_identity(
     `entry_id`, not this id, so nothing is orphaned by the change. A routed
     install never resolves a MAC and simply keeps its address identity.
     """
+    ir.async_delete_issue(hass, DOMAIN, issue_id(ISSUE_DUPLICATE_ENTRY, entry.entry_id))
     if entry.data.get(CONF_MAC):
         return
     mac = await async_panel_mac(hass, entry.data[CONF_HOST])
@@ -73,12 +81,23 @@ async def _async_adopt_mac_identity(
     if holder is not None and holder.entry_id != entry.entry_id:
         # Two entries reaching the same panel (say, by IP and by hostname).
         # Taking the id would corrupt the unique-id index; keep the address
-        # identity and tell the user which entry is the duplicate.
+        # identity and tell the user which entry is the duplicate. Only the
+        # user can decide which of the two to remove, so the issue is not
+        # fixable from here.
         _LOGGER.warning(
             "Not adopting MAC identity for %s: config entry %s already is %s",
             entry.title,
             holder.title,
             unique_id,
+        )
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id(ISSUE_DUPLICATE_ENTRY, entry.entry_id),
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_DUPLICATE_ENTRY,
+            translation_placeholders={"title": entry.title, "other": holder.title},
         )
         return
     hass.config_entries.async_update_entry(
@@ -96,3 +115,15 @@ async def async_unload_entry(
     # async_setup_entry, which HA runs after the platforms unload.
     unloaded: bool = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     return unloaded
+
+
+async def async_remove_entry(
+    hass: HomeAssistant, entry: TuxedoTouchConfigEntry
+) -> None:
+    """Take this entry's repair issues with it.
+
+    Nothing is written to the panel, so deleting the entry has nothing else
+    to undo; an issue left behind would outlive the thing it is about.
+    """
+    for key in (ISSUE_DUPLICATE_ENTRY, ISSUE_HTTPS_REDIRECT):
+        ir.async_delete_issue(hass, DOMAIN, issue_id(key, entry.entry_id))

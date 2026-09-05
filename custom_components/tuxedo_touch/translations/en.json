@@ -90,6 +90,29 @@
     },
     "update_failed": {
       "message": "Could not read the panel's status: {error}"
+    },
+    "https_required": {
+      "message": "The panel redirected the API call to HTTPS. Turn on 'Use HTTPS' for this entry; the repair notification does it for you."
+    }
+  },
+  "issues": {
+    "https_redirect": {
+      "title": "Tuxedo Touch needs HTTPS",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Switch {title} to HTTPS",
+            "description": "'Secured Web Server Access' is enabled on the panel, so it redirects every plain-HTTP API call to HTTPS and arming, disarming and status all fail. Submitting this turns on 'Use HTTPS' for this entry, moves port 80 to 443 (port {port} stays as it is if it is anything else) and reloads the integration."
+          }
+        },
+        "abort": {
+          "entry_gone": "That Tuxedo Touch entry no longer exists, so there is nothing left to switch."
+        }
+      }
+    },
+    "duplicate_entry": {
+      "title": "Two Tuxedo Touch entries reach one panel",
+      "description": "'{title}' and '{other}' both reach the same panel and partition by different addresses, so only one of them can hold the panel's identity. Remove whichever entry you do not want under Settings > Devices & services; the other adopts the panel's MAC address on its next start."
     }
   }
 }
