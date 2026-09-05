@@ -19,8 +19,8 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 # Home Assistant 2026.x is written for 3.14; a lower target makes mypy stop
 # at its own source before reaching this integration.
 python_version = "3.14"
-# No error code is disabled and no file of this integration is excused; the
-# only override below is the one untyped dependency.
+# No error code is disabled and nothing is excused: the single override below
+# supplies missing types for one dependency and switches no check off.
 strict = true
 # Third-party code is analysed but its own errors are not reported. It decides
 # which FILES are reported on, not how strictly this integration is checked;
@@ -35,11 +35,6 @@ follow_imports = "silent"
 [[tool.mypy.overrides]]
 module = ["getmac", "getmac.*"]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "tests.*"
-strict = false
-disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
