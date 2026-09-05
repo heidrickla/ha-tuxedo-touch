@@ -41,11 +41,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: TuxedoTouchConfigEntry) 
         # One failure is not a reason to refuse setup: the panel answering
         # "Not available" has already proved the address, the TLS handshake
         # and the credentials - it simply had no status in the answer. The
-        # entity comes up unavailable and the next poll corrects it, whereas
-        # refusing to load would take the device, the entity and its history
-        # away for an outage this firmware can hold for hours. Every other
-        # first-refresh failure still means the panel could not be read at
-        # all, and is still ConfigEntryNotReady.
+        # entity comes up unavailable and the push stream corrects it as soon
+        # as it is open - that answer comes from a path the placeholder cannot
+        # appear on - whereas refusing to load would take the device, the
+        # entity and its history away for an outage this firmware can hold for
+        # hours. Every other first-refresh failure still means the panel could
+        # not be read at all, and is still ConfigEntryNotReady.
         if not isinstance(coordinator.last_exception, PanelStatusUnavailable):
             raise
         _LOGGER.debug(
@@ -54,6 +55,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: TuxedoTouchConfigEntry) 
         )
 
     entry.runtime_data = coordinator
+    # That poll was the initial sync. From here the panel's own push stream
+    # reports the state and the poll is the fallback underneath it.
+    coordinator.async_start_push()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -83,8 +87,12 @@ async def async_unload_entry(
     # The session is released by the async_on_unload callback registered in
     # async_setup_entry, which HA runs after the platforms unload.
     unloaded: bool = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    # The push stream is a request that never ends by itself, so nothing
+    # short of cancelling its task closes it; awaiting the cancellation is
+    # what makes the connection actually gone rather than scheduled to go.
+    await entry.runtime_data.async_stop_push()
     # Unloading cancels the next poll but not one already running, and a poll
-    # in flight is holding this panel's single connection. Waiting for it here
+    # in flight is holding a connection to this panel. Waiting for it here
     # is what lets a caller treat a returned unload as "the panel is free" -
     # the config flow stands an entry down for exactly that reason before it
     # checks a new address or password.

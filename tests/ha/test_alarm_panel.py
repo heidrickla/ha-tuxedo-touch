@@ -1,4 +1,4 @@
-"""The panel entity: status mapping, codes, and optimistic updates."""
+"""The panel entity: status mapping, codes, and how a command is confirmed."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -7,7 +7,10 @@ from homeassistant.components.alarm_control_panel import DOMAIN as ALARM_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.tuxedo_touch.alarm_control_panel import TuxedoAlarmPanel
+from custom_components.tuxedo_touch.alarm_control_panel import (
+    TuxedoAlarmPanel,
+    reports_armed,
+)
 from custom_components.tuxedo_touch.api import TuxedoStatus, TuxedoTouchError
 from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
 
@@ -52,8 +55,10 @@ async def test_each_panel_status_maps_to_one_alarm_state(
     assert hass.states.get(PANEL).state == expected
 
 
-async def test_arming_uses_the_stored_code_and_updates_at_once(hass, config_entry):
-    """The entity must not wait for a poll that may report "Not available"."""
+async def test_arming_uses_the_stored_code_and_shows_the_result(hass, config_entry):
+    """No panel behind these fixtures, so neither the stream nor a poll can
+    report what the command did: the entity shows what was asked for, marked
+    assumed. tests/ha/test_push.py drives the confirmed paths."""
     await _setup(hass, config_entry)
     assert hass.states.get(PANEL).state == "disarmed"
 
@@ -68,7 +73,7 @@ async def test_arming_uses_the_stored_code_and_updates_at_once(hass, config_entr
     assert hass.states.get(PANEL).state == "armed_home"
 
 
-async def test_disarm_reports_disarmed_without_a_poll(hass, config_entry):
+async def test_disarm_reports_disarmed_when_nothing_can_confirm_it(hass, config_entry):
     await _setup(hass, config_entry, "Armed Away")
     assert hass.states.get(PANEL).state == "armed_away"
 
@@ -141,7 +146,7 @@ async def test_no_code_anywhere_is_a_validation_error(hass, config_entry_no_code
 async def test_a_refused_command_surfaces_as_an_error_not_a_state_change(
     hass, config_entry
 ):
-    """An optimistic update after a failed command would be a lie."""
+    """Even the assumed status is only for a command the panel accepted."""
     await _setup(hass, config_entry)
 
     with (
@@ -214,3 +219,23 @@ async def test_without_a_stored_code_a_numeric_code_is_demanded(
 ):
     await _setup(hass, config_entry_no_code)
     assert hass.states.get(PANEL).attributes.get("code_format") == "number"
+
+
+@pytest.mark.parametrize(
+    ("status", "armed"),
+    [
+        # The stream says so outright, whatever the display text says.
+        (TuxedoStatus(status="Anything At All", armed=True), True),
+        (TuxedoStatus(status="Anything At All", armed=False), False),
+        # A poll carries display text and nothing else.
+        (TuxedoStatus(status="Armed Stay"), True),
+        (TuxedoStatus(status="Ready To Arm"), False),
+        (TuxedoStatus(status="59  Secs Remaining"), True),
+        # And a text nothing knows settles nothing - which is not "disarmed".
+        (TuxedoStatus(status="a status no firmware has produced"), None),
+    ],
+)
+def test_whether_a_reported_status_means_armed(status, armed):
+    """What decides that a command took effect. None is the important row:
+    read as False it would confirm a disarm the panel never reported."""
+    assert reports_armed(status) is armed

@@ -13,7 +13,12 @@ from custom_components.tuxedo_touch.api import (
     TuxedoTouchAuthError,
     TuxedoTouchError,
 )
-from custom_components.tuxedo_touch.const import CONF_MAC, CONF_PARTITION, DOMAIN
+from custom_components.tuxedo_touch.const import (
+    CONF_MAC,
+    CONF_PARTITION,
+    DOMAIN,
+    SOURCE_ASSUMED,
+)
 from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
 
 from .conftest import ENTRY_DATA, HOST, MAC
@@ -253,7 +258,10 @@ async def test_a_poll_in_flight_when_a_command_lands_is_discarded(
     coordinator = config_entry.runtime_data
 
     async def _command_lands_mid_poll():
-        coordinator.set_optimistic_status("Armed Away")
+        coordinator.async_note_command_landed()
+        coordinator.async_set_updated_data(
+            TuxedoStatus(status="Armed Away", color="red", source=SOURCE_ASSUMED)
+        )
         return TuxedoStatus(status="Ready To Arm", color="green")
 
     with patch(STATUS, side_effect=_command_lands_mid_poll):
