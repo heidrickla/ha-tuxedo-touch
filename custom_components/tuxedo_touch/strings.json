@@ -18,7 +18,7 @@
           "username": "The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code.",
           "password": "The unit's web login password.",
           "code": "Optional. Used as the default arm/disarm code so automations can arm without prompting.",
-          "partition": "The panel partition this entry controls. Add the discovered panel once per partition.",
+          "partition": "The panel partition this entry controls. Discovery offers a panel once; a second partition is added with 'Add integration' and picks up the panel's MAC address from the next lease.",
           "port": "The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without."
         }
       },

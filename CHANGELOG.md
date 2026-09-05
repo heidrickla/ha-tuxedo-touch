@@ -34,7 +34,10 @@ everything below is what you get by installing from the default branch.
   with the lease hostname it sets - `Tux` followed by the twelve hex digits of
   its own MAC - both measured from a real unit, so no other vendor's device is
   offered as a Tuxedo panel. Dismissing the discovered panel with Ignore
-  sticks: no later lease renewal raises the card again.
+  sticks: no later lease renewal raises the card again. Discovery offers a
+  panel once - once an entry carries the MAC, a later lease is a move rather
+  than a new device - so a second partition on the same panel is added with
+  Add integration and adopts the MAC from the next lease.
 - A panel that takes a new DHCP lease is followed automatically: the stored
   address is corrected on every entry for that panel - one per partition - and
   the integration reloads. An entry you added by hand was keyed on its address
