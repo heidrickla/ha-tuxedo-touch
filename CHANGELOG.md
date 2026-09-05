@@ -4,7 +4,7 @@ Notable changes to this integration, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version
 numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
-## [0.3.0] - 2026-09-04
+## [0.3.0] - 2026-09-05
 
 `manifest.json` carries 0.3.0; the GitHub release for it is not cut yet, so
 everything below is what you get by installing from the default branch.
@@ -25,13 +25,20 @@ everything below is what you get by installing from the default branch.
   every thirty seconds.
 - Downloadable diagnostics, with the host, MAC, username, password and keypad
   code redacted and the panel's raw status strings kept.
-- A panel that takes a new DHCP lease is followed automatically. Home
-  Assistant reports leases for MAC addresses it already has devices for, and
-  the integration corrects the stored address on every entry for that panel -
-  one per partition - and reloads. It needs the panel's MAC, so it works where
-  Home Assistant shares a network segment with the unit. A panel that is not
-  set up yet is still added by hand: the unit announces nothing on mDNS or
-  SSDP, and no matcher for its Wi-Fi module has been measured.
+- **The panel is discovered from its DHCP lease.** A Tuxedo Touch you have not
+  added shows up under Settings -> Devices & Services on its own and asks only
+  for what a lease cannot supply: the web login, the keypad code, the
+  partition, and the port and HTTPS toggle in case "Secured Web Server Access"
+  is off. It logs in to the panel before the entry is created, exactly as the
+  manual form does. The matcher is the unit's Resideo OUI `00:D0:2D` together
+  with the lease hostname it sets - `Tux` followed by the twelve hex digits of
+  its own MAC - both measured from a real unit, so no other vendor's device is
+  offered as a Tuxedo panel.
+- A panel that takes a new DHCP lease is followed automatically: the stored
+  address is corrected on every entry for that panel - one per partition - and
+  the integration reloads. An entry you added by hand was keyed on its address
+  and adopts the panel's MAC from the first lease Home Assistant sees for that
+  address, after which it moves with the panel too.
 - The README gained installation parameters, the update cadence, example
   automations, use cases, troubleshooting and removal instructions.
 
@@ -39,8 +46,10 @@ everything below is what you get by installing from the default branch.
 
 - The panel is identified by its MAC address rather than by the address it
   happens to hold, so a changed DHCP lease is a reconfigure rather than a new
-  device. Existing entries adopt the MAC on their next start. An install that
-  is routed away from the panel keeps address identity, which is ordinary.
+  device. The MAC comes from the lease, which is the only place it exists: the
+  panel returns no serial, hostname or MAC of its own over its API. An install
+  that never sees a lease - routed, on another VLAN, or a panel given a static
+  address on its own touchscreen - keeps address identity, which is ordinary.
 - The entity is named after its partition: `Partition 1` under the device
   `Honeywell Tuxedo Touch`. Two partitions on one panel are two devices with
   the same name, and the partition in the entity name is what tells the two
@@ -62,6 +71,16 @@ everything below is what you get by installing from the default branch.
 - `cryptography` is declared in the manifest, unpinned on purpose, because
   Home Assistant core pins it and constrains every install to that pin.
 
+### Removed
+
+- The `getmac` requirement. It existed only to resolve the panel's MAC by ARP,
+  which is a blocking operating-system call run in a worker thread and only
+  ever answered on the panel's own network segment. DHCP discovery replaced it:
+  Home Assistant's own lease watcher supplies the MAC, and `cryptography` is
+  now the integration's only requirement. Nothing user-visible changes for an
+  install that already has the MAC; an address-identified entry now gains one
+  on the next lease rather than on the next restart.
+
 ### Fixed
 
 - A partition change no longer orphans the entity's registry row and mints
@@ -70,13 +89,14 @@ everything below is what you get by installing from the default branch.
 - The entity unique-id migration is awaited, so it actually runs.
 - A panel that is down when Home Assistant starts no longer leaks one HTTP
   session per setup retry.
-- Adding the same panel again at its new address corrects the stored address
-  instead of silently doing nothing.
+- Adding a panel that is already configured at the same address, port and
+  partition is refused on the form instead of silently doing nothing. Adding
+  one again at a *different* address makes a second entry, which nothing on
+  the form can recognise as the same unit; the panel's next DHCP lease raises
+  the "Two Tuxedo Touch entries reach one panel" notification naming both.
 - A login page that answers without its challenge headers, or a key page that
   is short, now reports itself as a panel problem rather than as a wrong
   password or an unreachable unit.
-- `getmac` is imported at module level rather than inside an async function,
-  which was file I/O on the event loop on first use.
 
 ## [0.2.1] - 2026-08-11
 

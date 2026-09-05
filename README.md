@@ -65,13 +65,17 @@ actions, triggers or conditions of this integration's own.
 ## Requirements
 
 - Home Assistant 2026.3 or newer. The integration's icon and logo ship in the repository
-  and are served by Home Assistant from that release on.
-- A Tuxedo Touch WIFI unit reachable on your LAN. A **static IP or DHCP reservation** is
-  still worth setting. Where Home Assistant shares a network segment with the panel it
-  knows the panel's MAC and follows a changed lease by itself, but polling stops for the
-  gap between the lease changing and Home Assistant seeing the new one; a routed install
-  never sees the lease and has to be corrected under Settings -> Devices & Services ->
-  Configure. See "How the panel is identified" below.
+  and are served by Home Assistant from that release on. That is the only floor - the
+  DHCP discovery described below needs nothing newer.
+- A Tuxedo Touch WIFI unit reachable on your LAN. Its **DHCP lease** is how Home
+  Assistant discovers the panel and learns which unit it is talking to, so leaving the
+  panel on DHCP - with a reservation if you want its address fixed - suits this
+  integration better than a static address set on the unit itself. Where Home Assistant
+  sees the lease it knows the panel's MAC and follows a changed address by itself, though
+  polling stops for the gap between the lease changing and Home Assistant seeing the new
+  one. An install routed or VLAN-separated from the panel sees no lease, is identified by
+  address, and has to be corrected under Settings -> Devices & Services -> Configure. See
+  "How the panel is identified" below.
 - Its **web login username and password** (Settings on the touchscreen -> Login settings).
   This is different from the 4-digit keypad user code used to arm/disarm.
 - The 4-digit keypad user code, entered either at setup (used as the default arm/disarm
@@ -86,13 +90,17 @@ restart Home Assistant.
 Manual: copy `custom_components/tuxedo_touch` into your Home Assistant
 `config/custom_components/` directory and restart.
 
-Then Settings -> Devices & Services -> Add Integration -> "Honeywell Tuxedo Touch".
+After the restart, watch Settings -> Devices & Services for a **discovered** "Honeywell
+Tuxedo Touch" card: the panel is found from its DHCP lease and only asks for the login
+(see [Discovery](#discovery-and-moving-addresses)). If it does not appear - Home
+Assistant is routed away from the panel, or the panel holds a static address and issues
+no lease - add it by hand with Add Integration -> "Honeywell Tuxedo Touch".
 
 ### Installation parameters
 
 | Field | Meaning |
 |---|---|
-| IP address | IP address or hostname of the Tuxedo Touch unit on your LAN. |
+| IP address | IP address or hostname of the Tuxedo Touch unit on your LAN. A discovered panel does not ask for this - the lease supplies it. |
 | Port | The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without. |
 | Use HTTPS | On by default. Required whenever "Secured Web Server Access" is enabled on the unit, which it is unless you turned it off. |
 | Web login username | The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code. |
@@ -102,7 +110,8 @@ Then Settings -> Devices & Services -> Add Integration -> "Honeywell Tuxedo Touc
 
 Setup performs a real login against the panel before the entry is created, so a wrong
 password, an unreachable address or a panel that answered oddly is caught on the form
-with a message that says which.
+with a message that says which. This is true of the discovered panel's form too: the
+address comes from the lease, everything else is asked for and checked the same way.
 
 **On HTTPS**: leave it enabled unless you have specifically disabled "Secured Web Server
 Access" in the unit's settings. The unit's command endpoints redirect to HTTPS regardless
@@ -115,10 +124,10 @@ the redirect and raises a repair notification that switches the entry over for y
 
 Settings -> Devices & Services -> Honeywell Tuxedo Touch -> Reconfigure changes the
 address, port, scheme, credentials, keypad code or partition. The password and keypad
-code fields come up empty; leaving them empty keeps the stored values. The address must
-still answer as the same panel where the panel's MAC is known (see below); an address
-that answers as a different panel is refused. The entry's title follows the new address
-unless you renamed the entry. There are no options beyond these.
+code fields come up empty; leaving them empty keeps the stored values. The entry keeps
+the panel identity it already has - a reconfigure moves an entry, it never turns it into
+a different panel - and its title follows the new address unless you renamed the entry.
+There are no options beyond these.
 
 When the panel starts refusing the stored credentials, Home Assistant stops polling and
 asks for them again rather than re-running the login handshake against doomed
@@ -126,17 +135,29 @@ credentials every thirty seconds.
 
 ### Discovery and moving addresses
 
-There is no discovery of a panel you have not added yet; the address is typed in. What
-is automatic is a panel that moves. The integration registers the panel's MAC address on
-its device, and the manifest asks Home Assistant's DHCP component for leases belonging to
-MAC addresses it already has devices for. When the panel takes a new lease, Home
-Assistant hands it over, the stored address is corrected on every entry for that panel -
-one per partition - and the integration reloads. The entry's title follows the new
-address unless you renamed the entry.
+The panel announces nothing on mDNS or SSDP, but it is a DHCP client and its lease is
+distinctive: the unit's Wi-Fi module uses Resideo's `00:D0:2D` OUI and it puts `Tux`
+followed by the twelve hex digits of its own MAC in the lease hostname - for example
+`Tux00D02D4DD7B6`. The manifest matches on both together, so another vendor's device is
+never offered as a Tuxedo panel.
 
-This works only where the MAC is known, which means Home Assistant and the panel share a
-network segment (see "How the panel is identified" under Known limitations). A routed or
-VLAN-separated install is identified by address and has to be corrected by hand.
+**A panel you have not added** shows up under Settings -> Devices & Services as a
+discovered device. Opening it asks only for what a lease cannot say: the web login
+username and password, the keypad code and the partition, plus the port and the HTTPS
+toggle in case you turned "Secured Web Server Access" off. The integration logs in to the
+panel before creating the entry, exactly as the manual form does, and keys the entry on
+the MAC the lease carried. Add the discovered panel once per partition.
+
+**A panel that moves** is followed automatically. Home Assistant hands over the new lease,
+the stored address is corrected on every entry for that panel - one per partition - and
+the integration reloads. The entry's title follows the new address unless you renamed the
+entry. An entry you added by hand was keyed on its address; the first lease Home Assistant
+sees for that address gives it the panel's MAC instead, and from then on it moves with the
+panel too.
+
+All of this needs Home Assistant to see the lease, which means it is on the panel's own
+network segment. A routed or VLAN-separated install is identified by address and has to be
+corrected by hand - see "How the panel is identified" under Known limitations.
 
 ### Removing it
 
@@ -172,7 +193,7 @@ under Settings -> System -> Repairs rather than as log lines.
 | Notification | What it does |
 |---|---|
 | **Tuxedo Touch needs HTTPS** | The panel redirected the API to HTTPS because "Secured Web Server Access" is on. Opening the notification and submitting turns on Use HTTPS for that entry, moves port 80 to 443 (any other port is left as you set it) and reloads the integration. |
-| **Two Tuxedo Touch entries reach one panel** | Two entries reach the same panel and partition by different addresses, so only one of them can hold the panel's identity. The notification names both entries; remove whichever you do not want and the other adopts the panel's MAC on its next start. |
+| **Two Tuxedo Touch entries reach one panel** | Two entries reach the same panel and partition - by different addresses, or by the same address on ports 80 and 443 - so only one of them can hold the panel's identity. The notification names both entries; remove whichever you do not want and the other adopts the panel's MAC on the panel's next DHCP lease. |
 
 Both disappear on their own when the condition goes - including when you fix the panel's
 HTTPS setting from the touchscreen instead - and when the entry is deleted.
@@ -257,23 +278,23 @@ script:
   Tuxedo module itself reports; arm/disarm do target the configured partition.
 - **The panel serves one web session at a time.** A browser tab left open on the unit's
   web UI can make setup or polling fail to connect until it is closed.
-- **How the panel is identified.** It reports no serial and no MAC of its own
-  (`Registration/AddDeviceMAC` enrolls a *client's* MAC, not the unit's), so the
-  integration resolves the MAC from your network with an ARP lookup and keys the config
-  entry on it. That only answers when Home Assistant shares a layer 2 segment with the
-  panel; a routed or VLAN-separated install falls back to identifying it by address,
-  where changing the panel's IP does read as a different panel. Existing entries adopt
-  the MAC on their next start, and an address-identified entry that is reconfigured from
-  a segment where the lookup answers adopts it then. Once the MAC is known, a new DHCP
-  lease for it corrects the stored address by itself - see "Discovery and moving
-  addresses".
+- **How the panel is identified.** It reports no identifier of its own: no serial, no
+  hostname and no MAC over its API (`Registration/AddDeviceMAC` enrolls a *client's* MAC,
+  not the unit's, and no documented endpoint returns the unit's network configuration).
+  The MAC therefore comes from the panel's DHCP lease, which Home Assistant watches
+  anyway, and the config entry is keyed on it. A panel discovered from its lease has it
+  immediately; a panel added by hand is keyed on its address until Home Assistant sees a
+  lease for that address, and adopts the MAC then. An install that never sees a lease -
+  routed, or on another VLAN, or a panel given a static address on the unit itself -
+  stays identified by address, where changing the panel's IP does read as a different
+  panel and has to be reconfigured by hand. Nothing here resolves a MAC by ARP any more:
+  the integration ships no synchronous dependency and does no lookup of its own.
 - Armed Instant is mapped to `armed_night`, the closest Home Assistant state to a Stay
   variant with no entry delay.
-- **A new panel is not discovered; its address is entered by hand.** The unit answers
-  nothing on mDNS or SSDP, and a DHCP matcher on its Wi-Fi module's OUI or lease hostname
-  has not been built because neither has been measured from a real unit - a guessed one
-  would offer other vendors' devices as Tuxedo panels. A panel you have already added is
-  a different matter: see "Discovery and moving addresses".
+- **Discovery is DHCP only.** The unit answers nothing on mDNS or SSDP, so a panel that
+  issues no DHCP lease - one given a static address on its own touchscreen, or one Home
+  Assistant is routed away from - is never discovered and is added by hand. See
+  "Discovery and moving addresses".
 - Verified against firmware `TUXW_V5.3.21.0_VA`. Older firmware may behave differently
   (see the docs) - not tested here.
 
@@ -288,8 +309,9 @@ script:
 | Home Assistant asks to re-authenticate | The panel rejected the stored web login. Enter the current username and password; the address and code are kept. |
 | The entity reads `unknown` after a restart | The panel is answering `Not available` and there is no earlier state to keep. It corrects itself on the first real status, or on your first arm or disarm. |
 | The entity does not follow the keypad | The status feed is stuck on `Not available` (see Known limitations). Arm or disarm from Home Assistant to resync, or use an ECP-bus integration for status. |
-| Two entries for one panel | A repair notification names both entries. Remove one; the other adopts the panel's identity on its next start. See [Repairs](#repairs). |
-| The panel moved to a new IP and stayed unavailable | The stored address is only corrected automatically where the panel's MAC is known and Home Assistant sees its DHCP lease. On a routed install, or where the entry is identified by address, reconfigure it with the new address. |
+| Two entries for one panel | A repair notification names both entries. Remove one; the other adopts the panel's identity on the panel's next DHCP lease. See [Repairs](#repairs). |
+| The panel moved to a new IP and stayed unavailable | The stored address is only corrected automatically where Home Assistant sees the panel's DHCP lease. On a routed install, or where the panel holds a static address and issues no lease, reconfigure the entry with the new address. |
+| The panel is not discovered | Home Assistant only discovers it from a DHCP lease. Check that the panel is on DHCP rather than a static address set on its touchscreen, and that Home Assistant is on the same network segment. Add it by hand otherwise; it works exactly the same, it is just keyed on the address. |
 | Arm or disarm fails with "Tuxedo Touch command failed" | The panel refused: usually a wrong keypad code or a faulted zone when arming away. The message carries the panel's own reason. |
 
 ```yaml

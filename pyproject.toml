@@ -19,22 +19,14 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 # Home Assistant 2026.x is written for 3.14; a lower target makes mypy stop
 # at its own source before reaching this integration.
 python_version = "3.14"
-# No error code is disabled and nothing is excused: the single override below
-# supplies missing types for one dependency and switches no check off.
+# No error code is disabled, nothing is excused and there is no override at
+# all: every dependency this integration imports - aiohttp, cryptography,
+# voluptuous and homeassistant - ships py.typed, checked against the wheels.
 strict = true
 # Third-party code is analysed but its own errors are not reported. It decides
 # which FILES are reported on, not how strictly this integration is checked;
 # without it a run over this package reports Home Assistant's own source.
 follow_imports = "silent"
-
-# getmac 0.9.5 ships no py.typed and no stub package exists, so mypy can find
-# no types for that one import. Checked against the wheels: aiohttp,
-# cryptography, voluptuous and homeassistant all ship py.typed, so nothing
-# else needs this. What getmac returns is annotated at the call site in
-# identity.py.
-[[tool.mypy.overrides]]
-module = ["getmac", "getmac.*"]
-ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

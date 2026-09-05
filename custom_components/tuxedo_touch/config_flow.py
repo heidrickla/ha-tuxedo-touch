@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
 from homeassistant.const import (
     CONF_CODE,
     CONF_HOST,
@@ -15,7 +15,8 @@ from homeassistant.const import (
     CONF_PORT,
     CONF_USERNAME,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.device_registry import format_mac
@@ -35,8 +36,10 @@ from .const import (
     DEFAULT_PORT_HTTPS,
     DEFAULT_USE_HTTPS,
     DOMAIN,
+    ISSUE_DUPLICATE_ENTRY,
+    issue_id,
 )
-from .identity import async_panel_mac, build_unique_id
+from .identity import build_unique_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,6 +85,22 @@ STEP_REAUTH_SCHEMA = vol.Schema(
     }
 )
 
+# The discovery confirm step: the lease supplies the address, so the address is
+# the one field this form does not ask for. The port and the HTTPS toggle stay
+# on it because a lease says nothing about the unit's web server, and a panel
+# with "Secured Web Server Access" turned off answers on 80 - without these two
+# fields such a panel could be discovered and then never set up.
+STEP_DHCP_CONFIRM_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_PORT, default=DEFAULT_PORT_HTTPS): int,
+        vol.Required(CONF_USE_HTTPS, default=DEFAULT_USE_HTTPS): bool,
+        vol.Required(CONF_USERNAME): str,
+        vol.Required(CONF_PASSWORD): _PASSWORD,
+        vol.Optional(CONF_CODE): _PASSWORD,
+        vol.Optional(CONF_PARTITION, default=DEFAULT_PARTITION): int,
+    }
+)
+
 
 def _title_for(host: str) -> str:
     return f"Tuxedo Touch ({host})"
@@ -117,6 +136,12 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    # Set by async_step_dhcp and read by its confirm step. Declared rather
+    # than assigned in __init__ so mypy sees the types without this class
+    # taking over ConfigFlow's construction.
+    _discovered_host: str
+    _discovered_mac: str
+
     async def _async_validate(self, data: dict[str, Any]) -> dict[str, str]:
         """Validate credentials against the panel, returning form errors."""
         try:
@@ -138,23 +163,15 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             return {"base": "unknown"}
         return {}
 
-    async def _with_identity(self, user_input: dict[str, Any]) -> dict[str, Any]:
-        """The submitted data plus the panel's MAC, when the network knows it."""
-        data = dict(user_input)
-        mac = await async_panel_mac(self.hass, user_input[CONF_HOST])
-        if mac:
-            data[CONF_MAC] = mac
-        return data
-
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            # Unique ids are a mixed namespace (MAC-based and address-based),
-            # so string equality alone misses a same-panel re-add when only
-            # one side has a resolved MAC. Matching on the stored connection
-            # data closes that hole before any network traffic.
+            # Unique ids are a mixed namespace (MAC-based for a panel that was
+            # discovered, address-based for one typed in here), so string
+            # equality alone misses a same-panel re-add. Matching on the stored
+            # connection data closes that hole before any network traffic.
             self._async_abort_entries_match(
                 {
                     CONF_HOST: user_input[CONF_HOST],
@@ -162,33 +179,25 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_PARTITION: user_input[CONF_PARTITION],
                 }
             )
-            # Validate first: the login populates the ARP entry the MAC lookup
-            # then reads. Ordering it the other way leaves a fresh host
-            # unresolvable and silently falls back to an address identity.
             errors = await self._async_validate(user_input)
             if not errors:
-                data = await self._with_identity(user_input)
+                data = dict(user_input)
                 # An emptied code field must not be stored as a code.
                 if not data.get(CONF_CODE):
                     data.pop(CONF_CODE, None)
+                # A panel typed in by hand carries no MAC: the panel reports
+                # none over its API and only a DHCP lease has one. The entry
+                # gains it the first time Home Assistant sees a lease for the
+                # address it holds - see async_step_dhcp.
                 await self.async_set_unique_id(
                     build_unique_id(
-                        data.get(CONF_MAC),
+                        None,
                         user_input[CONF_HOST],
                         user_input[CONF_PORT],
                         user_input[CONF_PARTITION],
                     )
                 )
-                # A re-add of a known panel at a fresh address heals the
-                # existing entry instead of silently doing nothing - the MAC
-                # identity exists precisely so a moved panel is recognised.
-                self._abort_if_unique_id_configured(
-                    updates={
-                        CONF_HOST: user_input[CONF_HOST],
-                        CONF_PORT: user_input[CONF_PORT],
-                        CONF_USE_HTTPS: user_input[CONF_USE_HTTPS],
-                    }
-                )
+                self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=_title_for(user_input[CONF_HOST]), data=data
                 )
@@ -206,39 +215,142 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_dhcp(
         self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:
-        """Follow a configured panel to the address its DHCP lease now holds.
+        """A DHCP lease from a Tuxedo Touch panel.
 
-        The manifest asks for `registered_devices` only, so Home Assistant
-        starts this step just for MACs already in the device registry - never
-        for a panel that is not set up yet. One panel can hold several entries
-        (one per partition), all of which move together, so every entry
-        carrying this MAC is corrected rather than only the first.
+        Two matchers reach here. `{"hostname": "tux*", "macaddress": "00D02D*"}`
+        is the panel itself: measured on the unit at 00:d0:2d:4d:d7:b6
+        (2026-09-05), 00:D0:2D is Resideo's OUI and the unit puts `Tux` plus
+        the twelve hex digits of its own MAC in the lease. `registered_devices`
+        adds every MAC this integration already has a device for, so a panel
+        whose lease hostname was changed still follows a move.
+
+        Three things can be true of the lease, in this order:
+
+        - it belongs to a panel already set up, which has just moved;
+        - it belongs to a panel set up by hand, which has been identified by
+          address until now and can adopt the MAC;
+        - it belongs to a panel nobody has added, which is offered for setup.
         """
         mac = format_mac(discovery_info.macaddress)
-        matched = [
+        host = discovery_info.ip
+        entries = self._async_current_entries(include_ignore=False)
+
+        # One panel can hold several entries (one per partition), all of which
+        # move together, so every entry carrying this MAC is corrected.
+        known = [entry for entry in entries if entry.data.get(CONF_MAC) == mac]
+        for entry in known:
+            self._async_follow_move(entry, host)
+        # An entry made from the user step is keyed on the address, because
+        # nothing there can learn the MAC. This lease is the first thing that
+        # can, so the entry upgrades in place; entities key off entry_id, not
+        # the unique id, so nothing is orphaned by the change.
+        adopting = [
             entry
-            for entry in self._async_current_entries(include_ignore=False)
-            if entry.data.get(CONF_MAC) == mac
+            for entry in entries
+            if not entry.data.get(CONF_MAC) and entry.data[CONF_HOST] == host
         ]
-        if not matched:
-            # Only reachable if the device registry holds a MAC that no entry
-            # stores, which the setup path does not produce.
-            return self.async_abort(reason="unknown_panel")
-        for entry in matched:
-            if entry.data[CONF_HOST] == discovery_info.ip:
-                continue
-            # The title names the host, so it follows the move - unless the
-            # user renamed the entry, in which case their name stays.
-            title = entry.title
-            if title == _title_for(entry.data[CONF_HOST]):
-                title = _title_for(discovery_info.ip)
-            self.hass.config_entries.async_update_entry(
-                entry,
-                data={**entry.data, CONF_HOST: discovery_info.ip},
-                title=title,
+        for entry in adopting:
+            self._async_adopt_mac(entry, mac)
+        if known or adopting:
+            return self.async_abort(reason="already_configured")
+
+        # A panel nobody has set up. The partition is not known until the user
+        # picks one, so the MAC alone is the flow's id for now; it stops a
+        # second lease from opening a second form for the same panel.
+        await self.async_set_unique_id(mac)
+        self.context["title_placeholders"] = {"name": _title_for(host)}
+        self._discovered_host = host
+        self._discovered_mac = mac
+        return await self.async_step_dhcp_confirm()
+
+    @callback
+    def _async_follow_move(self, entry: ConfigEntry[Any], host: str) -> None:
+        """Point a configured entry at the address its lease now holds."""
+        if entry.data[CONF_HOST] == host:
+            return
+        # The title names the host, so it follows the move - unless the user
+        # renamed the entry, in which case their name stays.
+        title = entry.title
+        if title == _title_for(entry.data[CONF_HOST]):
+            title = _title_for(host)
+        self.hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_HOST: host}, title=title
+        )
+        self.hass.config_entries.async_schedule_reload(entry.entry_id)
+
+    @callback
+    def _async_adopt_mac(self, entry: ConfigEntry[Any], mac: str) -> None:
+        """Move an address-identified entry onto the panel's MAC."""
+        unique_id = build_unique_id(
+            mac,
+            entry.data[CONF_HOST],
+            entry.data[CONF_PORT],
+            entry.data.get(CONF_PARTITION, DEFAULT_PARTITION),
+        )
+        holder = self.hass.config_entries.async_entry_for_domain_unique_id(
+            DOMAIN, unique_id
+        )
+        if holder is not None and holder.entry_id != entry.entry_id:
+            # Two entries reaching the same panel and partition by different
+            # addresses or ports. Taking the id would corrupt the unique-id
+            # index; keep the address identity and tell the user which entry
+            # is the duplicate. Only the user can decide which of the two to
+            # remove, so the issue is not fixable from here.
+            _LOGGER.warning(
+                "Not adopting MAC identity for %s: config entry %s already is %s",
+                entry.title,
+                holder.title,
+                unique_id,
             )
-            self.hass.config_entries.async_schedule_reload(entry.entry_id)
-        return self.async_abort(reason="already_configured")
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id(ISSUE_DUPLICATE_ENTRY, entry.entry_id),
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_DUPLICATE_ENTRY,
+                translation_placeholders={"title": entry.title, "other": holder.title},
+            )
+            return
+        ir.async_delete_issue(
+            self.hass, DOMAIN, issue_id(ISSUE_DUPLICATE_ENTRY, entry.entry_id)
+        )
+        self.hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_MAC: mac}, unique_id=unique_id
+        )
+        self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        _LOGGER.debug(
+            "Panel identity is now its MAC rather than %s", entry.data[CONF_HOST]
+        )
+
+    async def async_step_dhcp_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for what a DHCP lease cannot supply, then create the entry."""
+        errors: dict[str, str] = {}
+        host = self._discovered_host
+        mac = self._discovered_mac
+        if user_input is not None:
+            data = {**user_input, CONF_HOST: host, CONF_MAC: mac}
+            errors = await self._async_validate(data)
+            if not errors:
+                # An emptied code field must not be stored as a code.
+                if not data.get(CONF_CODE):
+                    data.pop(CONF_CODE, None)
+                await self.async_set_unique_id(
+                    build_unique_id(mac, host, data[CONF_PORT], data[CONF_PARTITION])
+                )
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(title=_title_for(host), data=data)
+
+        return self.async_show_form(
+            step_id="dhcp_confirm",
+            data_schema=self.add_suggested_values_to_schema(
+                STEP_DHCP_CONFIRM_SCHEMA, _without_secrets(user_input or {})
+            ),
+            description_placeholders={"host": host, "mac": mac},
+            errors=errors,
+        )
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -258,19 +370,13 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                         merged.pop(secret, None)
             errors = await self._async_validate(merged)
             if not errors:
-                data = await self._with_identity(merged)
-                mac = data.get(CONF_MAC)
-                known = entry.data.get(CONF_MAC)
-                # Only the MAC says which panel this is. Comparing whole unique
-                # ids would reject an address change - the thing this step
-                # exists to do - and a partition change, which is ordinary
-                # reconfiguration rather than a different device.
-                if mac and known and mac != known:
-                    return self.async_abort(reason="another_panel")
-                if not mac and known:
-                    # The lookup failed this time. Keep the identity we already
-                    # proved rather than quietly demoting to an address.
-                    data[CONF_MAC] = known
+                data = dict(merged)
+                # Nothing on this form can learn the panel's MAC - only a DHCP
+                # lease has one - so a reconfigure neither gains nor loses it.
+                # The stored identity is carried across unchanged, which is
+                # what makes an address change a move rather than a new panel.
+                if mac := entry.data.get(CONF_MAC):
+                    data[CONF_MAC] = mac
                 unique_id = build_unique_id(
                     data.get(CONF_MAC),
                     user_input[CONF_HOST],

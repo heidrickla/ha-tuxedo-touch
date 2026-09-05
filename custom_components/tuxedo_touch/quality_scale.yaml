@@ -24,20 +24,26 @@ rules:
       tests/ha/test_config_flow.py covers the user step, the four error
       mappings and recovery from an error to a created entry, the duplicate
       abort, a second partition, reconfigure (address and partition changes,
-      recovery from an error, the another_panel and collision guards, blank
-      secrets keeping the stored ones, the title following a move, an
-      address entry gaining its MAC) and reauth in both outcomes including
-      recovery. Run by the GitHub Tests workflow on every push.
+      recovery from an error, the collision guard, blank secrets keeping the
+      stored ones, the title following a move, the stored MAC surviving),
+      reauth in both outcomes including recovery, and every branch of the
+      dhcp step: a new panel through its confirm step to a created entry,
+      that step recovering from a wrong password and dropping an emptied
+      code, a second lease finding the form already open, a configured panel
+      moving, a hand-added entry adopting the MAC and the collision that
+      raises the duplicate-entry issue instead. Run by the GitHub Tests
+      workflow on every push.
   config-flow:
     status: done
     comment: Every field has a data_description; the secrets use a password selector.
   dependency-transparency:
     status: done
     comment: |
-      getmac==0.9.5 - open source, on PyPI, the pin five core integrations
-      use. cryptography is declared unpinned on purpose: Home Assistant core
-      pins it and constrains every install to that pin, so any other version
-      here would refuse to install on the next core release.
+      One requirement is left: cryptography, open source and on PyPI. It is
+      declared unpinned on purpose - Home Assistant core pins it and
+      constrains every install to that pin, so any other version here would
+      refuse to install on the next core release. The panel's own client is
+      in this repository.
   docs-actions:
     status: exempt
     comment: This integration registers no actions of its own.
@@ -77,9 +83,11 @@ rules:
   unique-config-entry:
     status: done
     comment: |
-      The panel's MAC plus the partition where the network resolves it, the
-      address plus the partition otherwise; a same-panel re-add is also
-      caught on the stored connection data before any network traffic.
+      The panel's MAC plus the partition where a DHCP lease has supplied one,
+      the address plus the partition otherwise; a same-panel re-add is also
+      caught on the stored connection data before any network traffic, and a
+      lease that would give two entries the same MAC identity raises the
+      duplicate-entry repair issue instead of taking the id.
 
   # Silver
   action-exceptions: done
@@ -112,29 +120,34 @@ rules:
   devices: done
   diagnostics: done
   discovery:
-    status: todo
+    status: done
     comment: |
-      This rule is about finding a panel nobody has set up yet, and that is
-      the half still open. The panel announces nothing over mDNS or SSDP but
-      it is a DHCP client, so a matcher on the Wi-Fi module's OUI or on the
-      hostname it puts in its lease would work. Neither has been measured:
-      nothing in this repository carries the unit's real MAC prefix or DHCP
-      hostname, and a guessed matcher would offer other vendors' devices as
-      Tuxedo panels. It needs one reading from a host on the panel's segment.
-      The address-update half is done - see discovery-update-info.
+      The panel announces nothing over mDNS or SSDP, but it is a DHCP client
+      and its lease identifies it. Measured from the UniFi controller on the
+      unit at 00:d0:2d:4d:d7:b6 (2026-09-05, wired): OUI 00:D0:2D belongs to
+      Resideo (formerly Ademco/Honeywell) and the lease hostname is
+      `Tux00D02D4DD7B6` - the literal word Tux followed by the twelve hex
+      digits of its own MAC. manifest.json therefore matches
+      `{"hostname": "tux*", "macaddress": "00D02D*"}`, both conditions
+      together, so another vendor's device on the same OUI is not offered as
+      a Tuxedo panel. async_step_dhcp shows a confirm step asking for the web
+      credentials, keypad code and partition - everything the lease cannot
+      supply - logs in to the panel before creating the entry, and keys it on
+      the MAC the lease carried.
   discovery-update-info:
     status: done
     comment: |
-      manifest.json asks for `{"registered_devices": true}`, the DHCP
-      matcher that fires only for MACs already in the device registry, which
-      needs no OUI and no hostname. The entry's device carries the panel's
-      MAC as a CONNECTION_NETWORK_MAC connection (alarm_control_panel.py), so
-      a lease for that MAC starts async_step_dhcp, which corrects the stored
-      host - on every partition entry of the same panel - and reloads.
-      tests/ha/test_config_flow.py drives the step for a move, a lease at the
-      address already stored, a MAC no entry holds, a renamed entry and a
-      two-partition panel; tools/validate_local.py refuses a matcher without
-      the step, or registered_devices without the MAC in device info.
+      manifest.json also asks for `{"registered_devices": true}`, so a panel
+      whose lease hostname was changed still starts a flow: the entry's
+      device carries the panel's MAC as a CONNECTION_NETWORK_MAC connection
+      (alarm_control_panel.py). async_step_dhcp corrects the stored host on
+      every entry carrying that MAC - one per partition - and reloads them,
+      and an entry that was added by hand, and so was keyed on its address,
+      adopts the MAC from the lease. tests/ha/test_config_flow.py drives the
+      step for a move, a lease at the address already stored, a renamed
+      entry, a two-partition panel, an adoption and the collision that raises
+      the duplicate-entry issue; tools/validate_local.py refuses a matcher
+      without the step, or registered_devices without the MAC in device info.
   docs-data-update: done
   docs-examples: done
   docs-known-limitations: done
@@ -200,21 +213,20 @@ rules:
 
   # Platinum
   async-dependency:
-    status: todo
+    status: done
     comment: |
-      The panel's own client is in this repository and is asyncio throughout.
-      The one synchronous dependency left is getmac, which runs in the
-      executor and exists because the panel reports no identifier of its own:
-      Registration/AddDeviceMAC enrolls a client's MAC, not the unit's, and
-      no endpoint returns the unit's network configuration. An ARP lookup is
-      an operating-system call with no asyncio equivalent in Home Assistant
-      or on PyPI that does not want raw sockets, so this cannot be closed by
-      swapping libraries. The routes out are a panel-side identifier found by
-      reading a real unit, or the OUI/hostname DHCP matcher blocked under
-      `discovery`, which would have Home Assistant hand over the MAC at setup.
-      The registered_devices matcher this integration does ship cannot: it
-      only fires for a MAC the integration already holds. The rule allows no
-      exemption, so it stays todo rather than being filed as met.
+      The panel's own client is in this repository (api.py) and is asyncio
+      throughout: aiohttp for every request, no thread and no executor job.
+      getmac is gone. It was there only because the panel reports no
+      identifier of its own - Registration/AddDeviceMAC enrolls a client's
+      MAC, not the unit's, and no documented endpoint returns the unit's
+      hostname or network configuration - so identity came from a synchronous
+      ARP lookup in the executor. The DHCP matcher filed under `discovery`
+      replaced it: Home Assistant's own lease watcher hands the MAC over, and
+      an install it sees no lease for keeps the address identity the code
+      already supported. The one requirement left is cryptography, which does
+      AES and PKCS7 on bytes already in memory and performs no I/O, so there
+      is no event loop to block.
   inject-websession:
     status: done
     comment: |
@@ -229,10 +241,10 @@ rules:
   strict-typing:
     status: done
     comment: |
-      pyproject.toml sets strict with nothing switched off underneath it: the
-      file's one override is ignore_missing_imports scoped to getmac, which
-      ships no stubs, and supplying types for a dependency relaxes no check
-      here. tools/validate_local.py fails the run if strict is dropped or if
-      any override carries a key other than that one, and the Tests workflow
-      runs mypy against the whole integration with Home Assistant installed
-      on every push.
+      pyproject.toml sets strict with nothing switched off underneath it and
+      no override at all: every dependency this integration imports -
+      aiohttp, cryptography, voluptuous and homeassistant - ships py.typed,
+      so nothing needs ignore_missing_imports. tools/validate_local.py fails
+      the run if strict is dropped or if an override appears that relaxes a
+      check, and the Tests workflow runs mypy against the whole integration
+      with Home Assistant installed on every push.

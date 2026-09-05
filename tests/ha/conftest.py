@@ -5,8 +5,6 @@ own directory so its autouse fixture does not attach itself to the pure-logic
 suite one level up, which loads api.py by path and needs no Home Assistant.
 """
 
-from unittest.mock import patch
-
 import pytest
 
 pytest.importorskip("pytest_homeassistant_custom_component")
@@ -76,30 +74,9 @@ def config_entry_no_code():
     )
 
 
-@pytest.fixture(autouse=True)
-def no_mac_by_default():
-    """The ARP lookup answers nothing unless a test opts in.
-
-    Without this the result would depend on whether getmac is installed and
-    whether the machine running the suite happens to share a segment with
-    something at the fixture address.
-    """
-    with (
-        patch(
-            "custom_components.tuxedo_touch.config_flow.async_panel_mac",
-            return_value=None,
-        ),
-        patch(
-            "custom_components.tuxedo_touch.async_panel_mac",
-            return_value=None,
-        ),
-    ):
-        yield
-
-
 @pytest.fixture
 def config_entry_with_mac():
-    """An entry whose identity is already the panel's MAC."""
+    """An entry whose identity is the panel's MAC, as a discovered one has."""
     return MockConfigEntry(
         domain=DOMAIN,
         title=f"Tuxedo Touch ({HOST})",

@@ -1,6 +1,27 @@
 {
   "config": {
+    "flow_title": "{name}",
     "step": {
+      "dhcp_confirm": {
+        "title": "Set up the discovered Tuxedo Touch",
+        "description": "A Tuxedo Touch panel at {host} took a DHCP lease with MAC address {mac}. Enter the panel's web login credentials (not your 4-digit keypad user code, unless your installer set them to match) to add it. The address comes from the lease, so it is not asked for; the panel is identified by its MAC address from here on and a later lease change is followed automatically.",
+        "data": {
+          "port": "Port",
+          "use_https": "Use HTTPS",
+          "username": "Web login username",
+          "password": "Web login password",
+          "code": "Keypad user code",
+          "partition": "Partition number"
+        },
+        "data_description": {
+          "use_https": "Required if 'Secured Web Server Access' is enabled on the unit (the common/default state).",
+          "username": "The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code.",
+          "password": "The unit's web login password.",
+          "code": "Optional. Used as the default arm/disarm code so automations can arm without prompting.",
+          "partition": "The panel partition this entry controls. Add the discovered panel once per partition.",
+          "port": "The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without."
+        }
+      },
       "user": {
         "title": "Connect to Tuxedo Touch",
         "description": "Enter the panel's web login credentials (not your 4-digit keypad user code, unless your installer set them to match).",
@@ -14,7 +35,7 @@
           "partition": "Partition number"
         },
         "data_description": {
-          "host": "IP address or hostname of the Tuxedo Touch unit on your LAN. When Home Assistant is on the same network segment, the panel is identified by its MAC address and a changed address is a reconfigure; otherwise it is identified by this address, so give it a static IP or DHCP reservation.",
+          "host": "IP address or hostname of the Tuxedo Touch unit on your LAN. A panel added by hand is identified by this address until Home Assistant sees its DHCP lease, so give it a static IP or DHCP reservation.",
           "use_https": "Required if 'Secured Web Server Access' is enabled on the unit (the common/default state).",
           "username": "The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code.",
           "password": "The unit's web login password.",
@@ -48,7 +69,7 @@
           "partition": "Partition number"
         },
         "data_description": {
-          "host": "IP address or hostname of the Tuxedo Touch unit on your LAN. When Home Assistant is on the same network segment, the panel is identified by its MAC address and a changed address is a reconfigure; otherwise it is identified by this address, so give it a static IP or DHCP reservation.",
+          "host": "IP address or hostname of the Tuxedo Touch unit on your LAN. A panel added by hand is identified by this address until Home Assistant sees its DHCP lease, so give it a static IP or DHCP reservation.",
           "use_https": "Required if 'Secured Web Server Access' is enabled on the unit (the common/default state).",
           "username": "The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code.",
           "password": "The unit's web login password. Blank keeps the stored password.",
@@ -68,8 +89,7 @@
       "already_configured": "This panel/partition is already configured",
       "reauth_successful": "Re-authentication was successful",
       "reconfigure_successful": "Tuxedo Touch has been reconfigured.",
-      "another_panel": "That address answers as a different panel than this entry was set up for.",
-      "unknown_panel": "That DHCP lease is for a MAC address no Tuxedo Touch entry was set up with."
+      "already_in_progress": "This panel is already being set up."
     }
   },
   "entity": {
@@ -113,7 +133,7 @@
     },
     "duplicate_entry": {
       "title": "Two Tuxedo Touch entries reach one panel",
-      "description": "{title} and {other} both reach the same panel and partition by different addresses, so only one of them can hold the panel's identity. Remove whichever entry you do not want under Settings > Devices & services; the other adopts the panel's MAC address on its next start."
+      "description": "{title} and {other} both reach the same panel and partition, so only one of them can hold the panel's identity. Remove whichever entry you do not want under Settings > Devices & services; the other adopts the panel's MAC address on the panel's next DHCP lease."
     }
   }
 }

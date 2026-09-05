@@ -17,6 +17,7 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -25,7 +26,14 @@ from custom_components.tuxedo_touch.api import (
     TuxedoTouchConnectionError,
     TuxedoTouchError,
 )
-from custom_components.tuxedo_touch.const import CONF_MAC, CONF_PARTITION, DOMAIN
+from custom_components.tuxedo_touch.const import (
+    CONF_MAC,
+    CONF_PARTITION,
+    CONF_USE_HTTPS,
+    DOMAIN,
+    ISSUE_DUPLICATE_ENTRY,
+    issue_id,
+)
 
 from .conftest import ENTRY_DATA, HOST, MAC, PORT
 
@@ -35,11 +43,24 @@ SETUP = "custom_components.tuxedo_touch.async_setup_entry"
 # The dhcp component reports a MAC with no separators, which is what the
 # integration's step has to cope with.
 RAW_MAC = MAC.replace(":", "")
+# What the real unit puts in its lease, measured 2026-09-05: the literal word
+# Tux followed by the twelve hex digits of its own MAC, upper case. The
+# manifest matches "tux*" because the dhcp component lowercases hostnames.
+HOSTNAME = f"Tux{RAW_MAC.upper()}"
+# The credentials the confirm step asks for; the lease supplies the address.
+CONFIRM_INPUT = {
+    CONF_PORT: PORT,
+    CONF_USE_HTTPS: True,
+    CONF_USERNAME: "installer",
+    CONF_PASSWORD: "secret",
+    CONF_CODE: "1234",
+    CONF_PARTITION: 1,
+}
 
 
-def _lease(ip, macaddress=RAW_MAC):
+def _lease(ip, macaddress=RAW_MAC, hostname=HOSTNAME):
     """A DHCP lease as the dhcp component reports one: MAC without separators."""
-    return DhcpServiceInfo(ip=ip, hostname="tuxedo-touch", macaddress=macaddress)
+    return DhcpServiceInfo(ip=ip, hostname=hostname, macaddress=macaddress)
 
 
 async def _dhcp_flow(hass, lease):
@@ -410,23 +431,11 @@ async def test_the_reauth_form_suggests_the_username_but_not_the_password(
     assert _suggested(fields[CONF_PASSWORD]) in (None, "")
 
 
-MAC_LOOKUP = "custom_components.tuxedo_touch.config_flow.async_panel_mac"
-
-
-async def test_the_mac_becomes_the_identity_when_the_network_knows_it(hass):
-    """An address is a lease, not an identity."""
-    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=MAC):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
-        )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["result"].unique_id == f"{MAC}_1"
-    assert result["data"][CONF_MAC] == MAC
-
-
-async def test_a_routed_panel_falls_back_to_its_address(hass):
-    """ARP only answers on the same segment. That is ordinary, not a failure."""
-    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=None):
+async def test_a_panel_added_by_hand_is_identified_by_its_address(hass):
+    """Nothing on the user form can learn the MAC: the panel reports none over
+    its API, and only a DHCP lease carries one. That is ordinary, not a
+    failure - the entry upgrades the first time a lease arrives."""
+    with patch(LOGIN, return_value=None):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
         )
@@ -438,10 +447,11 @@ async def test_a_routed_panel_falls_back_to_its_address(hass):
 async def test_the_same_panel_at_a_new_address_keeps_its_identity(
     hass, config_entry_with_mac
 ):
-    """The reason for all of this: a DHCP lease change must be a reconfigure,
-    not a delete-and-re-add."""
+    """The reason for all of this: a lease change must be a reconfigure, not a
+    delete-and-re-add. Reconfigure cannot learn a MAC, so it carries the one
+    the entry already has rather than demoting it to an address."""
     config_entry_with_mac.add_to_hass(hass)
-    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=MAC):
+    with patch(LOGIN, return_value=None):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={
@@ -453,89 +463,15 @@ async def test_the_same_panel_at_a_new_address_keeps_its_identity(
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"
-    assert config_entry_with_mac.unique_id == f"{MAC}_1"
-
-
-async def test_a_different_panel_at_that_address_is_refused(
-    hass, config_entry_with_mac
-):
-    """Now a real check rather than a circular one: the panel that answered
-    reports a different MAC than the one this entry was set up for."""
-    config_entry_with_mac.add_to_hass(hass)
-    with (
-        patch(LOGIN, return_value=None),
-        patch(MAC_LOOKUP, return_value="11:22:33:44:55:66"),
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={
-                "source": "reconfigure",
-                "entry_id": config_entry_with_mac.entry_id,
-            },
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
-        )
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "another_panel"
-    assert config_entry_with_mac.data[CONF_HOST] == HOST
-
-
-async def test_a_failed_lookup_does_not_demote_a_known_identity(
-    hass, config_entry_with_mac
-):
-    """One unlucky ARP miss must not silently revert the entry to an address."""
-    config_entry_with_mac.add_to_hass(hass)
-    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=None):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={
-                "source": "reconfigure",
-                "entry_id": config_entry_with_mac.entry_id,
-            },
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
-        )
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
     assert config_entry_with_mac.data[CONF_MAC] == MAC
     assert config_entry_with_mac.unique_id == f"{MAC}_1"
-
-
-async def test_reconfigure_adopts_the_mac_an_address_entry_lacked(hass, config_entry):
-    """An entry set up from a routed segment, reconfigured from a local one:
-    the lookup answers for the first time and the identity upgrades."""
-    config_entry.add_to_hass(hass)
-    assert CONF_MAC not in config_entry.data
-    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=MAC):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": "reconfigure", "entry_id": config_entry.entry_id},
-            data=dict(ENTRY_DATA),
-        )
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
-    assert config_entry.data[CONF_MAC] == MAC
-    assert config_entry.unique_id == f"{MAC}_1"
-
-
-async def test_a_duplicate_re_add_heals_the_stored_address(hass, config_entry_with_mac):
-    """Adding the same panel again at its new address is how a user tells us
-    it moved; the abort now carries the correction instead of discarding it."""
-    config_entry_with_mac.add_to_hass(hass)
-    with patch(LOGIN, return_value=None), patch(MAC_LOOKUP, return_value=MAC):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_USER},
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
-        )
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "already_configured"
-    assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"
 
 
 async def test_dhcp_follows_a_configured_panel_to_a_new_address(
     hass, config_entry_with_mac
 ):
-    """The half of discovery-update-info that needs no OUI: a lease for a MAC
-    Home Assistant already has a device for corrects the stored address."""
+    """discovery-update-info: a lease for a MAC an entry holds corrects the
+    stored address rather than offering the panel as something new."""
     config_entry_with_mac.add_to_hass(hass)
     result = await _dhcp_flow(hass, _lease("10.10.52.61"))
     assert result["type"] is FlowResultType.ABORT
@@ -551,14 +487,6 @@ async def test_dhcp_at_the_same_address_changes_nothing(hass, config_entry_with_
     assert result["reason"] == "already_configured"
     assert config_entry_with_mac.data[CONF_HOST] == HOST
     assert config_entry_with_mac.title == f"Tuxedo Touch ({HOST})"
-
-
-async def test_dhcp_ignores_a_lease_for_another_device(hass, config_entry_with_mac):
-    config_entry_with_mac.add_to_hass(hass)
-    result = await _dhcp_flow(hass, _lease("10.10.52.61", macaddress="112233445566"))
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "unknown_panel"
-    assert config_entry_with_mac.data[CONF_HOST] == HOST
 
 
 async def test_dhcp_keeps_a_title_the_user_chose(hass):
@@ -591,3 +519,142 @@ async def test_dhcp_moves_every_partition_of_the_same_panel(
     assert result["reason"] == "already_configured"
     assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"
     assert second.data[CONF_HOST] == "10.10.52.61"
+
+
+async def test_a_lease_from_a_panel_nobody_has_added_offers_setup(hass):
+    """discovery: the measured matcher - hostname `tux*` and OUI 00D02D - fires
+    for a panel that is not set up, and the flow asks for what a lease cannot
+    supply instead of aborting."""
+    result = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "dhcp_confirm"
+    assert result["description_placeholders"] == {"host": "10.10.52.61", "mac": MAC}
+    # The address came from the lease, so it is not asked for again.
+    assert CONF_HOST not in _fields(result)
+
+
+async def test_the_discovered_panel_is_created_with_its_mac_as_the_identity(hass):
+    form = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], dict(CONFIRM_INPUT)
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Tuxedo Touch (10.10.52.61)"
+    assert result["data"][CONF_HOST] == "10.10.52.61"
+    assert result["data"][CONF_MAC] == MAC
+    assert result["data"][CONF_USERNAME] == "installer"
+    assert result["data"][CONF_CODE] == "1234"
+    assert result["result"].unique_id == f"{MAC}_1"
+
+
+async def test_the_discovery_form_recovers_from_a_wrong_password(hass):
+    """A typo on the confirm form is corrected there, not by waiting for the
+    next lease."""
+    form = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    with patch(LOGIN, side_effect=TuxedoTouchAuthError("no")):
+        again = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {**CONFIRM_INPUT, CONF_PASSWORD: "wrong"}
+        )
+    assert again["type"] is FlowResultType.FORM
+    assert again["errors"] == {"base": "invalid_auth"}
+    fields = _fields(again)
+    assert _suggested(fields[CONF_USERNAME]) == "installer"
+    assert _suggested(fields[CONF_PASSWORD]) in (None, "")
+    assert _suggested(fields[CONF_CODE]) in (None, "")
+
+    with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
+        done = await hass.config_entries.flow.async_configure(
+            again["flow_id"], dict(CONFIRM_INPUT)
+        )
+        await hass.async_block_till_done()
+    assert done["type"] is FlowResultType.CREATE_ENTRY
+    assert done["result"].unique_id == f"{MAC}_1"
+
+
+async def test_an_emptied_code_on_the_discovery_form_is_not_stored(hass):
+    form = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], {**CONFIRM_INPUT, CONF_CODE: ""}
+        )
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert CONF_CODE not in result["data"]
+
+
+async def test_a_second_lease_does_not_open_a_second_form(hass):
+    """A lease is renewed while the form sits open; one panel is one flow."""
+    first = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    assert first["type"] is FlowResultType.FORM
+    again = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    assert again["type"] is FlowResultType.ABORT
+    assert again["reason"] == "already_in_progress"
+
+
+async def test_dhcp_gives_a_hand_added_entry_the_panels_mac(hass, config_entry):
+    """The entry was typed in, so it was keyed on the address. The first lease
+    for that address is the first thing that can say which panel it is."""
+    config_entry.add_to_hass(hass)
+    assert CONF_MAC not in config_entry.data
+    result = await _dhcp_flow(hass, _lease(HOST))
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert config_entry.data[CONF_MAC] == MAC
+    assert config_entry.unique_id == f"{MAC}_1"
+
+
+async def test_adoption_refuses_a_unique_id_another_entry_holds(
+    hass, config_entry_with_mac
+):
+    """Two entries reaching one panel and partition, one by port 80 and one by
+    443. The second must not corrupt the unique-id index by taking an id the
+    first owns; only the user can say which to remove, so it is raised as an
+    issue rather than fixed here."""
+    config_entry_with_mac.add_to_hass(hass)
+    plain = MockConfigEntry(
+        domain=DOMAIN,
+        title=f"Tuxedo Touch ({HOST})",
+        unique_id=f"{HOST}:80:1",
+        data={**ENTRY_DATA, CONF_PORT: 80, CONF_USE_HTTPS: False},
+    )
+    plain.add_to_hass(hass)
+
+    result = await _dhcp_flow(hass, _lease(HOST))
+    assert result["reason"] == "already_configured"
+    assert plain.unique_id == f"{HOST}:80:1"
+    assert CONF_MAC not in plain.data
+    issue = ir.async_get(hass).async_get_issue(
+        DOMAIN, issue_id(ISSUE_DUPLICATE_ENTRY, plain.entry_id)
+    )
+    assert issue is not None
+    assert not issue.is_fixable
+    assert issue.translation_placeholders == {
+        "title": plain.title,
+        "other": config_entry_with_mac.title,
+    }
+
+
+async def test_the_duplicate_notice_goes_when_the_entry_does(
+    hass, config_entry_with_mac
+):
+    """Removing one of the two is the fix, and the notice must not survive it."""
+    config_entry_with_mac.add_to_hass(hass)
+    plain = MockConfigEntry(
+        domain=DOMAIN,
+        title=f"Tuxedo Touch ({HOST})",
+        unique_id=f"{HOST}:80:1",
+        data={**ENTRY_DATA, CONF_PORT: 80, CONF_USE_HTTPS: False},
+    )
+    plain.add_to_hass(hass)
+    await _dhcp_flow(hass, _lease(HOST))
+
+    raised = issue_id(ISSUE_DUPLICATE_ENTRY, plain.entry_id)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, raised) is not None
+
+    await hass.config_entries.async_remove(plain.entry_id)
+    await hass.async_block_till_done()
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, raised) is None

@@ -1,59 +1,23 @@
 """Working out which panel we are talking to.
 
-The panel reports no serial and no MAC of its own. `Registration/AddDeviceMAC`
-in Honeywell's API reference enrolls a CLIENT's MAC with the panel; it does not
-hand out the unit's. So the only stable identifier available is the one the
-network already holds.
+The panel reports no identifier of its own. `Registration/AddDeviceMAC` in
+Honeywell's API reference enrolls a CLIENT's MAC with the panel; it does not
+hand out the unit's, and nothing in the endpoint surface documented in
+docs/tuxedo_touch_api_notes.md returns a serial, a hostname or the unit's
+network configuration - the status, arm and disarm responses carry a status
+string and nothing else.
+
+So the MAC comes from the one place on the network that already holds it: the
+panel's DHCP lease, which Home Assistant watches on its own. Measured on the
+unit at 00:d0:2d:4d:d7:b6 (2026-09-05): OUI 00:D0:2D is Resideo, and the lease
+hostname is `Tux` followed by the twelve hex digits of the MAC, so the
+manifest's matcher recognises a Tuxedo panel and the lease hands over its
+identity in the same event. An install Home Assistant sees no lease for -
+routed, or on another VLAN - keeps an address identity, which is ordinary
+rather than a failure.
 """
 
 from __future__ import annotations
-
-import ipaddress
-import logging
-from functools import partial
-
-from getmac import get_mac_address
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import format_mac
-
-_LOGGER = logging.getLogger(__name__)
-
-# getmac returns these rather than None when it cannot resolve the address.
-_NOT_A_MAC = {"00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"}
-
-
-async def async_panel_mac(hass: HomeAssistant, host: str) -> str | None:
-    """The panel's MAC, or None when it cannot be resolved.
-
-    This is an ARP lookup, so it only answers on the same layer 2 segment. A
-    routed install gets None and keeps an address-based identity - every
-    caller must treat None as ordinary rather than as a failure.
-
-    Call it after a successful request to the panel, so the ARP entry it reads
-    has just been populated.
-    """
-    # getmac treats ip= as a literal IPv4 to find in ARP tables; hostnames
-    # must go through hostname= (which resolves first) and IPv6 through ip6=.
-    # A hostname in ip= matches nothing and returns None - no error, just the
-    # silent fallback to address identity.
-    try:
-        kind = ipaddress.ip_address(host)
-    except ValueError:
-        lookup = partial(get_mac_address, hostname=host)
-    else:
-        lookup = partial(
-            get_mac_address, **{"ip6" if kind.version == 6 else "ip": host}
-        )
-    try:
-        mac = await hass.async_add_executor_job(lookup)
-    except Exception:
-        _LOGGER.debug("MAC lookup for %s failed", host, exc_info=True)
-        return None
-
-    if not mac or mac.lower() in _NOT_A_MAC:
-        return None
-    formatted: str = format_mac(mac)
-    return formatted
 
 
 def build_unique_id(mac: str | None, host: str, port: int, partition: int) -> str:
