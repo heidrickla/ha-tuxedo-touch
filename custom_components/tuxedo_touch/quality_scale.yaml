@@ -152,9 +152,24 @@ rules:
       it runs, which on this unit can be hours. The push stream is logged the
       same way: one info line when it drops, one when it is connected again,
       not one per reconnect attempt, and one line for firmware that answers
-      404 and therefore has no stream at all.
+      404 and therefore has no stream at all. Credentials the panel refuses
+      get one warning line and then the stream ends, rather than a line per
+      doomed handshake.
   parallel-updates: done
-  reauthentication-flow: done
+  reauthentication-flow:
+    status: done
+    comment: |
+      A reauth flow, and the one place a login is still spent on credentials
+      the panel is refusing. Everything automatic has stopped by the time the
+      card appears - the poll, the push stream and setup itself - because the
+      panel disables every web account after three failed web logins, on
+      unpatched firmware permanently, and it publishes no version to tell the
+      lenient firmware apart. So the flow answers a resubmission of the
+      stored credentials itself, with no request, and probes exactly once per
+      genuinely different submission; a rejection on an entry already flagged
+      says the accounts may be locked rather than the password wrong, which
+      needs different instructions. A successful reauth clears the flag and
+      the issue, and the reload that follows is the entry coming back.
   test-coverage:
     status: done
     comment: |
@@ -166,6 +181,10 @@ rules:
       in-flight poll discard, the "Not available" answer on the first poll
       and on a later one with its recovery, and a stalled poll holding the
       reconfigure check off the panel until it finishes.
+      tests/test_login_budget.py counts what the panel counts - the fake
+      panel records every credential POST, not only the ones that succeed -
+      and holds the one-attempt rule to it across the client, the poll and
+      the commands.
       tests/fake_panel.py stands a real server up on 127.0.0.1 speaking the
       panel's whole wire format, so tests/test_push_stream.py and
       tests/ha/test_push.py drive the actual request, multipart reading,
@@ -294,12 +313,18 @@ rules:
   repair-issues:
     status: done
     comment: |
-      Two persistent, user-actionable conditions raise one. The panel
+      Three persistent, user-actionable conditions raise one. The panel
       redirecting plain-HTTP API calls to HTTPS is fixable: repairs.py flips
       the entry to HTTPS, moves port 80 to 443 and reloads. A second entry
       reaching the same panel is not, because only the user can say which of
-      the two to remove; that issue names both entries instead. Both are
-      cleared when the condition goes and when the entry is deleted.
+      the two to remove; that issue names both entries instead. Credentials
+      the panel has started refusing raise the third: it rides beside the
+      reauth card, because the card has no room for the warning that guessing
+      at the password is itself the danger on a unit that disables its web
+      accounts after three failed logins - and because
+      async_start_reauth_if_available returns silently where no card can be
+      started at all. All three are cleared when the condition goes and when
+      the entry is deleted.
   stale-devices:
     status: exempt
     comment: |

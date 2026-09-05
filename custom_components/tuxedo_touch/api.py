@@ -43,6 +43,18 @@ READIT_RE = re.compile(r'id=["\']readit["\'][^>]*value=["\']([0-9a-fA-F]+)["\']'
 # ClientError) when this expires - see the except clauses below.
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
 
+# How many credential POSTs one client may spend on credentials the panel is
+# refusing. One - and that number comes from the panel, not from politeness.
+# On stock firmware THREE failed web logins disable EVERY web account
+# permanently: no timeout, no self-clear, and recovery only at the touchscreen
+# (Setup, then the account screen, re-enable web access, Enable All, Apply).
+# Patched firmware allows five and clears itself after five minutes, but the
+# panel exposes no version anywhere, so the budget has to be safe on the
+# stricter one. A longer backoff is not an alternative: any nonzero automatic
+# retry rate reaches three eventually, and then the panel is bricked to the
+# web for good.
+LOGIN_ATTEMPT_BUDGET = 1
+
 
 class TuxedoTouchError(Exception):
     """Base error talking to the panel."""
@@ -50,6 +62,17 @@ class TuxedoTouchError(Exception):
 
 class TuxedoTouchAuthError(TuxedoTouchError):
     """Login failed - bad username/password."""
+
+
+class TuxedoTouchCredentialsRefused(TuxedoTouchAuthError):
+    """The budget above is spent: these credentials are not tried again.
+
+    A subclass of the auth error so every existing `except
+    TuxedoTouchAuthError` routes it exactly as it routes a real rejection,
+    and its own class so a caller can tell "the panel said no" from "we did
+    not ask". Raised before any request is built, so the panel never sees the
+    attempt and never counts it.
+    """
 
 
 class TuxedoTouchConnectionError(TuxedoTouchError):
@@ -141,6 +164,10 @@ class TuxedoTouchClient:
         self._iv: bytes | None = None
         self._authtokens: dict[str, str] = {}
         self._login_lock = asyncio.Lock()
+        # Credential POSTs this client has spent on a password the panel
+        # refused. Cleared only by a login that completes, so it survives
+        # every reconnect, poll and command for as long as the client lives.
+        self._failed_logins = 0
 
         self._ssl_ctx: ssl.SSLContext | None = (
             _legacy_ssl_context() if use_https else None
@@ -205,6 +232,15 @@ class TuxedoTouchClient:
     #    store it and attach it to every request from here on.
     # ------------------------------------------------------------------
     async def login(self) -> None:
+        if self._failed_logins >= LOGIN_ATTEMPT_BUDGET:
+            # Before the login-page GET, not merely before the POST: the unit
+            # serves ONE connection at a time, so an attempt that is going to
+            # be refused should not take the connection either.
+            raise TuxedoTouchCredentialsRefused(
+                "The panel refused these credentials and Home Assistant is "
+                "not trying them again - repeated failed web logins can "
+                "disable the panel's web accounts"
+            )
         _LOGGER.debug("Logging in to Tuxedo Touch at %s", self._host)
         login_url = f"{self.base_url}{LOGIN_PATH}?url=tuxedoapi.html"
 
@@ -246,6 +282,11 @@ class TuxedoTouchClient:
                 allow_redirects=False,
             ) as resp:
                 if resp.status not in (200, 302):
+                    # The panel has now seen a credential and rejected it.
+                    # Counted here and at the missing-cookie raise below,
+                    # which are the only two places that is true; a connection
+                    # failure never reaches the panel and never counts.
+                    self._failed_logins += 1
                     raise TuxedoTouchAuthError(
                         f"Login POST returned HTTP {resp.status}"
                     )
@@ -259,6 +300,7 @@ class TuxedoTouchClient:
             raise TuxedoTouchConnectionError(str(err)) from err
 
         if not session_cookie:
+            self._failed_logins += 1
             raise TuxedoTouchAuthError(
                 "No session cookie returned - check username/password"
             )
@@ -267,6 +309,10 @@ class TuxedoTouchClient:
         _LOGGER.debug("Tuxedo Touch login succeeded")
 
         await self._fetch_keys()
+        # Only a login that ran the whole way through - cookie AND key
+        # material - proves the credentials, so only that gives the budget
+        # back. A cookie with no usable keys behind it is not a working login.
+        self._failed_logins = 0
 
     # ------------------------------------------------------------------
     # Key retrieval - GET /tuxedoapi.html WITH the session cookie, then

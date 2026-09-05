@@ -364,6 +364,45 @@ async def test_unloading_closes_the_stream_and_leaves_nothing_running(
     assert fake_panel.stream_requests == requests
 
 
+async def test_a_refused_login_ends_the_stream_task_rather_than_slowing_it(
+    hass, fake_panel, panel_entry
+):
+    """The defect this release exists to keep out of 0.4.0.
+
+    Nothing but an unload ever cancelled this task, and a rejected poll does
+    not unload the entry: Home Assistant records the failure, starts a reauth
+    flow and leaves everything else running. So a web password changed at the
+    keypad left this loop re-running the whole login handshake - a login page
+    GET and a credential POST - roughly twelve times an hour, indefinitely,
+    against a panel that disables every web account after three failed
+    logins.
+
+    Now the loop ends. Not a longer wait: an end, one attempt spent and the
+    task gone.
+    """
+    coordinator = await _setup(hass, panel_entry)
+    assert fake_panel.login_attempts == 1
+
+    # The password changes at the keypad, and the panel forgets the cookie
+    # the stream is holding - what a session dying under it looks like.
+    fake_panel.password = "changed at the keypad"
+    fake_panel.expire_session()
+    # A reconnect would otherwise wait out the five-second floor first.
+    coordinator.push.reconnect_wait = 0.01
+    fake_panel.drop_stream()
+
+    await wait_until(lambda: not _stream_tasks())
+
+    assert coordinator.push.auth_failed is True
+    assert coordinator.push.connected is False
+    # One attempt: it logged in once on the reconnect, was refused, stopped.
+    assert fake_panel.login_attempts == 2
+    requests = fake_panel.stream_requests
+    await asyncio.sleep(0.2)
+    assert fake_panel.login_attempts == 2
+    assert fake_panel.stream_requests == requests
+
+
 async def test_firmware_without_a_push_stream_runs_on_the_poll_alone(
     hass, fake_panel, panel_entry
 ):

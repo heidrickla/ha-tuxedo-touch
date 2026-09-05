@@ -218,6 +218,10 @@ class TuxedoPushStream:
         self._on_connection_change = on_connection_change
         self.connected = False
         self.unsupported = False
+        # Terminal, like `unsupported`: the panel refused the credentials and
+        # the stream has stopped rather than backed off. Only a reauth and the
+        # reload it brings starts a stream again.
+        self.auth_failed = False
         self.connection_id: int | None = None
         self.client_count: int | None = None
         self.frames = 0
@@ -265,11 +269,28 @@ class TuxedoPushStream:
                     continue
                 _LOGGER.debug("Push stream session expired again; backing off")
             except TuxedoTouchAuthError as err:
-                # The poll raises ConfigEntryAuthFailed on the same
-                # credentials and starts the reauth flow; reconnecting here
-                # would only re-run a doomed handshake.
-                _LOGGER.debug("Push stream cannot log in: %s", err)
-                self.reconnect_wait = PUSH_BACKOFF_MAX
+                # Terminal, exactly like the 404 above, and for a harder
+                # reason. Every reconnect here re-runs the full login
+                # handshake - a login GET and a credential POST - against
+                # credentials the panel has already refused, and on stock
+                # firmware three refused web logins disable every web account
+                # permanently. Backing off does not help: it only spaces out
+                # the attempts that reach three. The poll raises
+                # ConfigEntryAuthFailed on the same credentials and starts the
+                # reauth flow, which is the only thing that can fix this, and
+                # the reload it ends with builds a new stream.
+                self.auth_failed = True
+                _LOGGER.warning(
+                    "The panel rejected the web login credentials, so its push "
+                    "stream has stopped and Home Assistant will not try them "
+                    "again on its own (%s). Repeated failed web logins can "
+                    "disable the panel's web accounts - permanently, on "
+                    "unpatched firmware - so the credentials have to come from "
+                    "you: enter the current ones on the integration's "
+                    "re-authentication card",
+                    err,
+                )
+                return
             except (TuxedoTouchError, aiohttp.ClientError, TimeoutError) as err:
                 _LOGGER.debug("Push stream dropped (%s); reconnecting", err)
 

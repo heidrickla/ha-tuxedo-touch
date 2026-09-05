@@ -109,7 +109,14 @@ class FakePanel:
         # later; with this on, so does this one.
         self.auto_push = auto_push
 
+        # Two counters, and the gap between them is the whole point.
+        # `logins` counts logins that SUCCEEDED. `login_attempts` counts every
+        # credential POST the panel was asked to judge, refusals included -
+        # which is what the real unit counts, and what disables its web
+        # accounts at three. A test written against `logins` alone passes
+        # whether or not something is hammering the panel with bad passwords.
         self.logins = 0
+        self.login_attempts = 0
         self.stream_requests = 0
         self.commands: list[str] = []
         self.polls = 0
@@ -173,6 +180,9 @@ class FakePanel:
         return resp
 
     async def _login(self, request: web.Request) -> web.Response:
+        # Counted BEFORE the comparison: what a panel counts is the attempt,
+        # not the outcome.
+        self.login_attempts += 1
         form = await request.post()
         expected = hmac.new(
             CHALLENGE.encode(),

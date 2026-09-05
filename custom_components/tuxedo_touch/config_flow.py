@@ -41,7 +41,9 @@ from .const import (
     DEFAULT_PORT_HTTPS,
     DEFAULT_USE_HTTPS,
     DOMAIN,
+    ISSUE_CREDENTIALS_REJECTED,
     ISSUE_DUPLICATE_ENTRY,
+    OPT_CREDENTIALS_REJECTED,
     issue_id,
 )
 from .identity import build_unique_id
@@ -140,6 +142,11 @@ def _without_secrets(data: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k not in SECRETS}
 
 
+def _needs_a_probe(entry: ConfigEntry[Any], data: Mapping[str, Any]) -> bool:
+    """Whether anything the login handshake depends on has changed."""
+    return any(data.get(field) != entry.data.get(field) for field in PROBED)
+
+
 async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     """Attempt a real login against the panel; raises on failure.
 
@@ -230,10 +237,12 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         api._legacy_ssl_context) and the two take turns on one connection
         instead of the panel seeing a second.
 
-        Not shared with the reauth step: there "unchanged" means the password
-        the panel has just rejected, which is exactly what has to be probed.
+        Not shared with the reauth step, which reaches the same conclusion
+        from the other direction: there "unchanged" means the credentials the
+        panel has just refused, and re-sending those would spend one of the
+        three failed logins that disable its web accounts.
         """
-        if all(data.get(field) == entry.data.get(field) for field in PROBED):
+        if not _needs_a_probe(entry, data):
             return {}
         if not _holds_the_panel(entry.state):
             return await self._async_validate(data)
@@ -479,6 +488,7 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                 for other in self._async_current_entries()
             ):
                 return self.async_abort(reason="already_configured")
+            probed = _needs_a_probe(entry, merged)
             errors = await self._async_validate_reconfigure(entry, merged)
             if not errors:
                 # The title names the host, so it follows a move - unless the
@@ -486,8 +496,26 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                 title = entry.title
                 if title == _title_for(entry.data[CONF_HOST]):
                     title = _title_for(user_input[CONF_HOST])
+                # A probe that succeeded is the panel accepting these
+                # credentials, so an entry flagged as refused stops being one.
+                # Without this the reload below would meet a flag nothing
+                # cleared, refuse its own setup, and leave the user correcting
+                # a password that was already right. A reconfigure that
+                # changed nothing the login depends on probed nothing and
+                # proves nothing, so it leaves the flag alone.
+                options = dict(entry.options)
+                if probed and options.pop(OPT_CREDENTIALS_REJECTED, None):
+                    ir.async_delete_issue(
+                        self.hass,
+                        DOMAIN,
+                        issue_id(ISSUE_CREDENTIALS_REJECTED, entry.entry_id),
+                    )
                 return self.async_update_reload_and_abort(
-                    entry, data=merged, unique_id=unique_id, title=title
+                    entry,
+                    data=merged,
+                    unique_id=unique_id,
+                    title=title,
+                    options=options,
                 )
 
         return self.async_show_form(
@@ -507,14 +535,54 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Take one login attempt from the user, and only from the user.
+
+        Every automatic path has stopped by the time this form appears - the
+        poll, the push stream and setup itself all refuse to spend another
+        login on credentials the panel has refused - because three refused
+        web logins disable the panel's web accounts, and on unpatched
+        firmware that is permanent. This step is the one place a login is
+        still spent, and it spends at most one per submission:
+
+        - credentials byte-identical to the stored ones are the ones already
+          refused, so they are answered from here with no request at all;
+        - anything else is a genuinely different guess and is probed once.
+
+        A failed probe on an entry already flagged says so differently: at
+        that point the account may be locked rather than the password wrong,
+        and the two need different instructions.
+        """
         errors: dict[str, str] = {}
         reauth_entry = self._get_reauth_entry()
+        already_rejected = bool(reauth_entry.options.get(OPT_CREDENTIALS_REJECTED))
         if user_input is not None:
-            errors = await self._async_validate({**reauth_entry.data, **user_input})
-            if not errors:
-                return self.async_update_reload_and_abort(
-                    reauth_entry, data_updates=user_input
-                )
+            if all(
+                user_input.get(field) == reauth_entry.data.get(field)
+                for field in (CONF_USERNAME, CONF_PASSWORD)
+            ):
+                errors = {"base": "invalid_auth"}
+            else:
+                errors = await self._async_validate({**reauth_entry.data, **user_input})
+                if not errors:
+                    ir.async_delete_issue(
+                        self.hass,
+                        DOMAIN,
+                        issue_id(ISSUE_CREDENTIALS_REJECTED, reauth_entry.entry_id),
+                    )
+                    return self.async_update_reload_and_abort(
+                        reauth_entry,
+                        data_updates=user_input,
+                        # The panel accepts these, so the entry stops being
+                        # one whose credentials are refused - and the setup
+                        # that the reload runs next reads exactly this.
+                        options={
+                            key: value
+                            for key, value in reauth_entry.options.items()
+                            if key != OPT_CREDENTIALS_REJECTED
+                        },
+                    )
+                if already_rejected and errors.get("base") == "invalid_auth":
+                    errors = {"base": "possibly_locked_out"}
 
         return self.async_show_form(
             step_id="reauth_confirm",

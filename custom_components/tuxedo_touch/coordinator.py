@@ -31,7 +31,9 @@ from .const import (
     CONF_USE_HTTPS,
     DEFAULT_PARTITION,
     DOMAIN,
+    ISSUE_CREDENTIALS_REJECTED,
     ISSUE_HTTPS_REDIRECT,
+    OPT_CREDENTIALS_REJECTED,
     SCAN_INTERVAL,
     SOURCE_ASSUMED,
     SOURCE_STREAM,
@@ -44,6 +46,45 @@ from .push import PushStatus, TuxedoPushStream
 _LOGGER = logging.getLogger(__name__)
 
 type TuxedoTouchConfigEntry = ConfigEntry[TuxedoTouchCoordinator]
+
+
+@callback
+def async_note_credentials_rejected(
+    hass: HomeAssistant, entry: TuxedoTouchConfigEntry
+) -> None:
+    """Record that the panel refused these credentials, and explain it once.
+
+    Two things the reauthentication card cannot do on its own.
+
+    The option is what makes a restart free. A client's failed-login budget
+    lives in the process, so without something written down every restart
+    would spend a fresh login on credentials already known to be refused -
+    and three refused logins disable the panel's web accounts, on unpatched
+    firmware permanently. Setup reads this option before it touches the
+    network. Writing it does NOT reload the entry: reloading is what an
+    update listener does, and this integration registers none (checked
+    against __init__.py, which calls neither add_update_listener nor
+    async_on_state_change).
+
+    The issue carries the part that will not fit on the card: that guessing
+    at the password is itself the danger. It is raised here rather than left
+    to the reauth flow because async_start_reauth_if_available returns
+    silently when no handler can be started, and a user with no card at all
+    would otherwise get no warning either.
+    """
+    if not entry.options.get(OPT_CREDENTIALS_REJECTED):
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, OPT_CREDENTIALS_REJECTED: True}
+        )
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id(ISSUE_CREDENTIALS_REJECTED, entry.entry_id),
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=ISSUE_CREDENTIALS_REJECTED,
+        translation_placeholders={"title": entry.title},
+    )
 
 
 class PanelStatusUnavailable(UpdateFailed):
@@ -380,6 +421,12 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         except TuxedoTouchAuthError as err:
             # Halts polling and starts a reauth flow instead of re-running the
             # full login handshake against doomed credentials every poll.
+            # Recorded on the entry first, so a restart before the user gets
+            # to the card costs no login either: Home Assistant leaves the
+            # entry LOADED after this exception (update_coordinator only sets
+            # last_update_success and starts the reauth), and a restart from
+            # that state would otherwise begin with a fresh handshake.
+            async_note_credentials_rejected(self.hass, self._entry)
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN,
                 translation_key="auth_failed",

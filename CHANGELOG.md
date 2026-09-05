@@ -21,13 +21,31 @@ numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
   `stream`, `poll`, or `assumed` for a command the panel accepted but neither source
   reported.
 - The diagnostics download reports the stream: whether it is connected, whether the
-  firmware answered 404 and has no stream at all, the connection id, the client count,
+  firmware answered 404 and has no stream at all, whether it stopped because the panel
+  refused the credentials, the connection id, the client count,
   how many frames have arrived and how far a failing stream has backed off, alongside
   which source produced the status shown. A report naming only the poll could not
   distinguish a stream that never came up from a panel that is not answering.
 
 ### Fixed
 
+- **Home Assistant now makes at most ONE automatic login attempt per set of
+  credentials, and then waits for you.** The panel counts failed web logins, and on
+  unpatched firmware three of them disable every web account it has - no timeout, no
+  self-clear, and the only way back is at the touchscreen (Setup, then the account
+  screen, re-enable web access, Enable All, Apply). The event stream added in this
+  release is a background task that reconnects on its own, and Home Assistant leaves an
+  entry loaded after credentials are rejected, so a web password changed at the keypad
+  would have had it re-running the login handshake about twelve times an hour, for
+  ever: past the three-strike limit inside a quarter of an hour, and then still
+  knocking at a panel whose web accounts it had already disabled - with the
+  re-authentication card failing afterwards even for the correct password. Now the API
+  client will not spend a second attempt on credentials the panel has refused, the
+  event stream stops instead of backing off, the refusal is recorded on the config
+  entry so a restart costs nothing either, and a repair notification explains what
+  happened beside the re-authentication card. Patched firmware allows five attempts and
+  clears itself after five minutes, but the panel publishes no version anywhere, so the
+  behaviour has to be safe on the stricter one.
 - **`Not available` can no longer reach the entity at all on firmware that has the
   event stream.** The panel's `GetSecurityStatus` endpoint reads a cache its firmware
   fills only from a message on the alarm bus, and answers that placeholder while the

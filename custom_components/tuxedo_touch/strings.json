@@ -81,6 +81,7 @@
     },
     "error": {
       "invalid_auth": "Invalid username or password. If the panel was recently reset, web access may have been disabled for this user - re-enable it on the touchscreen under Setup -> Account.",
+      "possibly_locked_out": "The panel is refusing credentials that previously worked. Either the web password was changed at the keypad, or the panel has disabled its web accounts after repeated failed logins. On unpatched firmware that lockout is permanent and clears only at the touchscreen: Setup, then Users/Account, re-enable web access, Enable All, Apply. On patched firmware it clears itself after five minutes, so wait five minutes and try once - each further guess is another failed login.",
       "cannot_connect": "Failed to connect - check the IP/port and that the unit is reachable. The panel serves only ONE connection at a time, so close any browser tab open to it and retry.",
       "panel_error": "The panel answered but the response could not be used. See the Home Assistant log for the specific reason.",
       "unknown": "Unexpected error - see the Home Assistant log for the traceback"
@@ -108,6 +109,9 @@
     },
     "auth_failed": {
       "message": "The panel rejected the stored web login credentials: {error}"
+    },
+    "credentials_rejected_no_retry": {
+      "message": "The panel rejected the stored web login credentials, so Home Assistant has deliberately stopped attempting logins: repeated failed web logins can disable the panel's web accounts, permanently on unpatched firmware. Enter the current credentials on the re-authentication card and Home Assistant will try again then, once."
     },
     "update_failed": {
       "message": "Could not read the panel's status: {error}"
@@ -137,6 +141,10 @@
     "duplicate_entry": {
       "title": "Two Tuxedo Touch entries reach one panel",
       "description": "{title} and {other} both reach the same panel and partition, so only one of them can hold the panel's identity. Remove whichever entry you do not want under Settings > Devices & services; the other adopts the panel's MAC address on the panel's next DHCP lease."
+    },
+    "credentials_rejected": {
+      "title": "Tuxedo Touch is refusing the stored credentials",
+      "description": "{title} logged in with these web credentials before and the panel now refuses them, so Home Assistant has stopped trying: three failed web logins disable every web account on unpatched firmware, with no timeout, and only the touchscreen can re-enable them (Setup, then Users/Account, re-enable web access, Enable All, Apply). The likely cause is a web password changed at the keypad. Enter the current credentials on this entry's re-authentication card - one attempt, not a series of guesses. If the panel refuses credentials you are sure of, its accounts are already disabled and the touchscreen is the only way back."
     }
   }
 }

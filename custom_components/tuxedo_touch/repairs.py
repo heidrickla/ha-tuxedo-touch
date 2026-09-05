@@ -1,8 +1,16 @@
 """Fix flows for the repair issues this integration raises.
 
-Only the HTTPS redirect is fixable from here. A duplicate entry needs the
-user to choose which of the two to remove, so that issue carries the
-explanation and no flow.
+Only the HTTPS redirect is fixable from here. The other two carry their
+explanation and no flow, because neither is something Home Assistant can put
+right on its own:
+
+- a duplicate entry needs the user to choose which of the two to remove;
+- rejected credentials need credentials only the user has, and that issue
+  exists to say why Home Assistant must not go on guessing at them. It rides
+  alongside the reauthentication card rather than replacing it - the card
+  takes the new password, this carries the warning the card has no room for,
+  and it appears even where async_start_reauth_if_available could start no
+  card at all.
 """
 
 from __future__ import annotations

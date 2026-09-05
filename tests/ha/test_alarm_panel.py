@@ -13,6 +13,7 @@ from custom_components.tuxedo_touch.alarm_control_panel import (
 )
 from custom_components.tuxedo_touch.api import TuxedoStatus, TuxedoTouchError
 from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
+from tests.fake_panel import wait_until
 
 STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"
 ARM = "custom_components.tuxedo_touch.api.TuxedoTouchClient.arm"
@@ -219,6 +220,48 @@ async def test_without_a_stored_code_a_numeric_code_is_demanded(
 ):
     await _setup(hass, config_entry_no_code)
     assert hass.states.get(PANEL).attributes.get("code_format") == "number"
+
+
+async def test_a_command_on_refused_credentials_costs_the_panel_nothing(
+    hass, fake_panel, panel_entry
+):
+    """An automation that keeps arming must not keep logging in.
+
+    The entry stays LOADED after a rejected poll - Home Assistant does not
+    unload it - so the entity is still there and its services still run. Arm
+    and disarm each authenticate first, so without a budget in the client an
+    automation retrying a failed arm would spend a strike per attempt and
+    walk the panel into its three-strike lockout by itself. Instead the user
+    gets a translated error and the panel is asked nothing at all.
+    """
+    panel_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(panel_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = panel_entry.runtime_data
+    await wait_until(lambda: coordinator.push.connected)
+    assert fake_panel.login_attempts == 1
+
+    # The web password is changed at the keypad. The next poll is refused,
+    # and that refusal is the one strike this entry will ever spend.
+    fake_panel.password = "changed at the keypad"
+    coordinator.client.invalidate_session()
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert fake_panel.login_attempts == 2
+
+    for service in ("alarm_arm_away", "alarm_disarm"):
+        with pytest.raises(HomeAssistantError) as raised:
+            await hass.services.async_call(
+                ALARM_DOMAIN,
+                service,
+                {ATTR_ENTITY_ID: PANEL},
+                blocking=True,
+            )
+        # Translated rather than a raw traceback: the user reads a reason.
+        assert raised.value.translation_domain == "tuxedo_touch"
+        assert raised.value.translation_key == "command_failed"
+
+    assert fake_panel.login_attempts == 2
 
 
 @pytest.mark.parametrize(

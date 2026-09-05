@@ -1,0 +1,196 @@
+"""The client's failed-login budget, counted by the thing that would pay for it.
+
+A real HTTP server on 127.0.0.1 speaking the panel's own login handshake, so
+what is counted here is what the panel counts: credential POSTs it was asked
+to judge, refusals included. That is the number that matters, because the unit
+disables EVERY web account after three failed web logins - no timeout, no
+self-clear, and recovery only by walking to the touchscreen. Patched firmware
+allows five and clears itself after five minutes, and the panel publishes no
+version anywhere, so the budget has to be safe on the stricter one.
+
+`FakePanel.logins` counts only logins that SUCCEEDED and stays at zero however
+hard a wrong password is hammered; every assertion here is on
+`login_attempts`, which is incremented before the credential is even compared.
+
+The pure-logic half of the same contract - the budget's value, the exception's
+place in the hierarchy, and that a spent budget is refused before any request
+is built - is in tests/test_api.py, which needs no server.
+"""
+
+import asyncio
+
+import aiohttp
+import pytest
+
+from tests.fake_panel import FakePanel
+from tests.no_ha import load
+
+api = load("api")
+
+
+@pytest.fixture(autouse=True)
+def _real_sockets(socket_enabled):
+    """These tests need a real socket, and pytest-socket blocks them.
+
+    pytest-homeassistant-custom-component disables socket creation for every
+    test in the session. Asking for socket_enabled is how a test says it is
+    one of the exceptions; the connect() guard installed alongside it still
+    allows only 127.0.0.1, which is where the fake panel is.
+    """
+
+
+@pytest.fixture
+async def panel():
+    made = FakePanel()
+    await made.start()
+    yield made
+    await made.close()
+
+
+@pytest.fixture
+async def session():
+    made = aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar())
+    yield made
+    await made.close()
+
+
+def _client(panel, session, password):
+    return api.TuxedoTouchClient(
+        session=session,
+        host="127.0.0.1",
+        port=panel.port,
+        use_https=False,
+        username=panel.username,
+        password=password,
+    )
+
+
+def test_a_spent_budget_is_refused_before_any_request_is_built():
+    """No login page GET either, which this proves rather than asserts.
+
+    The client is built with session=None, so any request at all would come
+    out as an AttributeError instead of the refusal. Not taking a connection
+    is part of the fix: the panel serves ONE at a time and the poll needs it.
+
+    Also in tests/test_api.py, which runs on a bare Python with no pytest;
+    here as well because a failure in that script aborts the pytest run
+    instead of reporting, and this is the assertion that must report.
+    """
+    client = api.TuxedoTouchClient(None, "10.0.0.5", 443, True, "Admin", "hunter2")
+    assert client._failed_logins == 0
+    assert api.LOGIN_ATTEMPT_BUDGET == 1
+
+    client._failed_logins = api.LOGIN_ATTEMPT_BUDGET
+    with pytest.raises(api.TuxedoTouchCredentialsRefused):
+        asyncio.run(client.login())
+
+
+def test_a_refusal_routes_as_an_auth_error():
+    """Every existing `except TuxedoTouchAuthError` has to catch it, or the
+    coordinator's reauth branch and the stream's terminate branch both miss
+    the case they were written for."""
+    assert issubclass(api.TuxedoTouchCredentialsRefused, api.TuxedoTouchAuthError)
+    assert issubclass(api.TuxedoTouchCredentialsRefused, api.TuxedoTouchError)
+
+
+async def test_a_refused_password_costs_one_attempt_and_never_a_second(panel, session):
+    """The load-bearing assertion of this release.
+
+    One credential POST for a password the panel refuses, for the life of the
+    client - not one per poll, not one per reconnect, not one per restart.
+    Two below stock firmware's three-strike cliff, and the strike that was
+    spent is the one the user's own password change caused.
+    """
+    client = _client(panel, session, "wrong")
+
+    with pytest.raises(api.TuxedoTouchAuthError):
+        await client.login()
+    assert panel.login_attempts == 1
+
+    with pytest.raises(api.TuxedoTouchCredentialsRefused):
+        await client.login()
+    assert panel.login_attempts == 1
+
+
+async def test_every_route_into_the_client_hits_the_same_budget(panel, session):
+    """Not just login(): the poll and the commands all authenticate first.
+
+    A budget that only guarded the direct call would leave the poll, an arm
+    and a disarm each free to spend a strike of their own, which is three.
+    """
+    client = _client(panel, session, "wrong")
+    with pytest.raises(api.TuxedoTouchAuthError):
+        await client.login()
+    assert panel.login_attempts == 1
+
+    for attempt in (
+        client.get_status(),
+        client.arm("STAY", "1234"),
+        client.disarm("1234"),
+        client.async_session_cookie(),
+    ):
+        with pytest.raises(api.TuxedoTouchCredentialsRefused):
+            await attempt
+    assert panel.login_attempts == 1
+
+
+async def test_a_connection_failure_is_not_a_strike(panel, session):
+    """The panel never saw a credential, so it counted nothing.
+
+    Spending the budget on an unreachable panel would leave a user whose
+    switch rebooted needing a reauthentication they cannot complete.
+    """
+    client = _client(panel, session, panel.password)
+    await panel.close()
+
+    with pytest.raises(api.TuxedoTouchConnectionError):
+        await client.login()
+    assert client._failed_logins == 0
+
+
+async def test_a_login_that_works_leaves_the_budget_whole(panel, session):
+    """A success is not a strike, and it clears any that were recorded.
+
+    The clear runs only after _fetch_keys() has returned: a cookie with no
+    usable key material behind it is not a working login and must not hand
+    the budget back.
+
+    What cannot be driven from outside, and is said here rather than faked:
+    no sequence in this integration reaches the clear with a strike already
+    counted, because the gate refuses the login that would follow one. The
+    line is what stops a spent strike outliving the credentials that earned
+    it if any future path ever does.
+    """
+    client = _client(panel, session, panel.password)
+    await client.login()
+    assert client._failed_logins == 0
+    assert panel.login_attempts == 1
+
+    client.invalidate_session()
+    await client.login()
+    assert panel.login_attempts == 2
+    assert client._failed_logins == 0
+
+
+async def test_a_password_changed_at_the_keypad_costs_exactly_one(panel, session):
+    """The precondition of the whole defect, end to end.
+
+    Credentials that were accepted at setup and are rejected later - somebody
+    changed the web password at the touchscreen. The client re-logs in, is
+    refused once, and stops; from then on it is the user's move.
+    """
+    client = _client(panel, session, panel.password)
+    await client.login()
+    assert panel.login_attempts == 1
+
+    panel.password = "changed at the keypad"
+    client.invalidate_session()
+
+    with pytest.raises(api.TuxedoTouchAuthError):
+        await client.login()
+    assert panel.login_attempts == 2
+
+    for _ in range(5):
+        with pytest.raises(api.TuxedoTouchCredentialsRefused):
+            await client.get_status()
+    assert panel.login_attempts == 2
