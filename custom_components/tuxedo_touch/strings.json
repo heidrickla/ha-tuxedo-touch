@@ -56,6 +56,10 @@
           "password": "The web login password for that account."
         }
       },
+      "reauth_retry": {
+        "title": "Try the stored credentials once more",
+        "description": "These are the credentials the panel at {host} refused, so Home Assistant will not send them again on its own. Submit this only if something has changed at the panel - most often re-enabling web access for this user on the touchscreen under Setup, then Users/Account, Enable All, Apply. Submitting sends exactly one login. Three refused web logins disable every web account, on unpatched firmware permanently and clearable only at the touchscreen. If the password itself was changed at the keypad, go back and enter the new one instead."
+      },
       "reconfigure": {
         "title": "Reconfigure Tuxedo Touch",
         "description": "Change the panel's address, port, credentials, keypad code or partition. Leave the password and keypad code blank to keep the stored ones.",
