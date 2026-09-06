@@ -83,9 +83,15 @@ PUSH_STABLE_AFTER = 60.0
 PUSH_BACKOFF_MAX = 300.0
 
 # How long a command waits for the panel to report the change on the stream
-# before falling back to a poll. Arming pushes its first exit-delay frame
-# within seconds; the entity's PARALLEL_UPDATES = 1 holds other calls to it
-# for at most this long, so it is a bound rather than a target.
+# before falling back to a poll. The entity's PARALLEL_UPDATES = 1 holds other
+# calls to it for at most this long, so it is a bound rather than a target.
+#
+# Measured 2026-09-06 over one live arm-stay/disarm cycle: the first frame
+# carrying the new state flag arrived 1.5 s after the arm request and 1.8 s
+# after the disarm. Eight seconds is therefore roughly five times the observed
+# latency - comfortable without being so long that a command which did nothing
+# leaves the entity waiting. One cycle on one mode, so treat it as a floor on
+# the margin rather than a characterisation of every path.
 COMMAND_CONFIRM_TIMEOUT = 8.0
 
 # Where a status came from, on TuxedoStatus.source.
