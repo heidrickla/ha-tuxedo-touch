@@ -29,7 +29,19 @@
       "cadence_note": "Measured over a 666 s hold plus two concurrent 179 s holds: 26 intervals, all between 32.68 and 33.31. The tick is GLOBAL to the panel, not per connection, so a reconnect joins a cycle already running and the FIRST gap is short and effectively random (19.30, 11.99, 14.62 observed). Never calibrate a liveness check on that first gap.",
       "closed_by_panel": false,
       "closed_by_panel_note": "Three connections across two runs ran 666 s, 179 s and 179 s and were all still open when the client gave up. No FIN, no timeout, no reset.",
-      "concurrent_clients": "at least 3; a new client does not displace an existing one, and the cadence is unbroken"
+      "concurrent_clients": "at least 3; a new client does not displace an existing one, and the cadence is unbroken",
+      "response_headers": {
+        "Server": "(empty value, not absent)",
+        "Connection": "Close",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Content-type": "multipart/x-mixed-replace;boundary=\"EH912ZZ\"",
+        "note": "Connection: Close is sent on a stream the panel then holds open indefinitely. Measured 2026-09-06."
+      },
+      "framing": {
+        "part": "--EH912ZZ CRLF, 'Content-type: text/plain' CRLF, empty line CRLF, payload CRLF",
+        "close_delimiter_after_every_part": true,
+        "note": "MEASURED: 19 opening boundaries and 19 '--EH912ZZ--' closes in one 2616-byte capture. Under RFC 2046 a close delimiter ends the body, so a CONFORMING multipart parser reads the first frame and stops. Clients must SCAN for payloads, not parse multipart. On an alarm client this failure presents as a panel that went quiet."
+      }
     },
     "rest_api": {
       "base_path": "/system_http_api/API_REV01",
@@ -192,7 +204,10 @@
     "The exit-delay text has a DOUBLE space: '59  Secs Remaining'.",
     "GetSecurityStatus capitalises its colour ('Green'); the stream sends a digit.",
     "The push path needs the trailing slash before 'G.' or it 404s.",
-    "The stream is scoped to the panel's CURRENT partition by the producer, and carries no partition field. A multi-partition deployment must consult GetCurrentPartition rather than assume."
+    "The stream is scoped to the panel's CURRENT partition by the producer, and carries no partition field. A multi-partition deployment must consult GetCurrentPartition rather than assume.",
+    "The multipart CLOSE delimiter '--EH912ZZ--' is emitted after EVERY part, not once at the end. This is invalid RFC 2046 and MUST be preserved: every existing client scans rather than parses, and a standards-correct single close delimiter would give conforming parsers one frame and then silence.",
+    "The 'Server:' response header is present with an EMPTY value rather than absent.",
+    "'Connection: Close' is sent on a stream that is then held open indefinitely."
   ],
   "capability_detection": {
     "$comment": [
