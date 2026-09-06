@@ -33,6 +33,38 @@ at all. See [How it updates](#how-it-updates).
 The panel behind the Tuxedo (a VISTA-series control) is not addressed directly; the
 Tuxedo's own web API is the only thing spoken to.
 
+## Firmware differences
+
+Everything this integration does works on **stock Honeywell firmware**, and that is
+the only assumption it makes. Nothing here requires a modified panel.
+
+The panel has no version, model or firmware endpoint of any kind — confirmed from the
+vendor's own `script/tuxapi.js`, where the whole API surface is enumerated. The firmware
+string is readable only on the unit's own screen. **So this integration cannot detect
+which firmware it is talking to, and therefore assumes the strictest case in every
+instance where behaviour differs.**
+
+| Behaviour | Stock firmware | Modified firmware |
+|---|---|---|
+| Failed web logins | Three disable **every** web account, permanently, with no timeout. Recovery needs someone at the touchscreen: account setup, Enable All, Apply. | Some builds allow five and clear themselves after five minutes. |
+| What this integration does | Spends **one** automatic login attempt per credential set and then waits for you — see [One login attempt, then it waits for you](#one-login-attempt-then-it-waits-for-you). | Identical. The safe behaviour is the same behaviour, so no detection is needed. |
+
+That table has one row today because one row is all that differs. It exists so the
+pattern is established: **if a future capability needs a firmware this integration
+cannot detect, it is documented here as unavailable on stock rather than assumed
+present.** Any such capability has to be optional, detected before use, and absent
+without complaint — probing an unknown endpoint to find out what a panel does with it
+is not something this integration will do on someone else's alarm.
+
+Work is underway elsewhere on replacement panel firmware. If capabilities arrive with
+it, they will keep the same endpoints, the same schema and the same field names as the
+vendor surface, so that one integration serves both and a stock panel loses nothing.
+A capability-detection route is planned alongside it, and that is what would let this
+table grow: the integration could ask the panel once what it supports and light up a
+better path only where it is genuinely present, rather than probing to find out. Until
+that exists, the row above is the whole of the difference and stock is the only
+behaviour assumed.
+
 ## Supported functions
 
 One `alarm_control_panel` entity per configured partition, named **Partition N** under
