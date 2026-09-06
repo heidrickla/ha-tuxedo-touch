@@ -133,6 +133,10 @@ class TuxedoAlarmPanel(
         stream is the primary source here, and a poll answering the firmware's
         "Not available" placeholder while the stream is delivering real
         statuses is not an outage of anything.
+
+        And unavailable whatever either source is doing once the Tuxedo has
+        said it cannot see the VISTA panel: both go on answering, and neither
+        is reading the alarm. See TuxedoTouchCoordinator.panel_available.
         """
         return self.coordinator.panel_available
 

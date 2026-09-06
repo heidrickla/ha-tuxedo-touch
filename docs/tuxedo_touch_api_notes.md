@@ -177,14 +177,73 @@ The payload is colon-delimited:
 |  |  | |   |  +-- colour: 1 green, 2 red, 3 yellow (the REST API's "Color")
 |  |  | |   +----- the same flag again, as a RAW BYTE
 |  |  | +--------- state flag as hex TEXT: fe ready/disarmed, ff arming/armed
-|  |  +----------- partition number
+|  |  +----------- panel status code; -1 means the ECP link is down
 |  +-------------- command id
 +----------------- 0 in everything observed
 ```
 
-Command ids in field 2: **21** partition status (the useful one), **18** home partition,
+Command ids in field 1: **21** partition status (the useful one), **18** home partition,
 **504** initial/registration data on connect, **-1** unsolicited status update. Only 21
 and -1 carry the flag byte, so only those decode to a partition status here.
+
+### Field 2 is not the partition
+
+It was read as the partition number up to and including 0.4.1, and that was wrong. It is
+the value the panel's own `/eventhandler.html` calls **`panelStatusCode`**: an
+authenticated GET of that page taken at the same instant as a frame answered
+`curStatus = "21:a1Ready To Arm:1"` while the frame read `0:21:1:fe:\xfe1Ready To Arm:2`,
+so the page's trailing `panelStatusCode` is the frame's *field 2*, and the frame's own
+trailing `:2` is the colour rather than the code. Two other frames captured at that
+instant carry **`P1` as literal text** - `0:504:1:P1  H:1:0:3:3` and `0:18:1 P1  H:2` -
+which is the second reason to doubt field 2 was ever duplicating a partition.
+
+**`-1` in this field means the Tuxedo has lost the ECP link to the VISTA panel.** From
+the producer, `CReceiverThread::sltSendChangedPartitionStatus` at `0x144880` in
+`/tuxedo`:
+
+```
+0x144a7c  bl     PanelIsTalking()
+0x144a80  cmp    r0, #0
+0x144a84  mvneq  r3, #0          ; link down -> r3 = -1
+0x144a88  streq  r3, [sp, #8]    ; -1 stored into the message field
+0x144a8c  bne    0x144ae8        ; otherwise the real status code
+0x144aa0  bl     osal_MqSend(int, char*, int)   ; the frame is SENT EITHER WAY
+```
+
+The frame still arrives, still carries a display text and still carries a state flag, and
+every bit of that is the last thing the Tuxedo drew before it went blind. Nothing about
+the connection changes, so no liveness or freshness check on the stream can see this -
+and `GetSecurityStatus` reads a cache those same ECP messages are what fill, so the poll
+cannot see it either. The integration takes the alarm entity **unavailable** for as long
+as field 2 reads -1, and a frame carrying a real status code is the only thing that
+clears it.
+
+### There is no partition field, and the stream does not need one
+
+The head of the same producer:
+
+```
+0x144884  mov  r3, #0x15            ; 21, the command id
+0x1448a0  bl   GetCurrentPartition()
+0x1448a4  cmp  r0, r4               ; r4 = the partition that changed
+0x1448a8  beq  0x1448b4             ; equal -> build and send
+0x1448ac  add  sp, sp, #0x26c       ; NOT equal -> return, send NOTHING
+```
+
+**A frame is emitted only when the partition that changed is the panel's currently
+selected partition.** Every frame that arrives is therefore about the current partition by
+construction: the stream is implicitly scoped by the producer, which is why no partition
+field exists. Guarding again on the receiver can only reject valid frames.
+
+The caveat, worth writing down and not worth building for: the scoping is *the current
+partition*, not *partition N*, so the stream **follows the panel**. Change the displayed
+partition at the touchscreen or through the web UI (the firmware ships
+`script/changePartitionScript.js` for exactly that) and the stream begins delivering a
+different partition's status with no marker in the frame to say so. On a single-partition
+system that is theoretical. On a multi-partition one it is a real mis-attribution and it
+is invisible in the data; the fix would be to consult `GetCurrentPartition` over REST
+rather than assume, and it is not attempted here. The configured partition still governs
+the `GetSecurityStatus` poll and every arm/disarm command, which do take a partition id.
 
 Read the colour digit carefully: it sits between the flag byte and the text, so
 `\xff259  Secs Remaining` is *colour 2* and *59 seconds*, not 259 seconds.

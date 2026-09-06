@@ -67,7 +67,7 @@ FLAG_ARMED = 0xFF
 # Same codes and same meaning as the REST API's "Color" field.
 COLOURS = {"1": "green", "2": "red", "3": "yellow"}
 
-# Command ids seen in field 2 of a payload.
+# Command ids, carried in field 1 of a payload.
 CMD_HOME_PARTITION = 18
 CMD_PARTITION_STATUS = 21
 CMD_INITIAL_DATA = 504
@@ -75,6 +75,23 @@ CMD_UNSOLICITED = -1
 # Only these two carry a partition's armed state; 504 and 18 are registration
 # and housekeeping, and decode to nothing because they carry no flag byte.
 STATUS_CMDS = frozenset({CMD_PARTITION_STATUS, CMD_UNSOLICITED})
+
+# What field 2 of a command-21 payload carries when the Tuxedo has lost the
+# ECP link to the VISTA panel behind it. Read out of the producer,
+# CReceiverThread::sltSendChangedPartitionStatus at 0x144880 in /tuxedo:
+#
+#     0x144a7c  bl     PanelIsTalking()
+#     0x144a80  cmp    r0, #0
+#     0x144a84  mvneq  r3, #0          ; link down -> r3 = -1
+#     0x144a88  streq  r3, [sp, #8]    ; -1 stored into the message field
+#     0x144a8c  bne    0x144ae8        ; otherwise the real status code
+#     0x144aa0  bl     osal_MqSend(int, char*, int)   ; SENT EITHER WAY
+#
+# The frame is still sent, still carries a display text and still carries a
+# state flag - all of them the last thing the Tuxedo drew before it went
+# blind. So this is the one value on the stream that means "believe nothing
+# else in this frame".
+PANEL_STATUS_LINK_DOWN = -1
 
 # A stream that has sent this much without a complete frame in it is not
 # sending frames; the buffer is dropped rather than grown without limit.
@@ -106,12 +123,26 @@ class PushStatus:
     """One partition status as the stream reported it."""
 
     cmd: int
-    partition: int | None
+    # Field 2 of a command-21 payload. NOT the partition - see the field map
+    # in decode_status_frame. None when the frame has no such field (the
+    # unsolicited record) or when it could not be read as an integer.
+    panel_status_code: int | None
     armed: bool
     colour: str | None
     text: str
     seconds_remaining: int | None
     raw: str
+
+    @property
+    def link_down(self) -> bool:
+        """Whether the Tuxedo has told us it cannot see the VISTA panel.
+
+        A code that could not be read is NOT a dead link: `None` here means
+        the field was absent or unparseable, and taking the alarm entity
+        unavailable on a decoding fault would be a second wrong answer laid
+        over the first.
+        """
+        return self.panel_status_code == PANEL_STATUS_LINK_DOWN
 
 
 def decode_status_frame(payload: str) -> PushStatus | None:
@@ -126,16 +157,21 @@ def decode_status_frame(payload: str) -> PushStatus | None:
         |  |  | |   |+-- colour: 1 green, 2 red (the REST API's "Color")
         |  |  | |   +--- the same flag again, as a RAW BYTE
         |  |  | +------- state flag as hex text: fe ready, ff arming/armed
-        |  |  +--------- partition number
+        |  |  +--------- panel status code; -1 when the ECP link is down
         |  +------------ command id
         +--------------- 0 in everything observed
+
+    Field 2 was read as the partition number until 0.4.2, which was wrong and
+    shipped. It is the value the panel's own /eventhandler.html page calls
+    panelStatusCode: a capture of that page taken at the same instant as a
+    frame answered `curStatus = "21:a1Ready To Arm:1"` while the frame read
+    `0:21:1:fe:\xfe1Ready To Arm:2` - so the page's panelStatusCode is field
+    2, and the frame's trailing `:2` is the colour rather than the code.
+    Where the partition went is answered in TuxedoPushStream's docstring.
 
     The raw flag byte is what locates the display field, so the caller must
     have decoded the stream latin-1: utf-8 turns 0xFE/0xFF into U+FFFD and
     the field can no longer be found at all.
-
-    The trailing field (`:2` in both captures above) is not identified in the
-    live capture and is deliberately not interpreted here.
     """
     fields = payload.split(":")
     if len(fields) < 3:
@@ -158,7 +194,7 @@ def decode_status_frame(payload: str) -> PushStatus | None:
         countdown = COUNTDOWN_RE.match(text)
         return PushStatus(
             cmd=cmd,
-            partition=_partition_of(fields[2]),
+            panel_status_code=_status_code_of(fields[2]),
             armed=armed,
             colour=colour,
             text=text,
@@ -168,8 +204,11 @@ def decode_status_frame(payload: str) -> PushStatus | None:
     return None
 
 
-def _partition_of(field: str) -> int | None:
-    """The partition the frame names, or None when it does not name one.
+def _status_code_of(field: str) -> int | None:
+    """The panel status code, or None when the field does not hold one.
+
+    Field 2 is the display text on the unsolicited record (command id -1),
+    which is how "no code" happens on a well-formed frame.
 
     The conversion IS the guard, rather than a different question asked
     alongside it. str.isdigit() is not int(): the latin-1 superscripts
@@ -230,6 +269,35 @@ class TuxedoPushStream:
     any drop reconnect with a growing backoff. Everything is aiohttp, so
     nothing here occupies the event loop between frames, and cancelling the
     task is the whole of stopping it.
+
+    THE STREAM CARRIES NO PARTITION FIELD, and does not need one. The head of
+    the producer, CReceiverThread::sltSendChangedPartitionStatus at 0x144880:
+
+        0x144884  mov  r3, #0x15            ; 21, the command id
+        0x1448a0  bl   GetCurrentPartition()
+        0x1448a4  cmp  r0, r4               ; r4 = the partition that changed
+        0x1448a8  beq  0x1448b4             ; equal -> build and send
+        0x1448ac  add  sp, sp, #0x26c       ; NOT equal -> return, send nothing
+
+    A frame is emitted only when the partition that changed IS the panel's
+    currently selected partition, so every frame that arrives is about the
+    current partition by construction - the producer has already applied the
+    filter. Nothing here re-applies it: a receiver-side partition guard can
+    only reject valid frames, which is the 0.4.1 defect. It does not exist
+    because the field is not there, not because the field was not found.
+
+    The caveat, written down and deliberately NOT built for: the scoping is
+    "whichever partition the panel is currently showing", not "partition N".
+    So the stream FOLLOWS the panel. If someone changes the displayed
+    partition at the touchscreen or through the web UI (the firmware ships
+    script/changePartitionScript.js for exactly that), this stream begins
+    delivering a different partition's status with no marker in the frame to
+    say so. On a single-partition system - what this integration has been
+    built and tested against - that cannot happen. On a multi-partition one
+    it is a real mis-attribution and it is invisible in the data: the fix is
+    to consult GetCurrentPartition over REST rather than to guess, and it is
+    not attempted here. CONF_PARTITION still governs the REST status poll and
+    every arm/disarm command, which do take a partition id.
     """
 
     def __init__(

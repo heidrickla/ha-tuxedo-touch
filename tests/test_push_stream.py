@@ -356,18 +356,25 @@ async def test_cancelling_the_task_closes_the_stream(panel, session):
     assert collector.connections == [True, False]
 
 
-async def test_a_status_for_another_partition_is_still_decoded(panel, session):
-    """The stream carries every partition; which ones matter is the
-    coordinator's business, not the reader's."""
+async def test_a_dead_ecp_link_reaches_the_listener_over_a_real_socket(panel, session):
+    """The reader reports the dead link rather than filtering it out.
+
+    Over the actual multipart transport, because the -1 is the whole content
+    of the frame that matters and the coordinator can only act on what the
+    reader hands it. The connection stays up throughout, which is exactly why
+    nothing else in the stream's own health can surface this.
+    """
     collector = Collector()
-    _stream, task = await _running(panel, session, collector)
+    stream, task = await _running(panel, session, collector)
     try:
         await panel.push(
             b"['ud','SimpleDbgServer2ClientIntf','statusMessageText',"
-            b'["0:21:2:fe:\xfe1Ready To Arm:2"]]'
+            b'["0:21:-1:fe:\xfe1Ready To Arm:2"]]'
         )
         await wait_until(lambda: collector.statuses)
-        assert collector.statuses[0].partition == 2
+        assert collector.statuses[0].panel_status_code == -1
+        assert collector.statuses[0].link_down is True
+        assert stream.connected is True
     finally:
         await _stop(task)
 

@@ -420,55 +420,129 @@ async def test_a_disarm_the_poll_refutes_is_not_reported_as_done(
     assert _state(hass).attributes["tuxedo_source"] == "poll"
 
 
-async def test_a_status_for_another_partition_is_not_this_entry(
+async def test_a_status_code_that_is_not_the_partition_is_still_applied(
     hass, fake_panel, panel_entry
 ):
-    """The stream carries every partition; this entry is partition 1."""
+    """Field 2 is the panel status code, so it must not gate anything.
+
+    Until 0.4.2 it was read as the partition and compared against the entry's,
+    which rejected every frame whose status code happened to differ from 1 -
+    the entry's default partition - at debug level, leaving the entity on the
+    last state it had accepted.
+
+    Nothing on the receiver needs to filter: the producer only emits a frame
+    when the partition that changed IS the panel's currently selected one
+    (GetCurrentPartition is compared at the head of
+    CReceiverThread::sltSendChangedPartitionStatus and the function returns
+    without sending when it differs), so every frame that arrives is about the
+    current partition by construction.
+    """
     coordinator = await _setup(hass, panel_entry)
     await fake_panel.push_status_text("Ready To Arm", armed=False)
     await wait_until(lambda: coordinator.data.source == "stream")
+    frames = coordinator.push.frames
 
-    await fake_panel.push(status_frame("Armed Away", armed=True, partition=2))
-    await wait_until(lambda: coordinator.push.frames >= 3)
+    await fake_panel.push(status_frame("Armed Away", armed=True, status_code=3))
+    await wait_until(lambda: coordinator.push.frames > frames)
     await hass.async_block_till_done()
 
-    assert _state(hass).state == "disarmed"
+    # Read, and acted on - not read and dropped.
+    assert _state(hass).state == "armed_away"
+    assert _state(hass).attributes["tuxedo_source"] == "stream"
 
 
-async def test_a_status_naming_no_partition_is_not_taken_as_this_entry(
+async def test_an_unsolicited_status_is_applied_rather_than_discarded(
     hass, fake_panel, panel_entry
 ):
-    """A frame that does not say which partition it is about is not evidence
-    about any particular one.
+    """The unsolicited record (command id -1) carries no status code field.
 
-    The unsolicited record (command id -1) carries no partition field at all,
-    and the filter used to read "no partition" as "mine": every entry on the
-    panel accepted it, whatever partition it was configured for. On a
-    two-partition install that puts one partition's state on the other's
-    entity - and then latches it, because a pushed status that names a state
-    suppresses the poll that would have corrected it. It could satisfy a
-    pending command's confirmation too, so an arm sent to partition 2 could
-    be confirmed by a frame about partition 1.
-
-    Command 21 carries every real change and the panel repeats it about every
-    33 seconds, so nothing is lost by requiring the frame to name the entry
-    it is applied to.
+    It used to be discarded for "naming no partition". It names no partition
+    because no frame on this stream does; the stream is scoped to the panel's
+    current partition by the producer. Discarding it threw away a real state
+    change for a field that was never there.
     """
     coordinator = await _setup(hass, panel_entry)
     await fake_panel.push_status_text("Armed Away", armed=True)
     await wait_until(lambda: _state(hass).state == "armed_away")
-    frames_before = coordinator.push.frames
+    frames = coordinator.push.frames
 
     await fake_panel.push(
         b"['ud','SimpleDbgServer2ClientIntf','statusMessageText',"
         b'["0:-1:\xfeReady To Arm"]]'
     )
-    await wait_until(lambda: coordinator.push.frames > frames_before)
+    await wait_until(lambda: coordinator.push.frames > frames)
     await hass.async_block_till_done()
 
-    # The frame was read and then ignored, not missed.
-    assert _state(hass).state == "armed_away"
-    assert _state(hass).attributes["tuxedo_status"] == "Armed Away"
+    assert _state(hass).state == "disarmed"
+    assert coordinator.data.status == "Ready To Arm"
+
+
+async def test_a_dead_ecp_link_makes_the_entity_unavailable_not_stale(
+    hass, fake_panel, panel_entry
+):
+    """The failure this release exists for.
+
+    When PanelIsTalking() answers 0 the producer writes -1 into field 2 and
+    sends the frame anyway, so the stream stays connected and the frames keep
+    coming while the Tuxedo can no longer see the VISTA. The text those frames
+    carry is the last thing the Tuxedo drew, not the alarm's state.
+
+    Before 0.4.2 field 2 was read as the partition, -1 never matched, and every
+    frame from the moment the link died was rejected at debug level: the entity
+    sat available on the state it last accepted, indefinitely, while
+    diagnostics reported a healthy stream. An alarm entity confidently
+    reporting a state it can no longer see is worse than one reporting nothing,
+    so it goes unavailable.
+    """
+    coordinator = await _setup(hass, panel_entry)
+    await fake_panel.push_status_text("Armed Away", armed=True)
+    await wait_until(lambda: _state(hass).state == "armed_away")
+    frames = coordinator.push.frames
+
+    await fake_panel.push(status_frame("Armed Away", armed=True, status_code=-1))
+    await wait_until(lambda: coordinator.push.frames > frames)
+    await hass.async_block_till_done()
+
+    assert _state(hass).state == "unavailable"
+    # The poll is still succeeding and the stream is still connected: neither
+    # of the integration's own health signals is what surfaced this.
+    assert coordinator.last_update_success
+    assert coordinator.push.connected
+    assert coordinator.ecp_link_down is True
+    # And the dead link's own text was not written over the last real reading.
+    assert coordinator.data.status == "Armed Away"
+
+
+async def test_the_entity_comes_back_when_the_ecp_link_does(
+    hass, fake_panel, panel_entry
+):
+    """Only a frame carrying a real status code clears it.
+
+    The stream is the only thing that can see the ECP link at all - the poll
+    reads a cache the firmware fills from ECP messages, so it answers the same
+    stale reading whether the link is up or down and cannot refute anything.
+    """
+    coordinator = await _setup(hass, panel_entry)
+    frames = coordinator.push.frames
+    await fake_panel.push(status_frame("Armed Away", armed=True, status_code=-1))
+    await wait_until(lambda: coordinator.push.frames > frames)
+    await hass.async_block_till_done()
+    assert _state(hass).state == "unavailable"
+
+    # A poll while the link is down changes nothing: it cannot see the link.
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.last_update_success
+    assert _state(hass).state == "unavailable"
+
+    frames = coordinator.push.frames
+    await fake_panel.push_status_text("Ready To Arm", armed=False)
+    await wait_until(lambda: coordinator.push.frames > frames)
+    await hass.async_block_till_done()
+
+    assert _state(hass).state == "disarmed"
+    assert coordinator.ecp_link_down is False
+    assert _state(hass).attributes["tuxedo_source"] == "stream"
 
 
 async def test_unloading_closes_the_stream_and_leaves_nothing_running(

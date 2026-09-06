@@ -139,6 +139,13 @@ rules:
       an outage of anything, and the stream cannot produce that answer at
       all. Nothing publishes the placeholder or presents the last good state
       as current.
+      A dead ECP link between the Tuxedo and the VISTA overrides both sources.
+      The stream stays connected and keeps sending, but every frame then
+      carries the panel-status code -1 beside the display text the Tuxedo last
+      drew, and the poll reads a cache those same ECP messages are what fill.
+      Both sources answer and neither is reading the alarm, so the entity is
+      unavailable for as long as that is true rather than holding an armed or
+      disarmed reading the panel can no longer see.
   integration-owner: done
   log-when-unavailable:
     status: done
@@ -154,7 +161,9 @@ rules:
       not one per reconnect attempt, and one line for firmware that answers
       404 and therefore has no stream at all. Credentials the panel refuses
       get one warning line and then the stream ends, rather than a line per
-      doomed handshake.
+      doomed handshake. A dead ECP link gets one warning line naming the bus
+      to check and one info line when it returns, not one per frame - the
+      panel repeats that frame every 33 s for as long as the link is down.
   parallel-updates: done
   reauthentication-flow:
     status: done

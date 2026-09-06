@@ -7,7 +7,7 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from custom_components.tuxedo_touch.diagnostics import (
     async_get_config_entry_diagnostics,
 )
-from tests.fake_panel import wait_until
+from tests.fake_panel import status_frame, wait_until
 
 from .conftest import HOST
 
@@ -105,9 +105,36 @@ async def test_a_connected_stream_shows_in_the_report(hass, fake_panel, panel_en
 
     assert report["status_source"] == "stream"
     assert report["panel_status"] == "Armed Away"
+    assert report["ecp_link_down"] is False
     push = report["push"]
     assert push["connected"] is True
     assert push["unsupported"] is False
     assert push["connection_id"] == 7
     assert push["client_count"] == 1
     assert push["frames"] > 0
+
+
+async def test_a_dead_ecp_link_is_the_reports_own_line(hass, fake_panel, panel_entry):
+    """The report has to explain an entity that is unavailable while every
+    other field in it says healthy.
+
+    A dead ECP link is the only state in which the poll is succeeding, the
+    stream is connected, frames are arriving, and the alarm entity is still
+    unavailable - so without this line the report reads as a contradiction and
+    sends the reader looking at the connection, which is fine.
+    """
+    panel_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(panel_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = panel_entry.runtime_data
+    await wait_until(lambda: coordinator.push.connected)
+    frames = coordinator.push.frames
+    await fake_panel.push(status_frame("Ready To Arm", armed=False, status_code=-1))
+    await wait_until(lambda: coordinator.push.frames > frames)
+
+    report = await async_get_config_entry_diagnostics(hass, panel_entry)
+
+    assert report["ecp_link_down"] is True
+    assert report["last_update_success"] is True
+    assert report["push"]["connected"] is True
+    assert report["push"]["stopped"] is False

@@ -32,7 +32,7 @@ def test_the_ready_payload_decodes_to_a_disarmed_green_status():
     status = push.decode_status_frame(READY_BYTES.decode("latin-1"))
     assert status is not None
     assert status.cmd == 21
-    assert status.partition == 1
+    assert status.panel_status_code == 1
     assert status.armed is False
     assert status.colour == "green"
     assert status.text == "Ready To Arm"
@@ -62,25 +62,61 @@ def test_utf8_destroys_the_state_flag():
     assert push.decode_status_frame(READY_BYTES.decode("latin-1")) is not None
 
 
-def test_an_unsolicited_update_carries_no_partition_or_colour():
-    """cmd -1, and the text follows the flag byte with nothing between."""
+def test_an_unsolicited_update_carries_no_status_code_or_colour():
+    """cmd -1, and the text follows the flag byte with nothing between.
+
+    Field 2 is the display text here rather than a status code, so there is
+    no code to read - and this frame's own `-1` sits in field 1, the command
+    id, where it must not be mistaken for the dead-link marker.
+    """
     status = push.decode_status_frame(b"0:-1:\xfeReady To Arm".decode("latin-1"))
     assert status is not None
     assert status.cmd == -1
-    assert status.partition is None
+    assert status.panel_status_code is None
+    assert status.link_down is False
     assert status.colour is None
     assert status.text == "Ready To Arm"
 
 
-def test_the_second_partition_is_reported_as_its_own():
+def test_a_dead_ecp_link_is_carried_as_status_code_minus_one():
+    """The defect 0.4.2 fixes, at the layer that decodes it.
+
+    CReceiverThread::sltSendChangedPartitionStatus calls PanelIsTalking() and,
+    when it answers 0, stores -1 into this field and sends the frame anyway
+    (`mvneq r3, #0` then `streq r3, [sp, #8]` at 0x144a84, with the
+    osal_MqSend at 0x144aa0 reached on both paths). A -1 here is the Tuxedo
+    saying it has lost the ECP link to the VISTA, so the text beside it is
+    stale by construction.
+    """
     status = push.decode_status_frame(
-        b"0:21:2:fe:\xfe1Ready To Arm:2".decode("latin-1")
+        b"0:21:-1:fe:\xfe1Ready To Arm:2".decode("latin-1")
     )
     assert status is not None
-    assert status.partition == 2
+    assert status.panel_status_code == -1
+    assert status.link_down is True
+    # Still decoded in full: what to do about the link is the coordinator's
+    # decision, and the frame is not silently dropped on the way there.
+    assert status.text == "Ready To Arm"
+    assert status.armed is False
 
 
-def test_a_partition_field_that_is_not_a_number_decodes_to_no_partition():
+def test_an_ordinary_status_code_is_not_a_dead_link():
+    """The positive control for the test above, on the same axis.
+
+    An authenticated GET /eventhandler.html taken at the same moment as a
+    frame answered `curStatus = "21:a1Ready To Arm:1"`, whose trailing value
+    that page names panelStatusCode. A talking panel puts a non-negative
+    number in this field; only PanelIsTalking() answering 0 produces -1.
+    """
+    status = push.decode_status_frame(
+        b"0:21:1:fe:\xfe1Ready To Arm:2".decode("latin-1")
+    )
+    assert status is not None
+    assert status.panel_status_code == 1
+    assert status.link_down is False
+
+
+def test_a_status_code_field_that_is_not_a_number_decodes_to_no_code():
     """str.isdigit() and int() are not the same question.
 
     The latin-1 superscripts 0xB9/0xB2/0xB3 satisfy isdigit() and raise on
@@ -90,12 +126,17 @@ def test_a_partition_field_that_is_not_a_number_decodes_to_no_partition():
     ValueError inside the read loop, where nothing in async_run's except list
     catches it: one such frame ended the stream task for the life of the
     entry while the log and the diagnostics both said it was reconnecting.
+
+    An unreadable code is not a dead link: `link_down` stays False, because
+    reporting the ECP link down on a field that could not be parsed would
+    take the alarm entity unavailable on a decoding fault.
     """
     status = push.decode_status_frame(
         b"0:21:1\xb2:fe:\xfe1Ready To Arm:2".decode("latin-1")
     )
     assert status is not None
-    assert status.partition is None
+    assert status.panel_status_code is None
+    assert status.link_down is False
     assert status.text == "Ready To Arm"
 
 
