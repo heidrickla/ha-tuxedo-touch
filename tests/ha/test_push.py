@@ -736,3 +736,73 @@ async def test_a_stream_sourced_mode_is_never_held_by_corroboration(
 
     assert _state(hass).state == "armed_home"
     assert _state(hass).attributes["tuxedo_source"] == "poll"
+
+
+async def test_a_codeless_frame_cannot_revive_a_dead_ecp_link(
+    hass, fake_panel, panel_entry
+):
+    """A frame carrying no status code says nothing about the ECP link.
+
+    The unsolicited record (command -1) puts display text in field 2, so its
+    status code decodes to None rather than to a number. Reading that as good
+    news let one such frame clear the dead-link latch and bring the entity back
+    reporting the text the Tuxedo last drew - flipping armed to disarmed on a
+    panel that could not see the alarm. Freezing on a stale reading is bad;
+    contradicting it is worse, and that made the fix briefly worse than the bug.
+
+    Only a frame carrying a real status code reports the link healthy again.
+    """
+    coordinator = await _setup(hass, panel_entry)
+    await fake_panel.push_status_text("Armed Away", armed=True)
+    await wait_until(lambda: _state(hass).state == "armed_away")
+
+    # The ECP link dies: field 2 carries -1 and the frame is sent anyway.
+    await fake_panel.push(status_frame("Armed Away", armed=True, status_code=-1))
+    await wait_until(lambda: _state(hass).state == "unavailable")
+    assert coordinator.ecp_link_down is True
+
+    # An unsolicited, codeless frame arrives. It must change nothing.
+    frames = coordinator.push.frames
+    await fake_panel.push(
+        b"['ud','SimpleDbgServer2ClientIntf','statusMessageText',"
+        b'["0:-1:\xfeReady To Arm"]]'
+    )
+    await wait_until(lambda: coordinator.push.frames > frames)
+    await hass.async_block_till_done()
+
+    assert coordinator.ecp_link_down is True, "a codeless frame cleared the latch"
+    assert _state(hass).state == "unavailable", (
+        "a codeless frame brought the entity back while the panel was still blind"
+    )
+    assert coordinator.data.status == "Armed Away", (
+        "a codeless frame overwrote the last true reading"
+    )
+
+    # A frame WITH a real code is what recovers it.
+    await fake_panel.push(status_frame("Ready To Arm", armed=False, status_code=1))
+    await wait_until(lambda: _state(hass).state == "disarmed")
+    assert coordinator.ecp_link_down is False
+
+
+async def test_a_dead_link_stops_the_stream_suppressing_the_poll(
+    hass, fake_panel, panel_entry
+):
+    """A frame that said the panel is blind must not keep the poll suppressed.
+
+    While the stream is carrying the state the poll's reading is ignored. A
+    dead-link frame is the stream saying it has no state to carry, so the
+    suppression has to be released with it - otherwise the one source that
+    might still say something useful stays muted by the source that just
+    admitted it cannot see.
+    """
+    coordinator = await _setup(hass, panel_entry)
+    await fake_panel.push_status_text("Armed Away", armed=True)
+    await wait_until(lambda: _state(hass).state == "armed_away")
+    assert coordinator._push_status_seen is True
+
+    await fake_panel.push(status_frame("Armed Away", armed=True, status_code=-1))
+    await wait_until(lambda: _state(hass).state == "unavailable")
+
+    assert coordinator._push_status_seen is False, (
+        "the stream still claims to be carrying the state after saying it is blind"
+    )

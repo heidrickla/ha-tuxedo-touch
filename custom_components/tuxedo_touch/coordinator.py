@@ -240,7 +240,27 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             # cannot refute it either.
             self._async_note_ecp_link(down=True)
             return
-        self._async_note_ecp_link(down=False)
+        if status.panel_status_code is None:
+            # The frame carries NO status code, so it reports nothing about the
+            # ECP link either way and must not be read as good news. The
+            # unsolicited record (command -1) is exactly this shape: its field 2
+            # holds display text, so the code decodes to None rather than to a
+            # number. An unparseable field 2 lands here too - the latin-1
+            # superscripts this decoder can genuinely see are why
+            # _status_code_of exists at all.
+            #
+            # Clearing the latch on one of these was the defect that made 0.4.2
+            # briefly WORSE than the bug it fixed: a dead link took the entity
+            # unavailable, one unsolicited frame cleared it, and the entity came
+            # back reporting the text the Tuxedo last drew - flipping armed to
+            # disarmed on a panel that could not see the alarm. Freezing on a
+            # stale reading is bad; contradicting it is worse.
+            #
+            # So while the link is known down, a codeless frame changes nothing.
+            if self._ecp_link_down:
+                return
+        else:
+            self._async_note_ecp_link(down=False)
         self._push_status_seen = True
         data = TuxedoStatus(
             status=status.text,

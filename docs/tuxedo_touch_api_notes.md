@@ -186,6 +186,17 @@ Command ids in field 1: **21** partition status (the useful one), **18** home pa
 **504** initial/registration data on connect, **-1** unsolicited status update. Only 21
 and -1 carry the flag byte, so only those decode to a partition status here.
 
+**Scope of the producer evidence, stated because the integration relies on it.**
+The disassembly proving the stream is scoped to the panel's current partition is
+of `sltSendChangedPartitionStatus` at 0x144880, and that function produces
+**command 21 only**. Nothing yet establishes which producer emits the
+unsolicited **-1** record, or whether it applies the same partition filter, so
+applying those frames rests on the command-21 filter generalising to them. On a
+single-partition panel the distinction cannot matter; on a multi-partition one
+it is the same uncertainty as the caveat below, and settling it means finding
+the -1 producer rather than assuming it. A -1 frame carries no status code, so
+it can never clear the dead-link latch nor speak while the link is down.
+
 ### Field 2 is not the partition
 
 It was read as the partition number up to and including 0.4.1, and that was wrong. It is
