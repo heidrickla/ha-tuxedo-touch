@@ -651,9 +651,38 @@ class TuxedoTouchClient:
     async def arm(self, mode: str, code: str, partition: int = 1) -> dict[str, Any]:
         """mode is one of STAY, AWAY, NIGHT.
 
-        The return value carries nothing worth acting on - it is the panel
-        acknowledging the request, and on some firmware it is an empty body.
-        What the panel then did shows up on the push stream.
+        The return value carries nothing worth acting on, and it is worth being
+        precise about why, because the obvious reading of it is wrong.
+
+        This endpoint DOES answer with a body - measured 2026-09-06 against
+        TUXW_V5.3.21.0_VA:
+
+            arm     {"Status":"Sucess","Result":{"Response":"Command sent sucessfully"}}
+            disarm  {"Status":"Sucess","Result":{"Result":"Command sent sucessfully"}}
+
+        Vendor's spelling, and note the inner key is "Response" for arm but
+        "Result" for disarm, so there is not even one shape to key on. (The
+        zero-byte body belongs to /handlerequest.html, a different surface
+        entirely, and does not apply here.)
+
+        But read what it claims: command SENT, not code accepted. A wrong user
+        code would presumably still dispatch successfully, so this says nothing
+        about whether the panel acted on it. Keying control flow on a
+        misspelled vendor string, observed once, whose shape already differs
+        between two sibling calls, would be a dependency on far less than it
+        appears to offer.
+
+        What the panel actually DID shows up on the push stream as a change in
+        the state flag - fe ready/disarmed, ff arming/armed - and that is what
+        async_send_command waits for. Measured request-to-frame latency:
+        1.5 s arming, 1.8 s disarming, against COMMAND_CONFIRM_TIMEOUT of 8 s.
+
+        Not available, despite appearances: the panel's own accept/decline
+        signalling. sltSendUserCodeAcceptedMsg exists and posts to the queue
+        that feeds the push stream, but a full arm/disarm cycle driven through
+        THIS endpoint emitted no accept frame at all - it hangs off the virtual
+        keypad path, not this one. The mechanism being present in the binary
+        does not mean this route triggers it.
         """
         params = f"arming={mode}&pID={partition}&ucode={code}&operation=set"
         return await self._call(
