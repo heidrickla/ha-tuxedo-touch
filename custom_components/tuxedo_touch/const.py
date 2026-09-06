@@ -86,12 +86,17 @@ PUSH_BACKOFF_MAX = 300.0
 # before falling back to a poll. The entity's PARALLEL_UPDATES = 1 holds other
 # calls to it for at most this long, so it is a bound rather than a target.
 #
-# Measured 2026-09-06 over one live arm-stay/disarm cycle: the first frame
-# carrying the new state flag arrived 1.5 s after the arm request and 1.8 s
-# after the disarm. Eight seconds is therefore roughly five times the observed
-# latency - comfortable without being so long that a command which did nothing
-# leaves the entity waiting. One cycle on one mode, so treat it as a floor on
-# the margin rather than a characterisation of every path.
+# Measured 2026-09-06 over two live cycles, on two modes:
+#
+#             arm -> ff    disarm -> fe    exit delay
+#   stay        1.50 s        1.80 s          255 s
+#   away        1.59 s        2.64 s          259 s
+#
+# Eight seconds is therefore about three times the WORST observed latency,
+# comfortable without being so long that a command which did nothing leaves
+# the entity waiting. Still a floor rather than a characterisation: night is
+# unverified, and a declined code has deliberately never been provoked because
+# the panel's failed-attempt count survives a firmware reflash.
 COMMAND_CONFIRM_TIMEOUT = 8.0
 
 # Where a status came from, on TuxedoStatus.source.
