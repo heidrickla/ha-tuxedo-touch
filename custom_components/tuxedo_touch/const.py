@@ -47,18 +47,34 @@ PUSH_CONNECT_TIMEOUT = 15
 # No total timeout applies to the stream at all - the point of the request is
 # to stay open. This is how long silence may last before the connection is
 # treated as dead and reopened. An idle panel is NOT silent: it repeats the
-# partition status on its own timer roughly every 33 seconds (measured over a
-# five-minute hold, 81 frames, last at t+296 s), so a gap this long is three
-# missed refreshes and means the socket, not the house, has gone quiet.
+# partition status on its own timer every 33.0 s - measured 2026-09-05 over a
+# 666 s hold plus two concurrent 179 s holds, 26 intervals, every one between
+# 32.68 and 33.31 s. A gap this long is nearly three missed refreshes and means
+# the socket, not the house, has gone quiet.
+#
+# The tick is GLOBAL to the panel, not per connection: two clients started 12 s
+# apart saw the same gaps at the same wall-clock instants. Reconnecting does
+# NOT restart the cadence - you join a cycle already in progress, so the FIRST
+# gap after connecting is short and effectively random (19.30, 11.99 and
+# 14.62 s observed). Never calibrate a liveness check on that first gap.
 PUSH_READ_TIMEOUT = 90
 PUSH_BACKOFF_INITIAL = 5.0
 # How long a connection has to last before it counts as one that WORKED, and
-# so earns the backoff a reset back to the floor. Longer than the ~33 s status
-# repeat above, so a connection that qualifies carried at least one full cycle
-# of the panel talking; short enough that a stream that has genuinely been up
-# resets on its way down. Resetting on the response headers instead - before a
-# byte of the body has been read - makes every failure after a 200 look like a
-# healthy connection, which turns the ceiling below off for that whole class.
+# so earns the backoff a reset back to the floor.
+#
+# Measured 2026-09-05: the panel NEVER closes the stream itself. Three
+# connections across two runs ran 666 s, 179 s and 179 s and all three were
+# still open when the measuring client gave up - no FIN, no timeout, no reset.
+# So a healthy connection passes 60 s with an order of magnitude to spare, and
+# a stream that dies at 40-55 s is NOT the panel behaving normally; treating it
+# as a real fault worth backing off from is the correct reading.
+#
+# BOTH conditions are needed, duration AND a frame. A connection can answer 200
+# and then produce nothing for up to a full 33 s tick, so duration alone would
+# call a silent socket healthy. Resetting on the response headers instead -
+# before a byte of the body has been read - makes every failure after a 200
+# look like a healthy connection, which turns the ceiling below off for that
+# whole class.
 PUSH_STABLE_AFTER = 60.0
 # Reconnecting costs the panel nothing measurable - six connect/disconnect
 # cycles on one session left noOfClient at 1 every time and the session
