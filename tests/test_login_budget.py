@@ -250,3 +250,61 @@ async def test_a_password_changed_at_the_keypad_costs_exactly_one(panel, session
         with pytest.raises(api.TuxedoTouchCredentialsRefused):
             await client.get_status()
     assert panel.login_attempts == 2
+
+
+async def test_an_arm_over_plain_http_is_refused_loudly_not_dropped(session):
+    """The REST API mandates TLS, and the failure shape is the dangerous one.
+
+    Measured on the panel: over port 80 every /system_http_api/ request answers
+    302 to https://<host>:443/tuxedoapi.html, while LOGIN still succeeds over
+    HTTP. So a client can authenticate, fire an arm, receive a perfectly
+    plausible HTTP response, and the panel never gets the command. That is an
+    alarm silently not arming, which is the worst failure this integration has.
+
+    Anything short of an exception here is a defect. A returned value - even an
+    empty one - reaches the entity as a command that was sent.
+    """
+    from aiohttp import web
+
+    seen = []
+
+    async def redirect_to_https(request: web.Request) -> web.Response:
+        seen.append(request.path)
+        host = request.host.split(":")[0]
+        return web.Response(
+            status=302, headers={"Location": f"https://{host}:443/tuxedoapi.html"}
+        )
+
+    app = web.Application()
+    app.router.add_route("*", "/system_http_api/{tail:.*}", redirect_to_https)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    try:
+        client = api.TuxedoTouchClient(
+            session=session,
+            host="127.0.0.1",
+            port=runner.addresses[0][1],
+            use_https=False,
+            username="installer",
+            password="secret",
+        )
+        # Stand in for the login that DOES succeed over HTTP, so this test is
+        # about the command rather than about authentication.
+        client._session_cookie = "SESSIONID=deadbeef"
+        client._key = b"0" * 16
+        client._iv = b"1" * 16
+        client._key_hex = "30" * 16
+        client._iv_hex = "31" * 16
+
+        with pytest.raises(api.TuxedoTouchHttpsRequiredError):
+            await client.arm("AWAY", "1234")
+        with pytest.raises(api.TuxedoTouchHttpsRequiredError):
+            await client.disarm("1234")
+    finally:
+        await runner.cleanup()
+
+    assert len(seen) == 2, (
+        "both commands should have reached the panel and been refused"
+    )
