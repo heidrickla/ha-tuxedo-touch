@@ -680,9 +680,20 @@ class TuxedoTouchClient:
         Not available, despite appearances: the panel's own accept/decline
         signalling. sltSendUserCodeAcceptedMsg exists and posts to the queue
         that feeds the push stream, but a full arm/disarm cycle driven through
-        THIS endpoint emitted no accept frame at all - it hangs off the virtual
-        keypad path, not this one. The mechanism being present in the binary
-        does not mean this route triggers it.
+        THIS endpoint emitted no accept frame at all.
+
+        The signal is emitted by CUiReceiverThread::run on message type 11 or
+        13 (accept) and 9 (decline); a flag byte inside the message picks the
+        web variant over the local one, so it is not owned by any one surface.
+        Nothing posts those message types for the REST route. **Which surface,
+        if any, does post them is UNKNOWN - do not assume the virtual keypad
+        would.** That is a live test nobody has run, not an inference, and the
+        sender of 9/11/13 has not been identified: every call site builds the
+        message in memory, so no message type is statically resolvable.
+
+        The general lesson, since it has now cost three wrong turns here: a
+        symbol proves capability, only the wire proves a route, and a jump
+        table proves which message id rather than what triggers it.
         """
         params = f"arming={mode}&pID={partition}&ucode={code}&operation=set"
         return await self._call(
