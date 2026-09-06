@@ -193,5 +193,53 @@
     "GetSecurityStatus capitalises its colour ('Green'); the stream sends a digit.",
     "The push path needs the trailing slash before 'G.' or it 404s.",
     "The stream is scoped to the panel's CURRENT partition by the producer, and carries no partition field. A multi-partition deployment must consult GetCurrentPartition rather than assume."
-  ]
+  ],
+  "capability_detection": {
+    "$comment": [
+      "NOT PRESENT ON ANY FIRMWARE YET. Agreed shape, recorded here so the",
+      "integration and a replacement server are held to one document.",
+      "Stock responses below were MEASURED on TUXW_V5.3.21.0_VA, 2026-09-06."
+    ],
+    "path": "/system_http_api/API_REV01/GetCapabilities",
+    "method": "GET",
+    "session": "NOT required",
+    "session_rationale": "Keeps detection structurally outside the auth path, so it can never touch the one-login budget on any firmware. Stock cannot 401 here (measured, with and without a session), and a session-required variant would 401 on custom, which this client treats as an expired session and answers with a re-login.",
+    "stock_behaviour": {
+      "unknown_endpoint": {
+        "status": 404,
+        "body": {
+          "Status": "Not Found"
+        }
+      },
+      "known_endpoint_wrong_method": {
+        "status": 405,
+        "body": {
+          "Status": "Method Not Allowed"
+        }
+      },
+      "without_session": "identical - 404 for unknown, 405 for known. Never 401, never 302.",
+      "note": "404 is the absence case. It is machine-parseable, and 405 distinguishes 'exists but wrong method' for free. The documentation-form response is specific to ARGUMENT-TAKING endpoints and does not occur for a no-argument unknown path. Unknown TOP-LEVEL paths 302 to a trailing-slash variant, which is why detection lives inside API_REV01 rather than outside it."
+    },
+    "custom_response": {
+      "status": 200,
+      "body": {
+        "contract": 1,
+        "firmware": "tuxweb/0.1.0",
+        "panel_model": "TUXW",
+        "capabilities": [
+          "panel_link_state",
+          "command_result",
+          "status_refresh"
+        ]
+      }
+    },
+    "client_rules": [
+      "contract is an integer that increments ONLY if this document's shape changes incompatibly, never for feature changes.",
+      "Branch on capabilities, never on firmware or contract.",
+      "capabilities is unordered; ignore unknown strings.",
+      "firmware and panel_model are diagnostics and device-registry material only.",
+      "Call once at setup, cache for the life of the entry, never in the poll loop.",
+      "404 means stock. It is the normal case and must be silent: no warning, no repair issue, no user-visible trace."
+    ]
+  }
 }
