@@ -216,3 +216,82 @@ def test_the_reconnect_wait_doubles_up_to_the_ceiling():
     assert push.next_backoff(5.0) == 10.0
     assert push.next_backoff(push.PUSH_BACKOFF_MAX) == push.PUSH_BACKOFF_MAX
     assert push.next_backoff(push.PUSH_BACKOFF_MAX / 2 + 1) == push.PUSH_BACKOFF_MAX
+
+
+# Every distinct payload shape seen in a 49-frame, 150 s capture of an idle
+# disarmed panel on port 80. Two of them are the id -1 record, which accounts
+# for 21 of those 49 frames and comes in TWO shapes - and 0.4.2 is the first
+# version to apply id -1 at all, so mis-reading one is a live fault rather
+# than a theoretical one.
+#
+# The trap this pins: the literal ":fe:"/":ff:" TEXT field appears ONLY on
+# id 21 frames, 6 of the 49. The raw 0xFE/0xFF byte before the display text
+# appears on id 21 AND id -1. A decoder keyed on the text field would ignore
+# most of the frames that already carry the state; one keyed on field
+# position or field count would read the partition shape's text as status.
+# This decoder scans for the raw byte instead, which is why both work.
+WIRE_SHAPES = [
+    # (label, payload bytes, expected cmd, code, armed, text, colour)
+    (
+        "id 21, text field AND raw byte",
+        b"0:21:1:fe:\xfe1Ready To Arm:2",
+        21,
+        1,
+        False,
+        "Ready To Arm",
+        "green",
+    ),
+    (
+        "id 21 arming, raw 0xFF",
+        b"0:21:1:ff:\xff259  Secs Remaining:2",
+        21,
+        1,
+        True,
+        "59  Secs Remaining",
+        "red",
+    ),
+    (
+        "id -1 status, RAW BYTE ONLY",
+        b"0:-1:\xfe1Ready To Arm",
+        -1,
+        None,
+        False,
+        "Ready To Arm",
+        "green",
+    ),
+]
+
+# Shapes that carry no partition status at all and must decode to None rather
+# than be forced into one. The 8-field id -1 record is the dangerous one: it
+# shares an id with the status shape above and differs only in layout.
+NO_STATUS_SHAPES = [
+    ("id -1 partition shape, 8 fields, no flag byte", b"0:-1:1:P1  H:1:0:3:3"),
+    ("id 18 home partition, no flag byte", b"0:18:1 P1  H:2"),
+    ("id 504 registration data", b"0:504:1:P1  H:1:0:3:3"),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "raw", "cmd", "code", "armed", "text", "colour"), WIRE_SHAPES
+)
+def test_every_captured_wire_shape_decodes(label, raw, cmd, code, armed, text, colour):
+    """Each shape the panel was actually seen to send decodes correctly."""
+    status = push.decode_status_frame(raw.decode("latin-1"))
+    assert status is not None, f"{label}: decoded to nothing"
+    assert status.cmd == cmd, label
+    assert status.panel_status_code == code, label
+    assert status.armed is armed, label
+    assert status.text == text, label
+    assert status.colour == colour, label
+
+
+@pytest.mark.parametrize(("label", "raw"), NO_STATUS_SHAPES)
+def test_a_frame_without_a_flag_byte_carries_no_status(label, raw):
+    """No flag byte means no partition status, whatever the id says.
+
+    The id -1 record repeats whichever payload type last changed, so the same
+    id arrives as an 8-field partition record and as a 3-field status record.
+    Reading the first as a status would put partition text where the alarm
+    state belongs.
+    """
+    assert push.decode_status_frame(raw.decode("latin-1")) is None, label
