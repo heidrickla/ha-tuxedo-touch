@@ -46,12 +46,17 @@ COUNTDOWN_FRAME = (
 
 
 def status_frame(
-    text: str, armed: bool, colour: str = "1", partition: int = 1
+    text: str, armed: bool, colour: str = "1", status_code: int = 1
 ) -> bytes:
-    """One partition-status part, in the panel's own byte layout."""
+    """One partition status part, in the panel's own byte layout.
+
+    `status_code` is field 2, the panel status code - NOT the partition. The
+    producer writes -1 there when PanelIsTalking() answers 0, i.e. the ECP
+    link from the Tuxedo to the VISTA is down, and sends the frame anyway.
+    """
     flag = 0xFF if armed else 0xFE
     payload = (
-        f"0:21:{partition}:{flag:02x}:".encode("latin-1")
+        f"0:21:{status_code}:{flag:02x}:".encode("latin-1")
         + bytes([flag])
         + f"{colour}{text}:2".encode("latin-1")
     )

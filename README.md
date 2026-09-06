@@ -469,6 +469,15 @@ automation:
 - Status is polled without a partition parameter (the firmware's `GetSecurityStatus`
   doesn't take one), so on multi-partition panels the reported status is whatever the
   Tuxedo module itself reports; arm/disarm do target the configured partition.
+- **The event stream follows the panel's current partition, and marks it nowhere.** The
+  firmware sends a status frame only when the partition that changed is the one the panel
+  is currently displaying, so every frame is about that partition and none of them carry
+  a partition number at all. On a single-partition system - what this has been built and
+  tested against - that is invisible and harmless. On a multi-partition one, changing the
+  displayed partition at the touchscreen or in the panel's web UI makes the stream start
+  reporting another partition's status to an entry configured for this one, with nothing
+  in the data to reveal it. The 30-second poll and every arm/disarm still use the
+  configured partition.
 - **The panel serves one web session at a time.** A browser tab left open on the unit's
   web UI can make setup or polling fail to connect until it is closed.
 - **How the panel is identified.** It reports no identifier of its own: no serial, no
@@ -503,6 +512,7 @@ automation:
 | Home Assistant asks to re-authenticate | The panel rejected the stored web login. Enter the current username and password; the address and code are kept. Home Assistant has already stopped trying on its own, so nothing is being spent while the card waits - but each submission costs one login attempt against a panel that disables its web accounts after three, so submit the one you believe is right rather than a series of guesses. See [One login attempt, then it waits for you](#one-login-attempt-then-it-waits-for-you). |
 | Re-authentication says the panel may have locked its web accounts | The credentials it accepted before are being refused now. Either the web password was changed at the keypad, or the accounts are already disabled - in which case no password is the right one until they are re-enabled at the touchscreen (Setup, then the account screen, re-enable web access, Enable All, Apply). On patched firmware the lockout clears itself after five minutes. |
 | The entity is unavailable and the panel is up | Both sources are down: the event stream is not connected and the poll is failing or answering `Not available`. The log says so once per outage for each, and the entity comes back on the first real status without anything from you. |
+| The entity is unavailable and the log says the ECP link is lost | The Tuxedo can no longer talk to the VISTA panel behind it, so it does not know the alarm's state and neither does Home Assistant. This is wiring or the panel, not Home Assistant or the network: check the ECP/keypad bus between the two, and whether the panel's own touchscreen still shows a live status. The event stream stays connected and keeps sending throughout - every frame just carries a "panel not talking" marker beside the last text the Tuxedo drew - which is why the entity goes unavailable rather than holding an armed or disarmed reading nothing can confirm. It comes back on its own within about half a minute of the link returning. |
 | The entity does not follow the keypad | Check `tuxedo_source` on the entity. `stream` means the panel is pushing changes and they should arrive in seconds. `poll` means the stream is not connected - the log says why, and a firmware without the endpoint says so once at setup - so changes wait for the 30-second read and can be masked by `Not available`. |
 | The log says the panel has no push stream | That firmware does not serve the endpoint (it answers 404). Nothing is broken; the integration runs on the 30-second poll alone, with the `Not available` behaviour described in Known limitations. |
 | Two entries for one panel | A repair notification names both entries. Remove one; the other adopts the panel's identity on the panel's next DHCP lease. See [Repairs](#repairs). |
@@ -522,7 +532,8 @@ and the stream's own account of itself: whether it is connected, whether the fir
 answered 404 and has no stream at all, whether it stopped because the panel refused the
 credentials, the connection id the panel handed out, how many clients it thinks it has,
 how many frames have arrived, and how far a failing stream has backed off - beside the
-fallback poll's interval and last result. The two sources fail differently, so which one
+fallback poll's interval and last result. It also carries `ecp_link_down`, which is the
+one case where every other field reads healthy and the entity is unavailable anyway. The two sources fail differently, so which one
 was speaking is the first thing to read, and the two terminal flags are what separate a
 stream that is reconnecting from one that has stopped on purpose.
 

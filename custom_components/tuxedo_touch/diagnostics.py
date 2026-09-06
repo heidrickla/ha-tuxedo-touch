@@ -23,7 +23,18 @@ async def async_get_config_entry_diagnostics(
     status = coordinator.data
     return {
         "config": async_redact_data(dict(entry.data), REDACT),
+        # The partition this entry addresses on the REST poll and on every
+        # arm/disarm command. NOT a filter on the push stream, which carries
+        # no partition field and is scoped by the firmware to whichever
+        # partition the panel is currently showing.
         "partition": coordinator.partition,
+        # The one condition in which both sources answer and neither can be
+        # believed: the Tuxedo has lost its ECP link to the VISTA, so its
+        # frames carry the panel-status code -1 beside the text it last drew,
+        # and the poll reads a cache nothing is refilling. True here is the
+        # whole explanation for an alarm entity that is unavailable while
+        # `last_update_success` and `push.connected` below are both true.
+        "ecp_link_down": coordinator.ecp_link_down,
         # The fallback poll: its interval, and whether it last worked.
         "update_interval": str(coordinator.update_interval),
         "last_update_success": coordinator.last_update_success,

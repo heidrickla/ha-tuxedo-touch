@@ -170,6 +170,10 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         # is the only one there is.
         self._push_status_seen = False
         self._push_loss_logged = False
+        # Whether the last frame said the Tuxedo has lost the ECP bus to the
+        # VISTA. Starts False: nothing has been observed yet, and the entry
+        # must be allowed to come up on the poll while the stream connects.
+        self._ecp_link_down = False
         # Commands waiting for the panel to report what they asked for. The
         # callable is tri-state: see async_send_command.
         self._command_waiters: list[
@@ -209,24 +213,34 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
 
     @callback
     def _async_push_status(self, status: PushStatus) -> None:
-        """A partition status arrived on the stream: it is the state now."""
-        # An explicit match, because "the frame does not say" is not "the
-        # frame is about this entry". The unsolicited record (command id -1)
-        # carries no partition field at all, and reading its silence as
-        # consent had every entry on the panel accept it whatever partition
-        # it was configured for - one partition's state written onto
-        # another's entity, then latched there, because a pushed status that
-        # names a state suppresses the poll that would have corrected it, and
-        # able to satisfy the wrong partition's command confirmation as well.
-        # Command 21 carries every real change and repeats about every 33 s,
-        # so requiring the frame to name the entry costs latency at worst.
-        if status.partition != self.partition:
-            _LOGGER.debug(
-                "Ignoring a status for partition %s; this entry is partition %s",
-                status.partition,
-                self.partition,
-            )
+        """A partition status arrived on the stream: it is the state now.
+
+        There is no partition check, and there must not be one. The frame
+        carries no partition and needs none: the producer emits a frame only
+        when the partition that changed IS the panel's currently selected
+        partition, so every frame that arrives is about the current partition
+        already. TuxedoPushStream's docstring holds the disassembly and the
+        multi-partition caveat that goes with it. Until 0.4.2 field 2 was read
+        as a partition and compared against this entry's, which is precisely
+        what made a dead ECP link invisible.
+        """
+        if status.link_down:
+            # Field 2 is -1: PanelIsTalking() answered 0 inside the producer,
+            # so the Tuxedo has lost the ECP bus to the VISTA behind it. The
+            # frame still arrives, still carries a display text and still
+            # carries an armed flag, and every bit of that is the last thing
+            # the Tuxedo drew before it went blind. None of it is written
+            # through, and this frame confirms no command.
+            #
+            # The stream is the only thing that can see this at all. It stays
+            # connected and the frames keep arriving, so nothing about the
+            # connection's health - a liveness check, a freshness clock -
+            # would notice; and the poll reads a cache the firmware fills from
+            # ECP messages, so it goes on answering the same stale reading and
+            # cannot refute it either.
+            self._async_note_ecp_link(down=True)
             return
+        self._async_note_ecp_link(down=False)
         self._push_status_seen = True
         data = TuxedoStatus(
             status=status.text,
@@ -299,6 +313,50 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             self.async_set_updated_data(data)
 
     @callback
+    def _async_note_ecp_link(self, *, down: bool) -> None:
+        """Record what the last frame said about the Tuxedo-to-VISTA link.
+
+        A latch, and only a frame moves it in either direction. The stream is
+        the sole observer of this link, and while it is down neither the poll
+        nor a reconnect can supply evidence that it is back: the poll reads
+        the ECP-fed cache, and a reconnected stream that has not yet delivered
+        a frame has said nothing. What clears it is the next frame carrying a
+        real status code, which on this panel is at most a repeat away - the
+        partition status repeats on the panel's own 33 s timer, and it is the
+        first thing a new connection is sent.
+        """
+        if down == self._ecp_link_down:
+            return
+        self._ecp_link_down = down
+        if down:
+            # Once per outage, not once per frame: this repeats every 33 s.
+            _LOGGER.warning(
+                "The Tuxedo Touch has lost its ECP link to the alarm panel, so "
+                "it no longer knows the alarm's state and neither do we. Its "
+                "event stream is still connected and still sending, but every "
+                "frame now carries the panel-status code -1 and the display "
+                "text it last drew. The alarm entity is unavailable until the "
+                "panel starts talking again rather than showing a state that "
+                "may have changed since. This is wiring or the panel itself - "
+                "check the ECP/keypad bus between the Tuxedo and the VISTA"
+            )
+            # The stream is no longer carrying the state. Said explicitly so
+            # that if the link returns while the stream happens to be down,
+            # the poll is not suppressed on the strength of a frame that was
+            # the panel telling us it could not see anything.
+            self._push_status_seen = False
+            self.async_update_listeners()
+            return
+        # Coming back needs no listener update of its own: the caller goes on
+        # to write the status this same frame carried.
+        _LOGGER.info("The Tuxedo Touch has its ECP link to the alarm panel back")
+
+    @property
+    def ecp_link_down(self) -> bool:
+        """Whether the panel last told us it cannot see the alarm."""
+        return self._ecp_link_down
+
+    @callback
     def _async_push_connection_changed(self, connected: bool) -> None:
         """Availability follows the stream as well as the poll, so say so."""
         if connected:
@@ -332,7 +390,17 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         that is available with nothing to show reads `unknown` - which is the
         state this release exists to remove. A second of `unavailable` while
         the stream opens is the honest answer instead.
+
+        A dead ECP link overrides both. Neither source is reading the alarm
+        then: the stream's frames carry -1 and a stale text, and the poll
+        reads the cache the firmware fills from the ECP messages that have
+        stopped, so both keep answering and both keep answering the same
+        thing. An alarm entity confidently reporting armed or disarmed from a
+        panel that cannot see the alarm is the worst thing this integration
+        can do, and it is worse than reporting nothing.
         """
+        if self._ecp_link_down:
+            return False
         return self.last_update_success or (
             self.push.connected and self.data is not None
         )

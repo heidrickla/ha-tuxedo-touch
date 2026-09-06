@@ -4,6 +4,46 @@ Notable changes to this integration, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version
 numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [0.4.2] - 2026-09-05
+
+### Fixed
+
+- **A lost link between the Tuxedo and the alarm panel no longer leaves the
+  entity reporting a state nothing can see.** The event stream's third field
+  was read as the partition number. It is not: it is a panel status code, and
+  the firmware writes `-1` into it - and sends the frame anyway - whenever the
+  Tuxedo has lost its ECP link to the VISTA panel behind it. Since `-1` never
+  matched the configured partition, every frame from the moment that link died
+  was discarded, and the alarm entity sat on the last state it had accepted -
+  `armed_away`, say - indefinitely, while the stream reported itself connected
+  and the poll went on succeeding out of a cache nothing was refilling. The
+  entity now goes **unavailable** for as long as the panel says it cannot see
+  the alarm, with one log line naming the bus to check, and it comes back on
+  its own within about half a minute of the link returning. A stale armed or
+  disarmed reading is worse than no reading.
+- **Frames are no longer rejected for naming the wrong partition.** They name
+  no partition, and they need not: the firmware emits a status frame only when
+  the partition that changed is the one the panel is currently displaying, so
+  every frame that arrives is about that partition already. The 0.4.1 guard
+  could only throw away valid frames. Unsolicited status updates, which 0.4.1
+  discarded for "naming no partition", are applied too. The configured
+  partition still governs the status poll and every arm and disarm.
+
+### Changed
+
+- The diagnostics download reports `ecp_link_down`: the one condition in which
+  the poll is succeeding, the stream is connected, frames are arriving, and the
+  alarm entity is unavailable anyway.
+
+### Known limitations
+
+- The event stream follows whichever partition the panel is currently
+  displaying, and carries no marker saying which. On a multi-partition panel,
+  changing the displayed partition at the touchscreen or in the panel's web UI
+  makes the stream report a different partition's status to this entry, with
+  nothing in the data to reveal it. Single-partition installs are unaffected.
+  See Known limitations in the README.
+
 ## [0.4.1] - 2026-09-05
 
 Supersedes 0.4.0, which was tagged from a commit that predated this work.
