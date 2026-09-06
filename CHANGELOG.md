@@ -4,6 +4,40 @@ Notable changes to this integration, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version
 numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [0.4.1] - 2026-09-05
+
+Supersedes 0.4.0, which was tagged from a commit that predated this work.
+**Anyone running 0.4.0 should move to 0.4.1.**
+
+### Fixed
+
+- **Home Assistant no longer retries a rejected credential.** In 0.4.0 the new
+  event stream reconnected on a fixed timer and re-ran the full login each time,
+  roughly twelve credential attempts an hour, indefinitely. Repeated failed web
+  logins can disable the panel's web accounts - on unpatched firmware
+  permanently, recoverable only at the touchscreen. The integration now spends
+  at most one automatic login attempt per credential set for the life of the
+  entry, including across restarts, and waits for the user.
+- **A server fault is no longer mistaken for a rejected credential.** A panel
+  answering 500 on an unrelated page, or a session that did not yield its key
+  material, is a fault to retry rather than a verdict on the password. Only a
+  genuine refusal counts against the one-attempt budget.
+- **Re-authentication can be retried deliberately.** Submitting the stored
+  credentials unchanged now asks for confirmation and states the cost, instead
+  of either refusing outright or silently spending an attempt.
+- **A command the panel refused is no longer reported as carried out.** The
+  entity keeps the panel's own reading and raises an error, rather than writing
+  the requested state over a poll that says otherwise.
+- **The stream's reconnect backoff no longer resets on the response headers.** A
+  connection now has to last and carry a frame before it counts as one that
+  worked, so a failure occurring after the connection opened backs off properly
+  instead of looping at the floor.
+- **A stream-sourced reading can no longer latch.** Corroboration applies only
+  to a poll's reading, so the panel moving on cannot leave the entity holding a
+  mode the panel has stopped reporting.
+- **A malformed frame costs a frame, not the connection**, and a frame that
+  names no partition is no longer taken as evidence about any entry.
+
 ## [0.4.0] - 2026-09-05
 
 ### Added
