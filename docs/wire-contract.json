@@ -1,0 +1,197 @@
+{
+  "$comment": [
+    "The Tuxedo Touch wire contract, as observed on real hardware, expressed as data.",
+    "",
+    "This file is the SOURCE OF TRUTH for tests/test_wire_contract.py, which runs the",
+    "shipped decoder against every case below. So it cannot drift from the",
+    "implementation: change one without the other and the suite fails.",
+    "",
+    "It exists to be consumed by anything that must speak this protocol, including a",
+    "replacement panel server. The contract is the VENDOR's behaviour, including the",
+    "parts that are wrong - see `quirks`. A reimplementation that tidies them breaks",
+    "every client on stock firmware, which is most of them.",
+    "",
+    "Verified against firmware TUXW_V5.3.21.0_VA on 2026-09-05/06."
+  ],
+  "version": 1,
+  "firmware_observed": "TUXW_V5.3.21.0_VA",
+  "transport": {
+    "push_stream": {
+      "path": "/SimpleDebugger.interface/G.",
+      "note": "The slash before 'G.' is required; without it the server answers 404.",
+      "content_type": "multipart/x-mixed-replace",
+      "boundary": "EH912ZZ",
+      "encoding": "latin-1",
+      "encoding_note": "Load-bearing. The raw 0xFE/0xFF state byte is what locates the display field; utf-8 turns it into U+FFFD and the field cannot be found at all.",
+      "auth_observed": "none required on stock firmware",
+      "tls": "not required; works on port 80",
+      "cadence_seconds": 33.0,
+      "cadence_note": "Measured over a 666 s hold plus two concurrent 179 s holds: 26 intervals, all between 32.68 and 33.31. The tick is GLOBAL to the panel, not per connection, so a reconnect joins a cycle already running and the FIRST gap is short and effectively random (19.30, 11.99, 14.62 observed). Never calibrate a liveness check on that first gap.",
+      "closed_by_panel": false,
+      "closed_by_panel_note": "Three connections across two runs ran 666 s, 179 s and 179 s and were all still open when the client gave up. No FIN, no timeout, no reset.",
+      "concurrent_clients": "at least 3; a new client does not displace an existing one, and the cadence is unbroken"
+    },
+    "rest_api": {
+      "base_path": "/system_http_api/API_REV01",
+      "tls": "REQUIRED",
+      "tls_note": "Over port 80 every /system_http_api/ request answers 302 to https://<host>:443/tuxedoapi.html. Login still succeeds over HTTP, so a client can authenticate, issue a command, receive a plausible response, and the panel never receives it. Any reimplementation must keep this a hard failure rather than a silent no-op."
+    }
+  },
+  "push_frames": {
+    "$comment": [
+      "field 0  constant 0",
+      "field 1  command id",
+      "field 2  panel status code; -1 when the Tuxedo has lost its ECP link to the VISTA",
+      "field 3  state flag as hex text - PRESENT ON COMMAND 21 ONLY",
+      "field 4  raw 0xFE/0xFF byte, then colour digit, then display text",
+      "field 5  colour",
+      "",
+      "The literal ':fe:'/':ff:' TEXT field appears on command 21 only (6 of 49 frames in",
+      "one capture). The RAW 0xFE/0xFF byte appears on 21 AND -1. Decode from the raw",
+      "byte: it is the more available discriminator, and it is what makes both shapes of",
+      "the -1 record work. Do not key on field position or field count - the -1 record",
+      "arrives as an 8-field partition record AND a 3-field status record."
+    ],
+    "state_flags": {
+      "fe": "disarmed or ready",
+      "ff": "arming or armed"
+    },
+    "colours": {
+      "1": "green",
+      "2": "red"
+    },
+    "command_ids": {
+      "21": "partition status - the useful one",
+      "18": "home partition",
+      "504": "initial/registration data on connect",
+      "-1": "unsolicited update; repeats whichever payload type last changed"
+    },
+    "cases": [
+      {
+        "label": "command 21, carries BOTH the ':fe:' text field and the raw 0xFE",
+        "payload_latin1_hex": "303a32313a313a66653afe31526561647920546f2041726d3a32",
+        "decodes": true,
+        "cmd": 21,
+        "panel_status_code": 1,
+        "armed": false,
+        "colour": "green",
+        "text": "Ready To Arm",
+        "seconds_remaining": null
+      },
+      {
+        "label": "command 21 arming, raw 0xFF, exit-delay countdown in the display text",
+        "payload_latin1_hex": "303a32313a313a66663aff3235392020536563732052656d61696e696e673a32",
+        "decodes": true,
+        "cmd": 21,
+        "panel_status_code": 1,
+        "armed": true,
+        "colour": "red",
+        "text": "59  Secs Remaining",
+        "seconds_remaining": 59
+      },
+      {
+        "label": "command -1 status shape: RAW BYTE ONLY, no ':fe:' text field, no status code",
+        "payload_latin1_hex": "303a2d313afe31526561647920546f2041726d",
+        "decodes": true,
+        "cmd": -1,
+        "panel_status_code": null,
+        "armed": false,
+        "colour": "green",
+        "text": "Ready To Arm",
+        "seconds_remaining": null
+      },
+      {
+        "label": "ECP LINK DOWN: field 2 is -1 and the frame is STILL SENT, carrying the last text the Tuxedo drew",
+        "payload_latin1_hex": "303a32313a2d313a66653afe3141726d656420417761793a32",
+        "decodes": true,
+        "cmd": 21,
+        "panel_status_code": -1,
+        "armed": false,
+        "colour": "green",
+        "text": "Armed Away",
+        "seconds_remaining": null,
+        "link_down": true,
+        "note": "The producer sets this field to -1 when PanelIsTalking() returns 0 and sends the frame anyway. A client that reads field 2 as a partition number discards these and reports a stale state for ever."
+      },
+      {
+        "label": "command -1 partition shape: 8 fields, NO flag byte - carries no status",
+        "payload_latin1_hex": "303a2d313a313a50312020483a313a303a333a33",
+        "decodes": false
+      },
+      {
+        "label": "command 18 home partition: no flag byte, carries no status",
+        "payload_latin1_hex": "303a31383a312050312020483a32",
+        "decodes": false
+      },
+      {
+        "label": "command 504 registration data on connect: no flag byte, carries no status",
+        "payload_latin1_hex": "303a3530343a313a50312020483a313a303a333a33",
+        "decodes": false
+      }
+    ]
+  },
+  "rest_responses": {
+    "$comment": "Vendor spelling and shape preserved deliberately. 'Sucess' is misspelled in the firmware; arm returns Result.Response while disarm returns Result.Result. A reimplementation that corrects either breaks clients.",
+    "arm": {
+      "path": "/system_http_api/API_REV01/AdvancedSecurity/ArmWithCode",
+      "params": "arming={STAY|AWAY|NIGHT}&pID={partition}&ucode={code}&operation=set",
+      "response": {
+        "Status": "Sucess",
+        "Result": {
+          "Response": "Command sent sucessfully"
+        }
+      },
+      "means": "command DISPATCHED, not code accepted. A wrong user code is presumed to dispatch identically."
+    },
+    "disarm": {
+      "path": "/system_http_api/API_REV01/AdvancedSecurity/DisarmWithCode",
+      "params": "pID={partition}&ucode={code}&operation=set",
+      "response": {
+        "Status": "Sucess",
+        "Result": {
+          "Result": "Command sent sucessfully"
+        }
+      },
+      "means": "command DISPATCHED, not code accepted."
+    },
+    "status": {
+      "path": "/system_http_api/API_REV01/GetSecurityStatus",
+      "body": "empty body accepted; 'operation=get' also accepted but not required",
+      "response": {
+        "Status": "Ready To Arm",
+        "Color": "Green"
+      },
+      "quirk": "Answers the literal string 'Not available' when its ECP-fed cache is empty, with no on-demand refresh. That is the defect the push stream exists to route around."
+    }
+  },
+  "command_confirmation": {
+    "$comment": "The REST response confirms dispatch only. What the panel DID appears on the push stream as a change of state flag. These are the measured latencies from request to the first frame carrying the new flag.",
+    "measured": [
+      {
+        "mode": "stay",
+        "arm_to_ff_seconds": 1.5,
+        "disarm_to_fe_seconds": 1.8,
+        "exit_delay_seconds": 255
+      },
+      {
+        "mode": "away",
+        "arm_to_ff_seconds": 1.59,
+        "disarm_to_fe_seconds": 2.64,
+        "exit_delay_seconds": 259
+      }
+    ],
+    "unverified": [
+      "night mode has not been observed",
+      "a declined user code has deliberately never been provoked: the panel's failed-attempt count survives a firmware reflash and three failures disable every web account"
+    ],
+    "no_accept_frame": "sltSendUserCodeAcceptedMsg exists in the binary but a full arm/disarm cycle driven through the REST endpoints emits NO accept frame, replicated on two modes. Do not wait for one."
+  },
+  "quirks_to_preserve": [
+    "'Sucess' is misspelled in every Status field and must stay misspelled.",
+    "Arm returns Result.Response; disarm returns Result.Result. The keys genuinely differ.",
+    "The exit-delay text has a DOUBLE space: '59  Secs Remaining'.",
+    "GetSecurityStatus capitalises its colour ('Green'); the stream sends a digit.",
+    "The push path needs the trailing slash before 'G.' or it 404s.",
+    "The stream is scoped to the panel's CURRENT partition by the producer, and carries no partition field. A multi-partition deployment must consult GetCurrentPartition rather than assume."
+  ]
+}
