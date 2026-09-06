@@ -237,6 +237,25 @@ class _FrameDecoder:
     the closing boundary arrives, which is how the live capture was read: a
     firmware that spells the delimiter differently then still delivers state
     instead of stalling it.
+
+    DO NOT REPLACE THIS WITH A REAL MULTIPART PARSER. It scans, and the
+    scanning is load-bearing rather than incidental.
+
+    The panel emits the CLOSE delimiter after EVERY part - measured, 19 opening
+    boundaries and 19 closes in one 2616-byte capture:
+
+        --EH912ZZ
+        Content-type: text/plain
+
+        ['ud','SimpleDbgServer2ClientIntf','statusMessageText',["..."]]
+        --EH912ZZ--          <- after every single part
+
+    Under RFC 2046 `--boundary--` means the body has ENDED, so a conforming
+    parser reads the FIRST frame, concludes the stream is over, and stops. On
+    an alarm integration that presents as a panel that went quiet, not as a
+    parser fault, and it would be misdiagnosed for a long time. The response
+    headers are the same family of quirk: an empty `Server:` value, and
+    `Connection: Close` on a stream the panel then holds open indefinitely.
     """
 
     def __init__(self, boundary: str = PUSH_BOUNDARY) -> None:
