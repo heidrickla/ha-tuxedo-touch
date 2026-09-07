@@ -586,6 +586,12 @@ the coverage figure from such a run measures the skip rather than the code. What
 harness needs first is the Python version: 2026.x is written for 3.14 and will not
 install under 3.12.
 
+A Linux environment with all of that already stands, and
+[`docs/TEST-ENVIRONMENT.md`](docs/TEST-ENVIRONMENT.md) records where it is and how to
+rebuild it. Last full run there: **280 passed, 99% coverage** on CPython 3.14.7. Use it
+rather than the Windows stand-ins below, which are documented because they were built,
+not because they are the recommended path.
+
 It needs a POSIX platform too, and on Windows that costs three stand-ins. Measured on
 2026-09-05 with `pytest-homeassistant-custom-component` 0.13.357, Home Assistant 2026.8.3
 and CPython 3.14: `homeassistant.runner` imports `fcntl` and `resource`, neither of
