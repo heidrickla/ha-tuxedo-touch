@@ -211,8 +211,13 @@ async def test_a_relay_stream_does_not_vouch_for_the_panel(
 
     coordinator = panel_entry.runtime_data
     assert coordinator.push.from_relay is True
-    # The panel stops answering its poll; the relay socket is untouched.
+    assert coordinator.data is not None
+    # The panel stops answering its poll while the relay socket is up. Both
+    # states are set rather than awaited: `connected` follows a live socket
+    # that the fake panel drops and reopens, so reading it is a race, and the
+    # question here is what panel_available does with those two inputs.
     coordinator.last_update_success = False
+    coordinator.push.connected = True
     assert coordinator.panel_available is False, (
         "a relay's open socket was taken as proof the panel is reachable"
     )
@@ -232,9 +237,12 @@ async def test_the_panels_own_stream_still_vouches_for_it(
 
     coordinator = panel_entry.runtime_data
     assert coordinator.push.from_relay is False
-    assert coordinator.push.connected is True
     assert coordinator.data is not None
+    # Same two inputs as the test above, set the same way and for the same
+    # reason. The only difference between the pair is where the stream comes
+    # from, which is what makes this a control rather than a second case.
     coordinator.last_update_success = False
+    coordinator.push.connected = True
     assert coordinator.panel_available is True, (
         "the panel's own live stream is evidence the panel is reachable"
     )
