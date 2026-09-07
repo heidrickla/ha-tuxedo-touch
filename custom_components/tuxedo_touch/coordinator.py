@@ -34,6 +34,8 @@ from .const import (
     ISSUE_CREDENTIALS_REJECTED,
     ISSUE_HTTPS_REDIRECT,
     OPT_CREDENTIALS_REJECTED,
+    OPT_PUSH_TOKEN,
+    OPT_PUSH_URL,
     SCAN_INTERVAL,
     SOURCE_ASSUMED,
     SOURCE_STREAM,
@@ -162,6 +164,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             self.client,
             self._async_push_status,
             self._async_push_connection_changed,
+            push_url=entry.options.get(OPT_PUSH_URL),
+            push_token=entry.options.get(OPT_PUSH_TOKEN),
         )
         self._push_task: asyncio.Task[None] | None = None
         # Whether the stream has ever delivered a status. Connected but
