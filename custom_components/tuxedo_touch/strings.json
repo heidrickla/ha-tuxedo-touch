@@ -153,5 +153,21 @@
       "title": "Tuxedo Touch is refusing the stored credentials",
       "description": "{title} logged in with these web credentials before and the panel now refuses them, so Home Assistant has stopped trying: three failed web logins disable every web account on unpatched firmware, with no timeout, and only the touchscreen can re-enable them (Setup, then Users/Account, re-enable web access, Enable All, Apply). The likely cause is a web password changed at the keypad. Enter the current credentials on this entry's re-authentication card - one attempt, not a series of guesses. If the panel refuses credentials you are sure of, its accounts are already disabled and the touchscreen is the only way back."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Push stream source",
+        "description": "Leave both boxes empty unless you are running a push-stream relay. Empty means the panel serves its own stream, which is the normal setup.\n\nOnly the stream moves. Logging in and sending commands always go to the panel, because the panel requires TLS for commands and ties a session to the address that created it.",
+        "data": {
+          "push_url": "Push stream URL",
+          "push_token": "Push stream token"
+        },
+        "data_description": {
+          "push_url": "Full URL of the relay's stream endpoint, for example http://10.0.0.5:8081/SimpleDebugger.interface/G. — used exactly as given, with no path appended.",
+          "push_token": "Credential the relay requires, if any. Sent as both a bearer token and a cookie, so either style of relay accepts it. This is not your panel password."
+        }
+      }
+    }
   }
 }

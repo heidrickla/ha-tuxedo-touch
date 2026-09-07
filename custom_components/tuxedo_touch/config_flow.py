@@ -12,6 +12,7 @@ from homeassistant.config_entries import (
     ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
+    OptionsFlow,
 )
 from homeassistant.const import (
     CONF_CODE,
@@ -44,6 +45,8 @@ from .const import (
     ISSUE_CREDENTIALS_REJECTED,
     ISSUE_DUPLICATE_ENTRY,
     OPT_CREDENTIALS_REJECTED,
+    OPT_PUSH_TOKEN,
+    OPT_PUSH_URL,
     issue_id,
 )
 from .identity import build_unique_id
@@ -179,6 +182,12 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Honeywell Tuxedo Touch."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> TuxedoTouchOptionsFlow:
+        """Options: where the push stream comes from."""
+        return TuxedoTouchOptionsFlow()
 
     # Set by async_step_dhcp and read by its confirm step. Declared rather
     # than assigned in __init__ so mypy sees the types without this class
@@ -645,4 +654,68 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
             description_placeholders={"host": reauth_entry.data[CONF_HOST]},
             errors=errors,
+        )
+
+
+class TuxedoTouchOptionsFlow(OptionsFlow):
+    """Take the push stream from somewhere other than the panel.
+
+    Both fields are optional and empty by default, which is the supported
+    configuration: the panel serves its own stream and nothing here applies.
+
+    They exist for a firmware that gates the push path on a session and a shim
+    that holds ONE upstream subscription on behalf of several consumers -- worth
+    doing because every registration makes the panel flush its reply queue.
+
+    ONLY the stream moves. Login and the commands stay on the panel, and must:
+    the panel answers 302 to https on the REST namespace over plain HTTP no
+    matter what credentials are sent, and it binds a session to the address that
+    created it. A half-redirected consumer would look like a random logout.
+    """
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show and store the push source."""
+        if user_input is not None:
+            # An empty box means "use the panel", so blanks are stored as
+            # absent rather than as "" -- the stream treats both as unset, and
+            # this keeps a cleared field from lingering in the entry.
+            options = {
+                k: v.strip()
+                for k, v in (
+                    (OPT_PUSH_URL, user_input.get(OPT_PUSH_URL, "")),
+                    (OPT_PUSH_TOKEN, user_input.get(OPT_PUSH_TOKEN, "")),
+                )
+                if v and v.strip()
+            }
+            # Anything else already in options -- the credentials-rejected flag
+            # -- is preserved: this form does not own it.
+            merged = {
+                k: v
+                for k, v in self.config_entry.options.items()
+                if k not in (OPT_PUSH_URL, OPT_PUSH_TOKEN)
+            }
+            merged.update(options)
+            return self.async_create_entry(data=merged)
+
+        current = self.config_entry.options
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(
+                    {
+                        vol.Optional(OPT_PUSH_URL, default=""): str,
+                        vol.Optional(OPT_PUSH_TOKEN, default=""): selector.TextSelector(
+                            selector.TextSelectorConfig(
+                                type=selector.TextSelectorType.PASSWORD
+                            )
+                        ),
+                    }
+                ),
+                {
+                    OPT_PUSH_URL: current.get(OPT_PUSH_URL, ""),
+                    OPT_PUSH_TOKEN: current.get(OPT_PUSH_TOKEN, ""),
+                },
+            ),
         )
