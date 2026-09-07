@@ -232,6 +232,14 @@ commands cannot be redirected; and it binds a session to the address that create
 a consumer that logged in against the panel has to keep talking to the panel for
 everything else. A half-redirected setup presents as a random logout.
 
+**A relay receives the panel's session cookie**, and it has to: the stream is the panel's
+own endpoint, so whatever serves it is presented with the session that opened it. Combined
+with the point above, a relay is as trusted as the panel itself for state reporting - it
+decides what this integration believes the alarm is doing. Run one you control. Nothing
+else moves: the relay cannot arm or disarm anything, because commands never leave the
+panel, and a relay-fed entity goes unavailable when the panel's own poll stops answering
+rather than coasting on forwarded state.
+
 **A relay's certificate is verified; the panel's is not.** The panel is exempt because it
 ships an expired 2009 self-signed certificate that no modern TLS stack will accept, and
 that exemption is the panel's alone. A relay is an address you typed and it receives the
