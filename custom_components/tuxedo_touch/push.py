@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import ssl
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -355,6 +356,21 @@ class TuxedoPushStream:
         # failing stream has backed off.
         self.reconnect_wait = PUSH_BACKOFF_INITIAL
 
+    @property
+    def from_relay(self) -> bool:
+        """Whether this stream is fed by something other than the panel.
+
+        Read by the coordinator's availability rule, which cannot treat
+        `connected` as evidence about the panel when the socket is somebody
+        else's.
+        """
+        return self._push_url is not None
+
+    @property
+    def source(self) -> str:
+        """Where the stream connects, for diagnostics. Never the token."""
+        return self._push_url or "panel"
+
     async def async_run(self) -> None:
         """Keep the stream open for as long as this task is not cancelled."""
         self.reconnect_wait = PUSH_BACKOFF_INITIAL
@@ -492,14 +508,38 @@ class TuxedoPushStream:
             # it ignores costs nothing.
             headers["Authorization"] = f"Bearer {self._push_token}"
             headers["Cookie"] = f"{cookie}; tuxweb_token={self._push_token}"
+        # The client's SSL argument is a DELIBERATELY BROKEN context - no
+        # certificate verification, no hostname check - and it is justified by
+        # exactly one thing: the panel's own expired 2009 self-signed
+        # certificate, which nothing else will complete a handshake against.
+        # A configured relay is not that panel. It is an address the operator
+        # typed, it receives the push token, and it has no claim on the
+        # panel's exemption, so it is verified the ordinary way. Anyone
+        # terminating TLS on a shim can present a certificate the box trusts
+        # or serve the stream over http.
+        ssl_arg: ssl.SSLContext | bool = (
+            True if self._push_url else self._client.ssl_arg
+        )
         async with self._client.session.get(
             url,
             headers=headers,
-            ssl=self._client.ssl_arg,
+            ssl=ssl_arg,
             timeout=timeout,
             allow_redirects=False,
         ) as resp:
             if resp.status in (401, 302):
+                if self._push_url:
+                    # A relay refusing the push token is NOT the panel's
+                    # session dying, and must not be treated as it: the
+                    # handler for that invalidates the session and logs into
+                    # the panel again. The panel serves one connection at a
+                    # time, so a wrong token would spend that connection on a
+                    # pointless re-login every backoff period, forever, while
+                    # the log blamed the panel.
+                    raise TuxedoTouchError(
+                        f"push relay refused the stream: HTTP {resp.status} "
+                        f"from {url} - check the push token"
+                    )
                 raise PushSessionExpired(f"push stream refused: HTTP {resp.status}")
             if resp.status == 404:
                 raise PushStreamUnsupported("no push endpoint on this firmware")

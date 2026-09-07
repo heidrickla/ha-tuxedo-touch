@@ -183,7 +183,8 @@ address, port, scheme, credentials, keypad code or partition. The password and k
 code fields come up empty; leaving them empty keeps the stored values. The entry keeps
 the panel identity it already has - a reconfigure moves an entry, it never turns it into
 a different panel - and its title follows the new address unless you renamed the entry.
-There are no options beyond these.
+The only settings outside this form are the two push-source options below, and they are
+empty in the supported configuration.
 
 The panel answers one client at a time, so the form takes care not to compete with the
 polling it is reconfiguring. Changing only the keypad code or the partition contacts the
@@ -208,6 +209,39 @@ silence.
 When the panel starts refusing the stored credentials, Home Assistant stops polling and
 asks for them again rather than re-running the login handshake against doomed
 credentials every thirty seconds.
+
+### Configuration parameters
+
+Settings, then Devices & services, then Configure on the Tuxedo Touch entry. Both fields
+are empty by default and that is the supported configuration: the panel serves its own
+push stream and neither parameter applies. Saving the form reloads the entry, so a change
+takes effect immediately rather than at the next restart.
+
+| Parameter | Accepts | Default |
+|---|---|---|
+| `push_url` | Full URL of a relay that serves the push stream, including the path, for example `https://relay.example:8081/SimpleDebugger.interface/G.` | empty, meaning the panel |
+| `push_token` | A credential the relay expects. Sent both as an `Authorization: Bearer` header and as a `tuxweb_token` cookie, because a relay may gate on either | empty, meaning none is sent |
+
+Leave a field blank to clear it. A blank is stored as absent, not as an empty string, so
+clearing one really does return that setting to the panel.
+
+**Only the stream moves.** Login and every command still go to the panel, and that is a
+constraint rather than a simplification. The panel answers `302` to https on the REST
+namespace when it is addressed over plain HTTP, whatever credentials are presented, so
+commands cannot be redirected; and it binds a session to the address that created it, so
+a consumer that logged in against the panel has to keep talking to the panel for
+everything else. A half-redirected setup presents as a random logout.
+
+**A relay's certificate is verified; the panel's is not.** The panel is exempt because it
+ships an expired 2009 self-signed certificate that no modern TLS stack will accept, and
+that exemption is the panel's alone. A relay is an address you typed and it receives the
+push token, so it gets ordinary verification. Terminate TLS with a certificate this Home
+Assistant trusts, or serve the stream over http.
+
+Why a relay is worth having at all: firmware that gates the push path on a session needs
+one, and a relay can hold a single upstream subscription and fan it out. That matters to
+the panel rather than to throughput, because every registration makes it flush its reply
+queue, so one subscriber costs it less than three.
 
 ### Discovery and moving addresses
 

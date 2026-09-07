@@ -12,7 +12,7 @@ from homeassistant.config_entries import (
     ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
-    OptionsFlow,
+    OptionsFlowWithReload,
 )
 from homeassistant.const import (
     CONF_CODE,
@@ -657,8 +657,18 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
-class TuxedoTouchOptionsFlow(OptionsFlow):
+class TuxedoTouchOptionsFlow(OptionsFlowWithReload):
     """Take the push stream from somewhere other than the panel.
+
+    OptionsFlowWithReload rather than OptionsFlow, and that is the whole
+    difference between this form working and this form lying. The coordinator
+    reads both values once, when it is constructed in async_setup_entry, and
+    the integration registers no update listener. Home Assistant reloads the
+    entry after an options flow ONLY when the flow is an instance of
+    OptionsFlowWithReload (config_entries.py, OptionsFlowManager
+    .async_finish_flow). Under the plain base the save succeeds, the values
+    land in entry.options, and the running stream carries on talking to the
+    panel until the next restart -- a silent no-op with a green tick.
 
     Both fields are optional and empty by default, which is the supported
     configuration: the panel serves its own stream and nothing here applies.
@@ -677,6 +687,7 @@ class TuxedoTouchOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Show and store the push source."""
+        errors: dict[str, str] = {}
         if user_input is not None:
             # An empty box means "use the panel", so blanks are stored as
             # absent rather than as "" -- the stream treats both as unset, and
@@ -689,17 +700,31 @@ class TuxedoTouchOptionsFlow(OptionsFlow):
                 )
                 if v and v.strip()
             }
-            # Anything else already in options -- the credentials-rejected flag
-            # -- is preserved: this form does not own it.
-            merged = {
-                k: v
-                for k, v in self.config_entry.options.items()
-                if k not in (OPT_PUSH_URL, OPT_PUSH_TOKEN)
-            }
-            merged.update(options)
-            return self.async_create_entry(data=merged)
+            url = options.get(OPT_PUSH_URL)
+            if url is not None and not url.lower().startswith(("http://", "https://")):
+                # Caught here because it cannot be caught later. A URL the
+                # client cannot parse fails inside the stream's reconnect
+                # loop, which logs at debug and retries for ever, so a typed
+                # host with no scheme would present as a stream that simply
+                # never starts -- with a saved form and a green tick behind it.
+                errors[OPT_PUSH_URL] = "invalid_push_url"
+            if not errors:
+                # Anything else already in options -- the credentials-rejected
+                # flag -- is preserved: this form does not own it.
+                merged = {
+                    k: v
+                    for k, v in self.config_entry.options.items()
+                    if k not in (OPT_PUSH_URL, OPT_PUSH_TOKEN)
+                }
+                merged.update(options)
+                return self.async_create_entry(data=merged)
 
-        current = self.config_entry.options
+        # On a rejected submission the boxes come back holding what was typed,
+        # not what is stored: retyping a long URL to fix a missing scheme is
+        # how a person gives up on a form.
+        current: Mapping[str, Any] = (
+            dict(user_input) if user_input is not None else self.config_entry.options
+        )
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
@@ -718,4 +743,5 @@ class TuxedoTouchOptionsFlow(OptionsFlow):
                     OPT_PUSH_TOKEN: current.get(OPT_PUSH_TOKEN, ""),
                 },
             ),
+            errors=errors,
         )

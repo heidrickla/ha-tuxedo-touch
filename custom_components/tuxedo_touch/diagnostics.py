@@ -28,6 +28,13 @@ async def async_get_config_entry_diagnostics(
         # no partition field and is scoped by the firmware to whichever
         # partition the panel is currently showing.
         "partition": coordinator.partition,
+        # Where the stream connects. It belongs in the report rather than
+        # being inferable from it: a relay-fed install fails in ways a
+        # panel-fed one cannot - `connected` then says the relay is up and
+        # says nothing about the panel - so several fields below read
+        # differently once this is not "panel". The URL only; the push token
+        # is a credential and is never reported.
+        "push_source": push.source,
         # The one condition in which both sources answer and neither can be
         # believed: the Tuxedo has lost its ECP link to the VISTA, so its
         # frames carry the panel-status code -1 beside the text it last drew,

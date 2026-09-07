@@ -168,6 +168,9 @@
           "push_token": "Credential the relay requires, if any. Sent as both a bearer token and a cookie, so either style of relay accepts it. This is not your panel password."
         }
       }
+    },
+    "error": {
+      "invalid_push_url": "The push stream URL must start with http:// or https://. Give the relay's full stream endpoint, for example http://10.0.0.5:8081/SimpleDebugger.interface/G."
     }
   }
 }

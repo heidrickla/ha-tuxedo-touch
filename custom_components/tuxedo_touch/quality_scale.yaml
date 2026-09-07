@@ -119,8 +119,18 @@ rules:
       the panel as free, which the reconfigure flow does before it checks new
       settings.
   docs-configuration-parameters:
-    status: exempt
-    comment: No options flow; the connection details are edited by reconfigure.
+    status: done
+    comment: |
+      Was exempt on the grounds that there is no options flow. That stopped
+      being true when the push-source options were added, and an exemption
+      whose stated reason has quietly become false is worse than no
+      exemption, so this is documented rather than exempt now. README
+      "Configuration parameters" covers push_url and push_token: what each
+      accepts, that blank means the panel serves its own stream, that ONLY
+      the stream moves and why the commands cannot follow it, and that a
+      relay's certificate is verified normally while the panel's is not. The
+      connection details themselves are still edited by reconfigure, which is
+      documented separately.
   docs-installation-parameters: done
   entity-unavailable:
     status: done

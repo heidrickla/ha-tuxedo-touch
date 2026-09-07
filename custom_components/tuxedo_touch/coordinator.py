@@ -422,9 +422,26 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         thing. An alarm entity confidently reporting armed or disarmed from a
         panel that cannot see the alarm is the worst thing this integration
         can do, and it is worse than reporting nothing.
+
+        A RELAY STREAM PROVES NOTHING ABOUT THE PANEL, and that is why the
+        second clause is conditional. `push.connected` becomes true the moment
+        the stream request returns HTTP 200, which for a configured relay is a
+        statement about the relay. A relay that stays up while the panel dies
+        behind it - unplugged, rebooted, off the network - would otherwise
+        hold this entity available on the last state it happened to forward,
+        which is the same failure as the dead ECP link above and is arrived at
+        by a different route. So when the stream is not the panel's own, the
+        panel's reachability is whatever its poll says and nothing else.
+
+        This costs the relay setup nothing it should have had. The poll's
+        intermittent "Not available" is a successful poll carrying an unusable
+        answer, so last_update_success stays true through exactly the spells
+        the stream exists to paper over.
         """
         if self._ecp_link_down:
             return False
+        if self.push.from_relay:
+            return self.last_update_success
         return self.last_update_success or (
             self.push.connected and self.data is not None
         )
