@@ -97,6 +97,22 @@ PUSH_STABLE_AFTER = 60.0
 # about protecting a scarce slot.
 PUSH_BACKOFF_MAX = 300.0
 
+# Consecutive failed attempts before a CONFIGURED RELAY is called unreachable
+# in the log, once, at warning level.
+#
+# The panel's own stream needs no such thing: when the panel is unreachable the
+# poll fails too, the entity goes unavailable, and the user finds out. A relay
+# is the case where nothing else notices - the poll still answers, the alarm
+# state is still correct, and the only symptom is that the relay the operator
+# configured is doing nothing. Every failure on that path is caught as an
+# ordinary drop and logged at debug, so without this a typo'd or decommissioned
+# relay is invisible for ever behind a form that saved cleanly.
+#
+# Three rather than one because a relay restarting should not produce a
+# warning; at PUSH_BACKOFF_INITIAL growing to PUSH_BACKOFF_MAX, three failures
+# is roughly half a minute of genuinely not being there.
+RELAY_UNREACHABLE_AFTER = 3
+
 # How long a command waits for the panel to report the change on the stream
 # before falling back to a poll. The entity's PARALLEL_UPDATES = 1 holds other
 # calls to it for at most this long, so it is a bound rather than a target.

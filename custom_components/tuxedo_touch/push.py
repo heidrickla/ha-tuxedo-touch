@@ -48,6 +48,7 @@ from .const import (
     PUSH_PATH,
     PUSH_READ_TIMEOUT,
     PUSH_STABLE_AFTER,
+    RELAY_UNREACHABLE_AFTER,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -347,6 +348,13 @@ class TuxedoPushStream:
         # report stops claiming a reconnect is pending for a task that has
         # stopped.
         self.stopped = False
+        # A configured relay has failed repeatedly and has been reported once.
+        # Not terminal: it keeps retrying, because a relay coming back is
+        # ordinary and the warning is about telling somebody, not giving up.
+        self.relay_unreachable = False
+        # Consecutive ordinary drops. Cleared the moment a stream connects, so
+        # this counts a run of failures rather than a lifetime total.
+        self._drops = 0
         self.last_error: str | None = None
         self.connection_id: int | None = None
         self.client_count: int | None = None
@@ -445,6 +453,33 @@ class TuxedoPushStream:
             except (TuxedoTouchError, aiohttp.ClientError, TimeoutError) as err:
                 _LOGGER.debug("Push stream dropped (%s); reconnecting", err)
                 unexpected_failures = 0
+                self._drops += 1
+                if (
+                    self._push_url
+                    and not self.relay_unreachable
+                    and self._drops >= RELAY_UNREACHABLE_AFTER
+                ):
+                    # Said once, at warning, and only for a relay. A panel that
+                    # cannot be reached fails the poll too and takes the entity
+                    # unavailable, which the user sees. A relay that cannot be
+                    # reached changes nothing visible at all: the poll still
+                    # answers, the alarm state is still right, and the only
+                    # symptom is that the thing just configured is doing
+                    # nothing. Debug-level retries for ever is how that stays
+                    # secret.
+                    self.relay_unreachable = True
+                    self.last_error = f"{type(err).__name__}: {err}"
+                    _LOGGER.warning(
+                        "The configured push relay at %s has failed %s times "
+                        "in a row (%s). The alarm state is still being read by "
+                        "the status poll, so nothing is broken - but the relay "
+                        "is not being used. Check the URL and token in the "
+                        "integration's options, or clear both to take the "
+                        "stream from the panel again",
+                        self._push_url,
+                        self._drops,
+                        err,
+                    )
             except Exception as err:
                 # Anything this module does not name is a bug in here, and it
                 # used to end the task by propagating - permanently, with no
@@ -583,6 +618,15 @@ class TuxedoPushStream:
                     self.reconnect_wait = PUSH_BACKOFF_INITIAL
 
     def _set_connected(self, connected: bool) -> None:
+        if connected:
+            # A connection clears the run of failures, so the relay warning
+            # counts consecutive drops rather than a lifetime total and a
+            # relay that comes back can go quiet again and be reported afresh
+            # if it fails later.
+            self._drops = 0
+            if self.relay_unreachable:
+                self.relay_unreachable = False
+                _LOGGER.info("The configured push relay is answering again")
         if connected == self.connected:
             return
         self.connected = connected

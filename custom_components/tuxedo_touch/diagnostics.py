@@ -35,6 +35,11 @@ async def async_get_config_entry_diagnostics(
         # differently once this is not "panel". The URL only; the push token
         # is a credential and is never reported.
         "push_source": push.source,
+        # True once a configured relay has failed repeatedly. Distinct from
+        # `connected` being false, which is also what a momentary reconnect
+        # looks like: this says the relay has not been there for a run of
+        # attempts and has been reported in the log.
+        "relay_unreachable": push.relay_unreachable,
         # The one condition in which both sources answer and neither can be
         # believed: the Tuxedo has lost its ECP link to the VISTA, so its
         # frames carry the panel-status code -1 beside the text it last drew,
