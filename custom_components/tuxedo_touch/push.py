@@ -324,10 +324,16 @@ class TuxedoPushStream:
         client: TuxedoTouchClient,
         on_status: Callable[[PushStatus], None],
         on_connection_change: Callable[[bool], None],
+        push_url: str | None = None,
+        push_token: str | None = None,
     ) -> None:
         self._client = client
         self._on_status = on_status
         self._on_connection_change = on_connection_change
+        # Where the stream comes from, if not the panel. Defaults to None so an
+        # existing entry behaves exactly as before.
+        self._push_url = push_url or None
+        self._push_token = push_token or None
         self.connected = False
         self.unsupported = False
         # Terminal, like `unsupported`: the panel refused the credentials and
@@ -464,7 +470,10 @@ class TuxedoPushStream:
     async def _async_stream_once(self) -> None:
         """One connection, from login to the moment the panel stops talking."""
         cookie = await self._client.async_session_cookie()
-        url = f"{self._client.base_url}{PUSH_PATH}"
+        # A configured stream source replaces the panel for THIS request only;
+        # login and commands are untouched, and must be, because the panel
+        # binds a session to the address that created it.
+        url = self._push_url or f"{self._client.base_url}{PUSH_PATH}"
         # No total timeout: the point of the request is to stay open. A read
         # timeout still applies, and it is meaningful here rather than a
         # guess: the panel repeats the partition status on its own timer
@@ -477,9 +486,15 @@ class TuxedoPushStream:
             sock_connect=PUSH_CONNECT_TIMEOUT,
             sock_read=PUSH_READ_TIMEOUT,
         )
+        headers = {"Cookie": cookie}
+        if self._push_token:
+            # Sent both ways because a shim may gate on either, and sending one
+            # it ignores costs nothing.
+            headers["Authorization"] = f"Bearer {self._push_token}"
+            headers["Cookie"] = f"{cookie}; tuxweb_token={self._push_token}"
         async with self._client.session.get(
             url,
-            headers={"Cookie": cookie},
+            headers=headers,
             ssl=self._client.ssl_arg,
             timeout=timeout,
             allow_redirects=False,

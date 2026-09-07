@@ -42,6 +42,21 @@ KEYS_PATH = "/tuxedoapi.html"
 # before "G." is required: without it the server answers 404. Nothing else is
 # needed - no token, no query string, just the session cookie.
 PUSH_PATH = "/SimpleDebugger.interface/G."
+
+# Optional: take the push stream from somewhere other than the panel.
+#
+# Firmware carrying P13 requires a session on this path, and a shim can hold
+# ONE upstream subscription and fan it out - which matters because every
+# registration makes the panel flush its reply queue, so one subscriber is
+# cheaper for the panel than several.
+#
+# Login and the REST commands are NOT redirected by these. They cannot be: the
+# panel answers 302 to https on the REST namespace over plain HTTP regardless
+# of credentials, so those stay on the panel exactly as before. Only the stream
+# moves. That split also keeps each session bound to the address that created
+# it, which the panel requires.
+OPT_PUSH_URL = "push_url"
+OPT_PUSH_TOKEN = "push_token"
 PUSH_BOUNDARY = "EH912ZZ"
 PUSH_CONNECT_TIMEOUT = 15
 # No total timeout applies to the stream at all - the point of the request is
