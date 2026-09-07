@@ -155,6 +155,11 @@ class FakePanel:
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self.port = 0
+        # Headers of the most recent stream request. Recorded so a test can
+        # assert what a client actually SENT, rather than only what it received
+        # -- the push-source options are only meaningful if the credential
+        # reaches the far end.
+        self.last_push_headers: dict[str, str] = {}
 
     # ------------------------------------------------------------- server
     async def start(self) -> None:
@@ -278,6 +283,7 @@ class FakePanel:
 
     async def _stream(self, request: web.Request) -> Any:
         self.stream_requests += 1
+        self.last_push_headers = dict(request.headers)
         if self.push_status != 200:
             return web.Response(status=self.push_status, text="")
         if not self._authenticated(request):
