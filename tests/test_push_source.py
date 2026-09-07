@@ -16,7 +16,9 @@ Runs without Home Assistant, via `tests.no_ha`.
 """
 
 import asyncio
+import contextlib
 import inspect
+from unittest import mock
 
 from tests.no_ha import load
 
@@ -190,6 +192,79 @@ def test_a_relay_does_not_inherit_the_panels_ssl_exemption() -> None:
     client = _RecordingClient(500)
     _run_once(client, url="https://relay.example:8081/SimpleDebugger.interface/G.")
     assert client.session.calls[0]["ssl"] is True
+
+
+def _run_loop(client, url=None, token=None, rounds=4):
+    """Drive async_run's reconnect loop a few times with no real waiting.
+
+    async_run resets reconnect_wait to PUSH_BACKOFF_INITIAL itself, so setting
+    it on the instance achieves nothing; the backoff sleep is replaced instead.
+    The replacement still yields, because without a yield point the loop task
+    never gets to run at all.
+    """
+    stream = push.TuxedoPushStream(
+        client, lambda _s: None, lambda _c: None, push_url=url, push_token=token
+    )
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(_delay):
+        await real_sleep(0)
+
+    async def drive():
+        with mock.patch.object(asyncio, "sleep", fast_sleep):
+            task = asyncio.ensure_future(stream.async_run())
+            for _ in range(rounds * 60):
+                await real_sleep(0)
+                if len(client.session.calls) >= rounds:
+                    break
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(drive())
+    return stream
+
+
+def test_a_failing_relay_is_reported_once_at_warning(caplog) -> None:
+    """Otherwise a typo'd relay is invisible for ever behind a saved form.
+
+    Every relay-side failure is an ordinary drop, logged at debug and retried.
+    The poll keeps answering, so the alarm state stays right and nothing else
+    in the system notices that the configured relay is doing nothing.
+    """
+    client = _RecordingClient(500)
+    with caplog.at_level("WARNING"):
+        stream = _run_loop(client, url="https://relay.example:8081/x", rounds=4)
+    assert stream.relay_unreachable is True
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1, "said once, not once per reconnect"
+    assert "relay.example" in warnings[0].getMessage()
+
+
+def test_a_failing_PANEL_stream_is_not_reported_that_way(caplog) -> None:
+    """The control. A panel that cannot be reached fails the poll too and takes
+    the entity unavailable, which the user already sees; warning about it here
+    would be a second voice for a fault that is not silent."""
+    client = _RecordingClient(500)
+    with caplog.at_level("WARNING"):
+        stream = _run_loop(client, url=None, rounds=4)
+    assert stream.relay_unreachable is False
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_the_relay_flag_clears_when_it_answers_again() -> None:
+    """A relay coming back is ordinary, and must be able to be reported afresh."""
+    stream = push.TuxedoPushStream(
+        _RecordingClient(500),
+        lambda _s: None,
+        lambda _c: None,
+        push_url="https://relay.example:8081/x",
+    )
+    stream.relay_unreachable = True
+    stream._drops = 9
+    stream._set_connected(True)
+    assert stream.relay_unreachable is False
+    assert stream._drops == 0
 
 
 def test_a_panel_401_is_a_session_expiry() -> None:
