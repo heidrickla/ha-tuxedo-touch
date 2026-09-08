@@ -253,6 +253,26 @@ def main() -> int:
         else:
             notes.append("pyproject.toml carries no version; manifest is the only one")
 
+    # -------------------------------------------------- dhcp discovery matcher
+    # The matcher is vendor-identifying and MUST survive any scrub. `00D02D` is
+    # Resideo's OUI, and the author's own panel MAC begins with it -- so a
+    # find-and-replace aimed at that MAC reaches this string and silently breaks
+    # discovery for every user of the integration. Nothing else would notice:
+    # the manifest stays valid JSON, the integration still loads, and only
+    # automatic discovery quietly stops working.
+    dhcp = manifest.get("dhcp") or []
+    check(
+        any(d.get("macaddress") == "00D02D*" for d in dhcp),
+        "manifest dhcp matcher lost its macaddress 00D02D* (Resideo OUI) - "
+        "that is the vendor OUI, not a personal identifier, and removing it "
+        "breaks DHCP discovery silently",
+    )
+    check(
+        any(d.get("hostname") == "tux*" for d in dhcp),
+        "manifest dhcp matcher lost its hostname tux* - the panel's DHCP name "
+        "is the word Tux plus its MAC, and discovery pairs it with the OUI",
+    )
+
     # ---------------------------------------------------------- hacs.json
     hacs = read_json(ROOT, "hacs.json")
     check("name" in hacs, "hacs.json must contain name")
