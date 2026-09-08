@@ -15,7 +15,7 @@ is what keeps getting lost.
 
 | | |
 |---|---|
-| host | `claude@10.10.52.40`, key `~/.ssh/fwbuild_ed25519` |
+| host | `claude@203.0.113.40`, key `~/.ssh/fwbuild_ed25519` |
 | working copy | `/work/ha-tuxedo` — a **copy of the tree, not a clone**; it has no `.git` |
 | venv | `/work/ha-tuxedo/.venv`, 774 MB, 144 packages |
 | interpreter | CPython **3.14.7**, from `uv` at `~/.local/share/uv/python/cpython-3.14-linux-x86_64-gnu` |
@@ -37,7 +37,7 @@ Two of those rows are the whole point:
 ## Running it
 
 ```bash
-ssh -i ~/.ssh/fwbuild_ed25519 claude@10.10.52.40
+ssh -i ~/.ssh/fwbuild_ed25519 claude@203.0.113.40
 cd /work/ha-tuxedo
 .venv/bin/python -m pytest -q --cov=custom_components.tuxedo_touch --cov-report=term
 ```

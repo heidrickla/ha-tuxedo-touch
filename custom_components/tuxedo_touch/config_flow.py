@@ -321,7 +321,7 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         """A DHCP lease from a Tuxedo Touch panel.
 
         Two matchers reach here. `{"hostname": "tux*", "macaddress": "00D02D*"}`
-        is the panel itself: measured on the unit at 00:d0:2d:4d:d7:b6
+        is the panel itself: measured on the unit at 00:d0:2d:00:00:01
         (2026-09-05), 00:D0:2D is Resideo's OUI and the unit puts `Tux` plus
         the twelve hex digits of its own MAC in the lease. `registered_devices`
         adds every MAC this integration already has a device for, so a panel

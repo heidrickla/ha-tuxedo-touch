@@ -211,12 +211,12 @@ async def test_reconfigure_moves_the_panel_to_a_new_address(hass, config_entry):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": "reconfigure", "entry_id": config_entry.entry_id},
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+            data={**ENTRY_DATA, CONF_HOST: "203.0.113.61"},
         )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
-    assert config_entry.data[CONF_HOST] == "10.10.52.61"
-    assert config_entry.unique_id == f"10.10.52.61:{PORT}:1"
+    assert config_entry.data[CONF_HOST] == "203.0.113.61"
+    assert config_entry.unique_id == f"203.0.113.61:{PORT}:1"
 
 
 async def test_reconfigure_can_change_the_partition(hass, config_entry):
@@ -261,7 +261,7 @@ async def test_reconfigure_shows_the_error_rather_than_saving(hass, config_entry
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": "reconfigure", "entry_id": config_entry.entry_id},
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+            data={**ENTRY_DATA, CONF_HOST: "203.0.113.61"},
         )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "cannot_connect"}
@@ -276,18 +276,18 @@ async def test_reconfigure_recovers_from_an_unreachable_panel(hass, config_entry
         first = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": "reconfigure", "entry_id": config_entry.entry_id},
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.99"},
+            data={**ENTRY_DATA, CONF_HOST: "203.0.113.99"},
         )
     assert first["type"] is FlowResultType.FORM
     assert first["errors"] == {"base": "cannot_connect"}
 
     with patch(LOGIN, return_value=None):
         second = await hass.config_entries.flow.async_configure(
-            first["flow_id"], {**ENTRY_DATA, CONF_HOST: "10.10.52.61"}
+            first["flow_id"], {**ENTRY_DATA, CONF_HOST: "203.0.113.61"}
         )
     assert second["type"] is FlowResultType.ABORT
     assert second["reason"] == "reconfigure_successful"
-    assert config_entry.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry.data[CONF_HOST] == "203.0.113.61"
 
 
 async def _load(hass, entry, ready):
@@ -344,14 +344,14 @@ async def test_reconfigure_frees_the_panel_before_probing_it(hass, config_entry,
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": "reconfigure", "entry_id": config_entry.entry_id},
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+            data={**ENTRY_DATA, CONF_HOST: "203.0.113.61"},
         )
         await hass.async_block_till_done()
 
     assert seen == [ConfigEntryState.NOT_LOADED]
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
-    assert config_entry.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry.data[CONF_HOST] == "203.0.113.61"
     assert config_entry.state is ConfigEntryState.LOADED
 
 
@@ -391,7 +391,7 @@ async def test_the_probe_waits_for_a_poll_that_is_already_running(
             hass.config_entries.flow.async_init(
                 DOMAIN,
                 context={"source": "reconfigure", "entry_id": config_entry.entry_id},
-                data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+                data={**ENTRY_DATA, CONF_HOST: "203.0.113.61"},
             )
         )
         # Every chance to get ahead of the poll it is supposed to wait for:
@@ -414,7 +414,7 @@ async def test_the_probe_waits_for_a_poll_that_is_already_running(
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
-    assert config_entry.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry.data[CONF_HOST] == "203.0.113.61"
 
 
 async def test_a_reconfigure_that_fails_its_probe_puts_the_entry_back(
@@ -432,7 +432,7 @@ async def test_a_reconfigure_that_fails_its_probe_puts_the_entry_back(
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": "reconfigure", "entry_id": config_entry.entry_id},
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.99"},
+            data={**ENTRY_DATA, CONF_HOST: "203.0.113.99"},
         )
         await hass.async_block_till_done()
 
@@ -471,14 +471,14 @@ async def test_reconfigure_frees_a_retrying_entry_too(hass, config_entry, ready)
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": "reconfigure", "entry_id": config_entry.entry_id},
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+            data={**ENTRY_DATA, CONF_HOST: "203.0.113.61"},
         )
         await hass.async_block_till_done()
 
     assert seen == [ConfigEntryState.NOT_LOADED]
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
-    assert config_entry.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry.data[CONF_HOST] == "203.0.113.61"
     assert config_entry.state is ConfigEntryState.LOADED
 
 
@@ -496,7 +496,7 @@ async def test_a_retrying_entry_whose_probe_fails_goes_back_to_retrying(
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": "reconfigure", "entry_id": config_entry.entry_id},
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.99"},
+            data={**ENTRY_DATA, CONF_HOST: "203.0.113.99"},
         )
         await hass.async_block_till_done()
 
@@ -536,7 +536,7 @@ async def test_reconfigure_with_blank_secrets_keeps_the_stored_ones(hass, config
             context={"source": "reconfigure", "entry_id": config_entry.entry_id},
             data={
                 **ENTRY_DATA,
-                CONF_HOST: "10.10.52.61",
+                CONF_HOST: "203.0.113.61",
                 CONF_PASSWORD: "",
                 CONF_CODE: "",
             },
@@ -545,7 +545,7 @@ async def test_reconfigure_with_blank_secrets_keeps_the_stored_ones(hass, config
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert validate.await_args.args[1][CONF_PASSWORD] == "secret"
-    assert config_entry.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry.data[CONF_HOST] == "203.0.113.61"
     assert config_entry.data[CONF_PASSWORD] == "secret"
     assert config_entry.data[CONF_CODE] == "1234"
 
@@ -573,9 +573,9 @@ async def test_the_title_follows_the_panel_to_its_new_address(hass, config_entry
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": "reconfigure", "entry_id": config_entry.entry_id},
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+            data={**ENTRY_DATA, CONF_HOST: "203.0.113.61"},
         )
-    assert config_entry.title == "Tuxedo Touch (10.10.52.61)"
+    assert config_entry.title == "Tuxedo Touch (203.0.113.61)"
 
 
 async def test_a_renamed_entry_keeps_its_name_on_a_move(hass):
@@ -590,9 +590,9 @@ async def test_a_renamed_entry_keeps_its_name_on_a_move(hass):
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": "reconfigure", "entry_id": renamed.entry_id},
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+            data={**ENTRY_DATA, CONF_HOST: "203.0.113.61"},
         )
-    assert renamed.data[CONF_HOST] == "10.10.52.61"
+    assert renamed.data[CONF_HOST] == "203.0.113.61"
     assert renamed.title == "Garage alarm"
 
 
@@ -958,11 +958,11 @@ async def test_the_same_panel_at_a_new_address_keeps_its_identity(
                 "source": "reconfigure",
                 "entry_id": config_entry_with_mac.entry_id,
             },
-            data={**ENTRY_DATA, CONF_HOST: "10.10.52.61"},
+            data={**ENTRY_DATA, CONF_HOST: "203.0.113.61"},
         )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
-    assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry_with_mac.data[CONF_HOST] == "203.0.113.61"
     assert config_entry_with_mac.data[CONF_MAC] == MAC
     assert config_entry_with_mac.unique_id == f"{MAC}_1"
 
@@ -973,11 +973,11 @@ async def test_dhcp_follows_a_configured_panel_to_a_new_address(
     """discovery-update-info: a lease for a MAC an entry holds corrects the
     stored address rather than offering the panel as something new."""
     config_entry_with_mac.add_to_hass(hass)
-    result = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    result = await _dhcp_flow(hass, _lease("203.0.113.61"))
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
-    assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"
-    assert config_entry_with_mac.title == "Tuxedo Touch (10.10.52.61)"
+    assert config_entry_with_mac.data[CONF_HOST] == "203.0.113.61"
+    assert config_entry_with_mac.title == "Tuxedo Touch (203.0.113.61)"
 
 
 async def test_dhcp_at_the_same_address_changes_nothing(hass, config_entry_with_mac):
@@ -997,9 +997,9 @@ async def test_dhcp_keeps_a_title_the_user_chose(hass):
         data={**ENTRY_DATA, CONF_MAC: MAC},
     )
     entry.add_to_hass(hass)
-    result = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    result = await _dhcp_flow(hass, _lease("203.0.113.61"))
     assert result["reason"] == "already_configured"
-    assert entry.data[CONF_HOST] == "10.10.52.61"
+    assert entry.data[CONF_HOST] == "203.0.113.61"
     assert entry.title == "Downstairs alarm"
 
 
@@ -1015,26 +1015,26 @@ async def test_dhcp_moves_every_partition_of_the_same_panel(
         data={**ENTRY_DATA, CONF_MAC: MAC, CONF_PARTITION: 2},
     )
     second.add_to_hass(hass)
-    result = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    result = await _dhcp_flow(hass, _lease("203.0.113.61"))
     assert result["reason"] == "already_configured"
-    assert config_entry_with_mac.data[CONF_HOST] == "10.10.52.61"
-    assert second.data[CONF_HOST] == "10.10.52.61"
+    assert config_entry_with_mac.data[CONF_HOST] == "203.0.113.61"
+    assert second.data[CONF_HOST] == "203.0.113.61"
 
 
 async def test_a_lease_from_a_panel_nobody_has_added_offers_setup(hass):
     """discovery: the measured matcher - hostname `tux*` and OUI 00D02D - fires
     for a panel that is not set up, and the flow asks for what a lease cannot
     supply instead of aborting."""
-    result = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    result = await _dhcp_flow(hass, _lease("203.0.113.61"))
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "dhcp_confirm"
-    assert result["description_placeholders"] == {"host": "10.10.52.61", "mac": MAC}
+    assert result["description_placeholders"] == {"host": "203.0.113.61", "mac": MAC}
     # The address came from the lease, so it is not asked for again.
     assert CONF_HOST not in _fields(result)
 
 
 async def test_the_discovered_panel_is_created_with_its_mac_as_the_identity(hass):
-    form = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    form = await _dhcp_flow(hass, _lease("203.0.113.61"))
     with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
         result = await hass.config_entries.flow.async_configure(
             form["flow_id"], dict(CONFIRM_INPUT)
@@ -1042,8 +1042,8 @@ async def test_the_discovered_panel_is_created_with_its_mac_as_the_identity(hass
         await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "Tuxedo Touch (10.10.52.61)"
-    assert result["data"][CONF_HOST] == "10.10.52.61"
+    assert result["title"] == "Tuxedo Touch (203.0.113.61)"
+    assert result["data"][CONF_HOST] == "203.0.113.61"
     assert result["data"][CONF_MAC] == MAC
     assert result["data"][CONF_USERNAME] == "installer"
     assert result["data"][CONF_CODE] == "1234"
@@ -1053,7 +1053,7 @@ async def test_the_discovered_panel_is_created_with_its_mac_as_the_identity(hass
 async def test_the_discovery_form_recovers_from_a_wrong_password(hass):
     """A typo on the confirm form is corrected there, not by waiting for the
     next lease."""
-    form = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    form = await _dhcp_flow(hass, _lease("203.0.113.61"))
     with patch(LOGIN, side_effect=TuxedoTouchAuthError("no")):
         again = await hass.config_entries.flow.async_configure(
             form["flow_id"], {**CONFIRM_INPUT, CONF_PASSWORD: "wrong"}
@@ -1075,7 +1075,7 @@ async def test_the_discovery_form_recovers_from_a_wrong_password(hass):
 
 
 async def test_an_emptied_code_on_the_discovery_form_is_not_stored(hass):
-    form = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    form = await _dhcp_flow(hass, _lease("203.0.113.61"))
     with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
         result = await hass.config_entries.flow.async_configure(
             form["flow_id"], {**CONFIRM_INPUT, CONF_CODE: ""}
@@ -1087,9 +1087,9 @@ async def test_an_emptied_code_on_the_discovery_form_is_not_stored(hass):
 
 async def test_a_second_lease_does_not_open_a_second_form(hass):
     """A lease is renewed while the form sits open; one panel is one flow."""
-    first = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    first = await _dhcp_flow(hass, _lease("203.0.113.61"))
     assert first["type"] is FlowResultType.FORM
-    again = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    again = await _dhcp_flow(hass, _lease("203.0.113.61"))
     assert again["type"] is FlowResultType.ABORT
     assert again["reason"] == "already_in_progress"
 
@@ -1106,7 +1106,7 @@ async def test_an_ignored_panel_is_not_offered_again(hass):
         data={},
         title="Tuxedo Touch",
     ).add_to_hass(hass)
-    result = await _dhcp_flow(hass, _lease("10.10.52.61"))
+    result = await _dhcp_flow(hass, _lease("203.0.113.61"))
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
 

@@ -9,7 +9,7 @@ string and nothing else.
 
 So the MAC comes from the one place on the network that already holds it: the
 panel's DHCP lease, which Home Assistant watches on its own. Measured on the
-unit at 00:d0:2d:4d:d7:b6 (2026-09-05): OUI 00:D0:2D is Resideo, and the lease
+unit at 00:d0:2d:00:00:01 (2026-09-05): OUI 00:D0:2D is Resideo, and the lease
 hostname is `Tux` followed by the twelve hex digits of the MAC, so the
 manifest's matcher recognises a Tuxedo panel and the lease hands over its
 identity in the same event. An install Home Assistant sees no lease for -

@@ -31,7 +31,7 @@ from custom_components.tuxedo_touch.const import (
 )
 from tests.fake_panel import FakePanel
 
-HOST = "10.10.52.60"
+HOST = "203.0.113.60"
 PORT = 443
 MAC = "aa:bb:cc:dd:ee:ff"
 

@@ -245,9 +245,9 @@ rules:
     comment: |
       The panel announces nothing over mDNS or SSDP, but it is a DHCP client
       and its lease identifies it. Measured from the UniFi controller on the
-      unit at 00:d0:2d:4d:d7:b6 (2026-09-05, wired): OUI 00:D0:2D belongs to
+      unit at 00:d0:2d:00:00:01 (2026-09-05, wired): OUI 00:D0:2D belongs to
       Resideo (formerly Ademco/Honeywell) and the lease hostname is
-      `Tux00D02D4DD7B6` - the literal word Tux followed by the twelve hex
+      `Tux00D02D000001` - the literal word Tux followed by the twelve hex
       digits of its own MAC. manifest.json therefore matches
       `{"hostname": "tux*", "macaddress": "00D02D*"}`, both conditions
       together, so another vendor's device on the same OUI is not offered as

@@ -1,6 +1,6 @@
 name: Validate
 
-# Runs on the self-hosted act_runner on gpurack2. GitHub Actions is unavailable
+# Runs on a self-hosted act_runner. GitHub Actions is unavailable
 # (spend cap) and this hardware is already paid for.
 #
 # THE RUNNER IS SHARED AND ITS CAPACITY IS 1. Other agent sessions queue behind

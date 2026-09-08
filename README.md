@@ -256,7 +256,7 @@ queue, so one subscriber costs it less than three.
 The panel announces nothing on mDNS or SSDP, but it is a DHCP client and its lease is
 distinctive: the unit's network interface uses Resideo's `00:D0:2D` OUI and it puts `Tux`
 followed by the twelve hex digits of its own MAC in the lease hostname - for example
-`Tux00D02D4DD7B6`. The manifest matches on both together, so another vendor's device is
+`Tux00D02D000001`. The manifest matches on both together, so another vendor's device is
 never offered as a Tuxedo panel.
 
 **A panel you have not added** shows up under Settings -> Devices & Services as a
