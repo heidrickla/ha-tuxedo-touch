@@ -14,6 +14,7 @@ Runs without Home Assistant, via `tests.no_ha`.
 
 import asyncio
 import contextlib
+import logging
 
 import aiohttp
 import pytest
@@ -478,15 +479,176 @@ async def test_check_credentials_reports_a_refused_token(tuxweb, session):
     assert tuxweb.login_attempts == 0
 
 
+# ------------------------------------------------------ the verdict re-checked
+#
+# The probe's answer is cached for the client's lifetime, and a panel rolled
+# back to stock under a running client answers a token-only request with the
+# same 401 tuxweb uses for a bad token. So a tuxweb refusal is asked about once
+# more - the same GET as the setup probe, under the same rules - before it is
+# believed. Every test here counts what the panel saw: how many probes, how
+# many API requests, and whether a login page was ever asked for.
+
+
+async def test_a_refused_token_is_asked_about_once_and_then_believed(tuxweb, session):
+    """One re-probe per refusal, and the panel still declaring its list is
+    the refusal being real: the auth error is raised as it always was, the
+    refused request is not retried, and nothing on the way asked for a login
+    page or posted a credential. A second refusal is a second question, not
+    a loop - what stops the questions is the caller stopping, which is what
+    an auth error makes the poll and the stream do."""
+    tuxweb.token = "a" * 64
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    assert tuxweb.capability_probes == 1
+
+    with pytest.raises(api.TuxedoTouchTokenRejected):
+        await client.get_status()
+
+    assert tuxweb.capability_probes == 2
+    assert client.tuxweb is True
+    assert client.capabilities == frozenset(TUXWEB_CAPABILITIES)
+    assert tuxweb.api_requests == 1, "a refused request must not be retried"
+    assert tuxweb.login_page_requests == 0
+    assert tuxweb.login_attempts == 0
+
+    with pytest.raises(api.TuxedoTouchTokenRejected):
+        await client.get_status()
+
+    assert tuxweb.capability_probes == 3
+    assert tuxweb.api_requests == 2
+    assert tuxweb.login_attempts == 0
+
+
+async def test_the_re_check_takes_the_capabilities_the_panel_declares_now(
+    tuxweb, session
+):
+    """A tuxweb that still answers is believed about what it offers now, not
+    what it offered at setup: the set is refreshed even when the refusal
+    stands."""
+    tuxweb.token = "a" * 64
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    assert client.confirms_commands is True
+
+    tuxweb.capabilities = ["panel_link_state"]
+    with pytest.raises(api.TuxedoTouchTokenRejected):
+        await client.get_status()
+
+    assert client.capabilities == frozenset({"panel_link_state"})
+    assert client.confirms_commands is False
+
+
+async def test_a_panel_back_on_stock_is_spoken_to_as_stock_from_the_next_call(
+    tuxweb, session
+):
+    """The stale case. The panel is rolled back to stock under a client that
+    holds the tuxweb verdict: its next request carries a bearer token and no
+    session, which stock refuses exactly as tuxweb refuses a bad token. The
+    re-check finds no capability list, so the verdict is dropped, the refused
+    call fails as a firmware change rather than as the token, and the call
+    after it is an ordinary stock call - the login handshake, the cookie, the
+    signed and encrypted body - with the question not asked again."""
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    tuxweb.tuxweb = False
+
+    with pytest.raises(api.TuxedoTouchFirmwareChanged) as raised:
+        await client.get_status()
+
+    assert not isinstance(raised.value, api.TuxedoTouchAuthError)
+    assert "stock firmware" in str(raised.value)
+    assert client.tuxweb is False
+    assert client.capabilities == frozenset()
+    assert client.confirms_commands is False
+    assert tuxweb.capability_probes == 2
+    # The refused request was not retried on the stock path, and the re-check
+    # itself spent nothing: no login page, no credential POST.
+    assert tuxweb.api_requests == 1
+    assert tuxweb.login_page_requests == 0
+    assert tuxweb.login_attempts == 0
+
+    status = await client.get_status()
+
+    assert status.status == "Ready To Arm"
+    assert status.armed is None, "a stock poll carries no armed flag"
+    assert tuxweb.logins == 1
+    assert tuxweb.polls == 1
+    headers = tuxweb.last_api_headers
+    assert "Authorization" not in headers
+    assert headers["Cookie"] == tuxweb.cookie
+    assert "authtoken" in headers
+    assert tuxweb.capability_probes == 2, "a stock client is not re-asked"
+
+
+async def test_a_stock_client_is_never_re_asked_on_a_401(stock, session):
+    """The control. A stock 401 is a session that expired, and the re-login
+    on it is the stock path's own; the capability question is not reopened
+    by it - one probe at setup, however many sessions die after. And the
+    re-check refuses to run on a stock client at all."""
+    client = _client(stock, session)
+    await client.async_probe_capabilities()
+    await client.get_status()
+    assert stock.logins == 1
+
+    stock.expire_session()
+    await client.get_status()
+
+    assert stock.logins == 2
+    assert stock.capability_probes == 1
+
+    with pytest.raises(api.TuxedoTouchError) as raised:
+        await client.async_recheck_capabilities(401)
+    assert not isinstance(raised.value, api.TuxedoTouchFirmwareChanged)
+    assert stock.capability_probes == 1
+    assert client.tuxweb is False
+
+
+async def test_a_re_check_that_cannot_connect_is_raised_not_read_as_a_verdict(
+    tuxweb, session
+):
+    """The web server restarting under a rollback is exactly when the
+    re-check runs. A connection that never happened says nothing about the
+    firmware: it is a connection error to the caller - not the token, not a
+    firmware change - the verdict stands as it was, and the next refusal
+    asks again rather than treating the failed question as the one it had."""
+    tuxweb.token = "a" * 64
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    # Two, because aiohttp retries an idempotent GET once on a dropped
+    # connection and the first hang-up is absorbed there: see the fake.
+    tuxweb.capability_probe_disconnects = 2
+
+    with pytest.raises(api.TuxedoTouchConnectionError):
+        await client.get_status()
+
+    assert tuxweb.capability_probes == 3
+    assert tuxweb.capability_probe_disconnects == 0
+    assert client.tuxweb is True
+    assert client.capabilities == frozenset(TUXWEB_CAPABILITIES)
+    assert tuxweb.api_requests == 1
+    assert tuxweb.login_attempts == 0
+
+    with pytest.raises(api.TuxedoTouchTokenRejected):
+        await client.get_status()
+
+    assert tuxweb.capability_probes == 4
+    assert client.tuxweb is True
+    assert tuxweb.login_attempts == 0
+
+
 # -------------------------------------------------------- the stream on tuxweb
 
 
 class Collector:
     def __init__(self):
         self.statuses = []
+        self.displays = []
 
     def status(self, status):
         self.statuses.append(status)
+
+    def display(self, display):
+        self.displays.append(display)
 
 
 async def _stop(task):
@@ -556,6 +718,202 @@ async def test_a_stream_on_tuxweb_without_a_token_ends_the_same_way(tuxweb, sess
     assert tuxweb.login_page_requests == 0
 
 
+async def test_a_stream_refused_after_a_rollback_reconnects_on_the_stock_session(
+    tuxweb, session
+):
+    """The same rollback under a running stream. Stock answers a request that
+    carries a token and no cookie with its redirect to the login page, which
+    on tuxweb is the token being refused and the end of the task. The
+    re-check finds no list, so the drop is an ordinary one: the next
+    connection opens on a session cookie, from a login the stock path spent
+    itself on the reconnect - the re-check spent none - and frames arrive on
+    it as before."""
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    collector = Collector()
+    stream = push.TuxedoPushStream(client, collector.status, lambda up: None)
+    task = asyncio.create_task(stream.async_run())
+    try:
+        await wait_until(lambda: stream.connected)
+        assert tuxweb.last_push_headers["Authorization"] == f"Bearer {TUXWEB_TOKEN}"
+        assert tuxweb.stream_requests == 1
+
+        tuxweb.tuxweb = False
+        # A reconnect would otherwise wait out the five-second floor first.
+        stream.reconnect_wait = 0.01
+        tuxweb.drop_stream()
+        await wait_until(lambda: not stream.connected)
+        await wait_until(lambda: stream.connected)
+
+        assert stream.auth_failed is False
+        assert stream.unsupported is False
+        assert client.tuxweb is False
+        assert tuxweb.capability_probes == 2
+        # The refused reconnect, then the one that worked.
+        assert tuxweb.stream_requests == 3
+        headers = tuxweb.last_push_headers
+        assert "Authorization" not in headers
+        assert headers["Cookie"] == tuxweb.cookie
+        assert tuxweb.login_attempts == 1
+        assert tuxweb.logins == 1
+
+        await tuxweb.push(READY_FRAME)
+        await wait_until(lambda: collector.statuses)
+        assert collector.statuses[0].text == "Ready To Arm"
+    finally:
+        await _stop(task)
+
+
+async def test_a_refused_token_on_the_stream_costs_one_probe_and_still_ends_it(
+    tuxweb, session
+):
+    """The control for the test above, on the same path: a genuine refusal
+    is asked about once and then believed, and the task ends as it did
+    before the re-check existed - one stream request, one probe, no login."""
+    tuxweb.token = "c" * 64
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    stream = push.TuxedoPushStream(client, lambda s: None, lambda up: None)
+
+    await asyncio.wait_for(stream.async_run(), timeout=5)
+
+    assert stream.auth_failed is True
+    assert client.tuxweb is True
+    assert tuxweb.capability_probes == 2
+    assert tuxweb.stream_requests == 1
+    assert tuxweb.login_page_requests == 0
+    assert tuxweb.login_attempts == 0
+
+
+async def test_console_records_reach_the_display_listener_once_per_change(
+    tuxweb, session
+):
+    """The keypad LCD, end to end over the real multipart transport.
+
+    One LCD change is four parts on the wire - the id-20 record, then three
+    id -1 copies - and one reading comes out of them: the id-20 record, with
+    the first colon in its text already replaced by "-" by the panel. None
+    of the four is a partition status, and a partition frame after them is
+    still one and is still not a display."""
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    collector = Collector()
+    stream = push.TuxedoPushStream(
+        client, collector.status, lambda up: None, on_display=collector.display
+    )
+    task = asyncio.create_task(stream.async_run())
+    try:
+        await wait_until(lambda: stream.connected)
+        frames = stream.frames
+
+        await tuxweb.push_console("FAULT 03: FRONT", "DOOR OPEN")
+        await wait_until(lambda: stream.frames >= frames + 4)
+
+        assert collector.displays == [
+            push.KeypadDisplay(
+                line_1="FAULT 03- FRONT",
+                line_2="DOOR OPEN",
+                raw="0:20:2FAULT 03- FRONT|DOOR OPEN",
+            )
+        ]
+        assert collector.displays[0].text == "FAULT 03- FRONT DOOR OPEN"
+        assert collector.statuses == []
+        assert stream.connected is True
+
+        await tuxweb.push(READY_FRAME)
+        await wait_until(lambda: collector.statuses)
+        assert collector.statuses[0].text == "Ready To Arm"
+        assert len(collector.displays) == 1
+    finally:
+        await _stop(task)
+
+
+async def test_a_stream_nobody_asked_for_the_display_drops_console_records(
+    tuxweb, session, caplog
+):
+    """Every caller before the keypad sensor existed: no display callback,
+    and the four parts cost four frames and nothing else - no status, no
+    dropped connection, and no frame reported as unhandleable, which is
+    where a call on a callback that is not there would otherwise hide."""
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    collector = Collector()
+    stream = push.TuxedoPushStream(client, collector.status, lambda up: None)
+    task = asyncio.create_task(stream.async_run())
+    try:
+        await wait_until(lambda: stream.connected)
+        frames = stream.frames
+        caplog.clear()
+
+        await tuxweb.push_console("DISARMED CHIME", "Ready to Arm")
+        await wait_until(lambda: stream.frames >= frames + 4)
+
+        assert collector.statuses == []
+        assert collector.displays == []
+        assert stream.connected is True
+        assert tuxweb.stream_requests == 1
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    finally:
+        await _stop(task)
+
+
+async def test_a_console_record_in_an_unexpected_shape_is_said_at_debug(
+    tuxweb, session, caplog
+):
+    """The shape was read from the handler rather than captured, so an id-20
+    record the decoder does not take is named in the log at debug - not a
+    partition status, not a display, and not lost in silence."""
+    caplog.set_level(logging.DEBUG, logger="tuxedo_touch.push")
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    collector = Collector()
+    stream = push.TuxedoPushStream(
+        client, collector.status, lambda up: None, on_display=collector.display
+    )
+    task = asyncio.create_task(stream.async_run())
+    try:
+        await wait_until(lambda: stream.connected)
+        frames = stream.frames
+
+        await tuxweb.push(
+            b"['ud','SimpleDbgServer2ClientIntf','statusMessageText',"
+            b'["0:20:1DISARMED CHIME|Ready to Arm"]]'
+        )
+        await wait_until(lambda: stream.frames > frames)
+
+        assert collector.statuses == []
+        assert collector.displays == []
+        assert [
+            r
+            for r in caplog.records
+            if "Console record in an unexpected" in r.getMessage()
+        ]
+        assert stream.connected is True
+    finally:
+        await _stop(task)
+
+
+async def test_a_tuxweb_stream_answering_404_asks_once_and_then_stops_asking(
+    tuxweb, session
+):
+    """A 404 on the stream of a panel that declared its list a moment ago is
+    the same one question - and a tuxweb that still declares the list gets
+    the permanent answer: no stream on this firmware, stop asking."""
+    tuxweb.push_status = 404
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    stream = push.TuxedoPushStream(client, lambda s: None, lambda up: None)
+
+    await asyncio.wait_for(stream.async_run(), timeout=5)
+
+    assert stream.unsupported is True
+    assert stream.auth_failed is False
+    assert client.tuxweb is True
+    assert tuxweb.capability_probes == 2
+    assert tuxweb.stream_requests == 1
+    assert tuxweb.login_attempts == 0
+
+
 async def test_a_relay_in_front_of_tuxweb_gets_the_relay_token_alone(tuxweb, session):
     """No panel cookie exists to ride alongside the relay's token, so the
     cookie form carries the token by itself rather than the word None."""
@@ -589,6 +947,18 @@ def test_the_new_errors_sit_where_callers_expect_them():
     assert issubclass(api.TuxedoTouchTokenRejected, api.TuxedoTouchAuthError)
     assert issubclass(api.TuxedoTouchCommandNotConfirmed, api.TuxedoTouchError)
     assert not issubclass(api.TuxedoTouchCommandNotConfirmed, api.TuxedoTouchAuthError)
+
+
+def test_a_firmware_change_is_an_ordinary_failure_and_never_a_credential_verdict():
+    """A panel that stopped wanting the token said nothing about the web
+    credentials the entry also holds. As an auth error this would stop the
+    poll and ask the user for a token the panel no longer takes; as an
+    ordinary failure it is one failed read, and the retry is the stock one."""
+    assert issubclass(api.TuxedoTouchFirmwareChanged, api.TuxedoTouchError)
+    assert not issubclass(api.TuxedoTouchFirmwareChanged, api.TuxedoTouchAuthError)
+    assert not issubclass(
+        api.TuxedoTouchFirmwareChanged, api.TuxedoTouchConnectionError
+    )
 
 
 def test_the_option_key_is_distinct_from_the_relay_token():

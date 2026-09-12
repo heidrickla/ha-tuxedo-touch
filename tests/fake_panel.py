@@ -94,6 +94,44 @@ def status_frame(
     )
 
 
+def console_frames(line_1: str, line_2: str) -> list[bytes]:
+    """The FOUR parts one keypad LCD change puts on the stream, in order.
+
+    Read out of the vendor's type-20 handler, and emitted by tuxweb in the
+    same shape while it holds console mode on; the id-20 record has since
+    been seen on the live stream across an arm and a disarm
+    (docs/feature-spec-keypad-link-changedby.md, item 3), the -1 copies are
+    still the handler's reading. `bprintf("%d%s%d%s%s", session, ":", 20,
+    ":2", text)`: the session is 0 for a broadcast, which is the only kind
+    sent, and the `2` after the second colon is the constant `":2"` at
+    0x852f4, never a colour digit. Then the same text three more times as
+    command id -1.
+
+    The id-20 record is lossy: its first ":" past index 0 is replaced by "-".
+    The three -1 copies carry the text raw. No flag byte on any of the four,
+    which is what keeps them out of the partition decoder.
+    """
+    text = f"{line_1}|{line_2}"
+    broadcast = f"0:20:2{_replace_first_colon(text)}"
+    unsolicited = f"0:-1:2{text}"
+    return [_part(broadcast)] + [_part(unsolicited)] * 3
+
+
+def _replace_first_colon(text: str) -> str:
+    """The vendor's mangling of the id-20 text: the first ':' past index 0."""
+    at = text.find(":", 1)
+    return text if at < 0 else text[:at] + "-" + text[at + 1 :]
+
+
+def _part(payload: str) -> bytes:
+    """One statusMessageText part around a payload that carries no raw byte."""
+    return (
+        b"['ud','SimpleDbgServer2ClientIntf','statusMessageText',[\""
+        + payload.encode("latin-1")
+        + b'"]]'
+    )
+
+
 async def wait_until(predicate: Any, timeout: float = 10.0) -> None:
     """Wait for something a real socket has to deliver.
 
@@ -163,6 +201,15 @@ class FakePanel:
         # and nothing else, and these are how a test shows that.
         self.capability_status: int | None = None
         self.capability_body: bytes | None = None
+        # This many probes are answered by hanging up mid-request: the web
+        # server restarting under a rollback, which is exactly when the
+        # re-check runs. A verdict must not be drawn from a connection that
+        # never happened, on the re-check as on the setup probe. Each probe
+        # hung up on is still counted in capability_probes, and aiohttp
+        # retries an idempotent GET once on a dropped connection, so ONE
+        # hang-up never reaches the client at all - a test that wants the
+        # client to see a connection failure sets 2.
+        self.capability_probe_disconnects = 0
         # Reported in the capability document for people; a client must not
         # branch on either, and a test changes them to prove it does not.
         self.firmware = "tuxweb/0.1.0"
@@ -277,6 +324,15 @@ class FakePanel:
     async def push_status_text(self, text: str, armed: bool) -> None:
         await self.push(status_frame(text, armed, "2" if armed else "1"))
 
+    async def push_console(self, line_1: str, line_2: str) -> None:
+        """One keypad LCD change: the id-20 record, then its three -1 copies.
+
+        What tuxweb sends with console mode held on, and what the vendor sent
+        while someone had /console.html open; see console_frames.
+        """
+        for frame in console_frames(line_1, line_2):
+            await self.push(frame)
+
     def expire_session(self) -> None:
         """Forget the cookie, so every request with it is refused."""
         self._cookie_value = "expired"
@@ -285,6 +341,11 @@ class FakePanel:
     async def _capabilities(self, request: web.Request) -> web.Response:
         """The one endpoint that says which firmware this is. No auth either way."""
         self.capability_probes += 1
+        if self.capability_probe_disconnects:
+            self.capability_probe_disconnects -= 1
+            assert request.transport is not None
+            request.transport.close()
+            return web.Response(status=500, body=b"")
         if self.capability_status is not None:
             return web.Response(status=self.capability_status, body=b"")
         if self.capability_body is not None:

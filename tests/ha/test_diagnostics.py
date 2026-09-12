@@ -138,3 +138,26 @@ async def test_a_dead_ecp_link_is_the_reports_own_line(hass, fake_panel, panel_e
     assert report["last_update_success"] is True
     assert report["push"]["connected"] is True
     assert report["push"]["stopped"] is False
+
+
+async def test_the_keypad_display_is_reported_as_the_record_that_arrived(
+    hass, fake_panel, panel_entry
+):
+    """The console record whole, not the decoder's reading of it: a report
+    about the keypad sensor showing a line wrongly needs the line as the
+    panel spelled it. None while no record has arrived on this connection."""
+    panel_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(panel_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = panel_entry.runtime_data
+    await wait_until(lambda: coordinator.push.connected)
+
+    report = await async_get_config_entry_diagnostics(hass, panel_entry)
+    assert report["keypad_display"] is None
+
+    frames = coordinator.push.frames
+    await fake_panel.push_console("FAULT 03: FRONT", "DOOR OPEN")
+    await wait_until(lambda: coordinator.push.frames >= frames + 4)
+
+    report = await async_get_config_entry_diagnostics(hass, panel_entry)
+    assert report["keypad_display"] == "0:20:2FAULT 03- FRONT|DOOR OPEN"

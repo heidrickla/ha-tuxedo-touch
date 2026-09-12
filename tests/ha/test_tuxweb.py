@@ -380,6 +380,84 @@ async def test_a_token_refused_at_runtime_starts_reauth_without_the_lockout_flag
     assert coordinator.push.auth_failed is True
     assert fake_tuxweb.login_page_requests == 0
     assert fake_tuxweb.login_attempts == 0
+    # Each refusal was asked about exactly once before it was believed - the
+    # poll's and the stream's, after the probe at setup - and the panel still
+    # declaring its list is what makes both refusals the token's.
+    assert fake_tuxweb.capability_probes == 3
+    assert coordinator.client.tuxweb is True
+
+
+async def test_a_panel_rolled_back_to_stock_is_polled_as_stock_from_the_next_poll(
+    hass, fake_tuxweb, tuxweb_entry
+):
+    """The stale verdict. The panel goes back to stock under a running entry
+    and refuses the token-only poll with the 401 stock gives a request that
+    carries no session. Before the re-check that was a refused token for
+    ever: the reauthentication card, asking for a token the panel had
+    stopped wanting. Now it is one failed poll - no card, no lockout flag -
+    and the poll after it is the stock one: the login handshake, the cookie,
+    the signed and encrypted request. The re-check itself logged in nowhere."""
+    coordinator = await _setup(hass, tuxweb_entry)
+    assert fake_tuxweb.capability_probes == 1
+    fake_tuxweb.tuxweb = False
+
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert not coordinator.last_update_success
+    assert coordinator.client.tuxweb is False
+    assert fake_tuxweb.capability_probes == 2
+    assert fake_tuxweb.login_page_requests == 0
+    assert fake_tuxweb.login_attempts == 0
+    assert tuxweb_entry.state is ConfigEntryState.LOADED
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert not [f for f in flows if f["context"].get("source") == "reauth"]
+    assert OPT_CREDENTIALS_REJECTED not in tuxweb_entry.options
+
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert coordinator.last_update_success
+    assert fake_tuxweb.logins == 1
+    assert "Authorization" not in fake_tuxweb.last_api_headers
+    assert "authtoken" in fake_tuxweb.last_api_headers
+    assert fake_tuxweb.last_api_headers["Cookie"] == fake_tuxweb.cookie
+    assert fake_tuxweb.capability_probes == 2, "a stock client is not re-asked"
+    assert _state(hass).state == "disarmed"
+    assert _state(hass).attributes["tuxedo_source"] == "poll"
+
+
+async def test_a_stream_refused_after_a_rollback_comes_back_on_the_stock_session(
+    hass, fake_tuxweb, tuxweb_entry
+):
+    """The same rollback seen by the stream first. Stock redirects the
+    token-only stream request to its login page, which on tuxweb is the
+    token being refused and the end of the task for good. The re-check
+    finds no list, so the drop is an ordinary reconnect, and the next
+    connection opens on a session cookie from the stock path's own login -
+    the stream keeps its primary source, and no card comes up."""
+    coordinator = await _setup(hass, tuxweb_entry)
+    fake_tuxweb.tuxweb = False
+    # A reconnect would otherwise wait out the five-second floor first.
+    coordinator.push.reconnect_wait = 0.01
+    fake_tuxweb.drop_stream()
+    await wait_until(lambda: not coordinator.push.connected)
+    await wait_until(lambda: coordinator.push.connected)
+
+    assert coordinator.push.auth_failed is False
+    assert _stream_tasks()
+    assert coordinator.client.tuxweb is False
+    assert fake_tuxweb.capability_probes == 2
+    assert "Authorization" not in fake_tuxweb.last_push_headers
+    assert fake_tuxweb.last_push_headers["Cookie"] == fake_tuxweb.cookie
+    assert fake_tuxweb.logins == 1
+    assert fake_tuxweb.login_attempts == 1
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert not [f for f in flows if f["context"].get("source") == "reauth"]
+
+    await fake_tuxweb.push_status_text("Armed Stay", armed=True)
+    await wait_until(lambda: _state(hass).state == "armed_home")
+    assert _state(hass).attributes["tuxedo_source"] == "stream"
 
 
 # ---------------------------------------------------------- config flow

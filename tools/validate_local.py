@@ -22,7 +22,10 @@ from typing import Any
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 DOMAIN = "tuxedo_touch"
 COMP = os.path.join(ROOT, "custom_components", DOMAIN)
-PLATFORMS = ("alarm_control_panel",)
+PLATFORMS = ("alarm_control_panel", "binary_sensor", "sensor")
+# Where the device info every platform shares is built. Checked alongside the
+# platforms wherever a rule is about what an entity carries.
+COMMON_ENTITY_MODULE = "entity"
 
 # In-repo brand images are served by Home Assistant's brands component from
 # this release on; below it the integration has no icon at all.
@@ -357,8 +360,16 @@ def main() -> int:
     # ---------------------------------------------------- entity translations
     # Every translation key an entity uses needs a name, and every name needs
     # an entity using it. Both forms are matched: the class attribute and the
-    # EntityDescription keyword. icons.json is optional for this domain (the
-    # alarm panel uses the frontend's state icons) but is checked if present.
+    # EntityDescription keyword.
+    #
+    # icons.json is checked the other way round: an icon must belong to an
+    # entity that exists, but an entity need not declare an icon, because the
+    # alarm panel takes its domain's state icons and a binary sensor with a
+    # device class takes that class's. Which entities are covered that way is
+    # not knowable from here, so the rule that IS checkable - no icon for an
+    # entity that does not exist - is the one checked, and the platforms
+    # below are also held to a translation key per platform file, so a key
+    # with neither a name nor an icon still fails on the name.
     icons_path = os.path.join(COMP, "icons.json")
     icons = read_json(icons_path) if os.path.isfile(icons_path) else None
     key_re = re.compile(r'(?:_attr_translation_key\s*=|\btranslation_key=)\s*"([^"]+)"')
@@ -375,9 +386,15 @@ def main() -> int:
         if icons is not None:
             declared_icons = set(icons.get("entity", {}).get(platform, {}))
             check(
-                used == declared_icons,
-                f"{platform}: icons {sorted(declared_icons ^ used)} out of step",
+                declared_icons <= used,
+                f"{platform}: icons {sorted(declared_icons - used)} name no entity",
             )
+    if icons is not None:
+        unknown_platforms = set(icons.get("entity", {})) - set(PLATFORMS)
+        check(
+            not unknown_platforms,
+            f"icons.json names platforms {sorted(unknown_platforms)} that do not exist",
+        )
     # A name with a placeholder needs the entity to supply it.
     for platform, entries in strings.get("entity", {}).items():
         source = read(COMP, f"{platform}.py")
@@ -486,7 +503,10 @@ def main() -> int:
         # registered_devices matches against the device registry, so a device
         # without the MAC as a connection is never discovered at all.
         check(
-            any("CONNECTION_NETWORK_MAC" in read(COMP, f"{p}.py") for p in PLATFORMS),
+            any(
+                "CONNECTION_NETWORK_MAC" in read(COMP, f"{module}.py")
+                for module in (COMMON_ENTITY_MODULE, *PLATFORMS)
+            ),
             "dhcp registered_devices needs the panel's MAC in device info as a "
             "CONNECTION_NETWORK_MAC connection",
         )

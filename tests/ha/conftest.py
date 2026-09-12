@@ -1,9 +1,12 @@
 """Fixtures for the Home Assistant layer tests.
 
-These need Home Assistant, which needs Python 3.14; given that, they run
-anywhere, Windows included. The conftest lives in its own directory so its
-autouse fixture does not attach itself to the pure-logic suite one level up,
-which loads api.py by path and needs no Home Assistant.
+These need Home Assistant, which needs Python 3.14 and a POSIX host: the
+pytest plugin imports homeassistant.runner, which imports fcntl, so on
+Windows collection fails before a test runs. They run in the GitHub Tests
+workflow and on the Linux build VM (docs/TEST-ENVIRONMENT.md). The conftest
+lives in its own directory so its autouse fixture does not attach itself to
+the pure-logic suite one level up, which loads api.py by path and needs no
+Home Assistant.
 """
 
 import asyncio

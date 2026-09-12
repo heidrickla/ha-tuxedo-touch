@@ -81,6 +81,15 @@ async def async_get_config_entry_diagnostics(
         "status_source": status.source if status else None,
         "panel_status": status.status if status else None,
         "panel_color": status.color if status else None,
+        # The keypad LCD as the stream last carried it, the raw record and
+        # all: what the keypad display sensor is showing, or None while no
+        # console record has arrived on this connection. Panel words, not
+        # user data - a faulted zone's descriptor is the most personal thing
+        # a line can hold, and it is the thing a report about the sensor
+        # reading wrongly needs to show.
+        "keypad_display": (
+            coordinator.keypad_display.raw if coordinator.keypad_display else None
+        ),
         # The primary source's own account of itself. `unsupported` is the
         # firmware having answered 404 - permanent, and the whole reason an
         # install would be back on the poll alone. `auth_failed` is the other
