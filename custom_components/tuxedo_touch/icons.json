@@ -1,0 +1,9 @@
+{
+  "entity": {
+    "sensor": {
+      "keypad_display": {
+        "default": "mdi:message-text-outline"
+      }
+    }
+  }
+}

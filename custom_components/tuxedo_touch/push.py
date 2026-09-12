@@ -20,6 +20,14 @@ The reply is `multipart/x-mixed-replace; boundary="EH912ZZ"`, one part per
 event, and it MUST be decoded latin-1 - the state flag is a raw 0xFE/0xFF
 byte and utf-8 replaces it with U+FFFD.
 
+Two kinds of record are read off it. Partition status (decode_status_frame)
+is the alarm state. Console records (decode_console_frame) are the panel's
+own two-line keypad LCD, sent while console mode is on - the one place the
+panel says which zone is faulted BY NAME, and the trouble, bypass and
+AC-loss text nothing else carries. Each has its own decoder, on purpose:
+the two shapes share a command id, and the guard that tells them apart is
+described at the console decoder.
+
 Wire format and the live capture behind it:
 `iot-protocol-tools/TUXEDO-HA-ENRICHMENT.md`, section "The push frame format,
 decoded byte-exact", with the reference reader in `tuxedo_push.py`; the
@@ -86,6 +94,31 @@ CMD_UNSOLICITED = -1
 # Only these two carry a partition's armed state; 504 and 18 are registration
 # and housekeeping, and decode to nothing because they carry no flag byte.
 STATUS_CMDS = frozenset({CMD_PARTITION_STATUS, CMD_UNSOLICITED})
+# SERV_CONSOLE_MSG_BROADCAST: the panel's own keypad LCD, two lines, sent
+# while console mode is on. Read out of the vendor's type-20 handler, and the
+# id-20 record has since been seen on the live stream across an arm and a
+# disarm (docs/feature-spec-keypad-link-changedby.md, item 3); tuxweb emits
+# the same shape:
+#
+#     0:20:2<line 1>|<line 2>
+#     | |  |
+#     | |  +-- the literal ":2", a constant, then the two lines pipe-separated
+#     | +----- 20
+#     +------- the reply session; 0 is a broadcast, and only those are sent
+#
+# bprintf("%d%s%d%s%s", session, ":", 20, ":2", text) at 0x85304: the `2` is
+# the second separator's own second character (the constant ":2" at 0x852f4)
+# and never a colour digit, so a decoder may key on it. Each LCD change is
+# FOUR records - this one, then three id -1 copies of the same text - and
+# the id-20 record is the lossy one: its first ":" past index 0 has been
+# replaced by "-", while the copies carry the raw text. The id-20 record is
+# what is decoded, because one record per change is its own deduplication;
+# the copies are left alone, and they are left alone by the partition path
+# too, which is a fact the tests pin rather than a design (see
+# decode_console_frame).
+CMD_CONSOLE = 20
+CONSOLE_SEPARATOR = "2"
+CONSOLE_LINE_SEPARATOR = "|"
 
 # What field 2 of a command-21 payload carries when the Tuxedo has lost the
 # ECP link to the VISTA panel behind it. Read out of the producer,
@@ -238,6 +271,70 @@ def _status_code_of(field: str) -> int | None:
         return None
 
 
+@dataclass(frozen=True)
+class KeypadDisplay:
+    """The panel's two-line keypad LCD, as one console record carried it."""
+
+    line_1: str
+    line_2: str
+    raw: str
+
+    @property
+    def text(self) -> str:
+        """Both lines as one, whitespace collapsed: the sensor's state.
+
+        The LCD pads its lines to their width, so the join is on whitespace
+        runs rather than on the lines as sent; the lines themselves keep
+        their own spelling for the attributes.
+        """
+        return " ".join(f"{self.line_1} {self.line_2}".split())
+
+
+def decode_console_frame(payload: str) -> KeypadDisplay | None:
+    """Decode a console record, or None if the payload is not one.
+
+    A SECOND decoder, beside decode_status_frame rather than inside it. The
+    partition decoder locates its field by the raw 0xFE/0xFF flag byte, and
+    that guard is what has kept console text out of the partition entity
+    all along: a console record carries no flag byte, so the id -1 copies
+    the panel sends after each id-20 record decode to nothing there even
+    though -1 is one of the two ids the partition path ingests. Widening that
+    guard to admit console text would put the LCD's words where the alarm
+    state belongs, so this reads the one shape it is for and nothing else.
+
+    Only the id-20 record decodes. The three id -1 copies carry the same
+    text, raw where this one has its first ":" replaced by "-", and taking
+    them instead would publish every line three times or need dedup state
+    that can drift; one record per change is its own deduplication. What
+    the id-20 record loses is one colon in a sixteen-character line.
+
+    Split at most twice: the third field is everything after the second
+    colon, so a colon the vendor did not replace - a second one in the text
+    - stays in the line rather than starting a field. The literal "2" is
+    keyed on as the constant it is; a record without it is not this shape
+    and decodes to None, which _handle_frame reports at debug rather than
+    losing silently.
+    """
+    if _command_id_of(payload) != CMD_CONSOLE:
+        return None
+    body = payload.split(":", 2)[2]
+    if not body.startswith(CONSOLE_SEPARATOR):
+        return None
+    line_1, _, line_2 = body[len(CONSOLE_SEPARATOR) :].partition(CONSOLE_LINE_SEPARATOR)
+    return KeypadDisplay(line_1=line_1.strip(), line_2=line_2.strip(), raw=payload)
+
+
+def _command_id_of(payload: str) -> int | None:
+    """Field 1 as the command id, or None for a payload with no such field."""
+    fields = payload.split(":", 2)
+    if len(fields) < 3:
+        return None
+    try:
+        return int(fields[1])
+    except ValueError:
+        return None
+
+
 def next_backoff(previous: float) -> float:
     """Double the wait before the next reconnect, up to the ceiling."""
     return min(previous * 2, PUSH_BACKOFF_MAX)
@@ -339,12 +436,17 @@ class TuxedoPushStream:
         client: TuxedoTouchClient,
         on_status: Callable[[PushStatus], None],
         on_connection_change: Callable[[bool], None],
+        on_display: Callable[[KeypadDisplay], None] | None = None,
         push_url: str | None = None,
         push_token: str | None = None,
     ) -> None:
         self._client = client
         self._on_status = on_status
         self._on_connection_change = on_connection_change
+        # The keypad LCD, for whoever asked. None drops console records on
+        # the floor, which is what every caller before the keypad sensor
+        # existed did without knowing it.
+        self._on_display = on_display
         # Where the stream comes from, if not the panel. Defaults to None so an
         # existing entry behaves exactly as before.
         self._push_url = push_url or None
@@ -620,12 +722,32 @@ class TuxedoPushStream:
                     # renew, so this is terminal for the same reason a
                     # refused password is, and it must never reach the
                     # re-login the expiry handler performs.
+                    #
+                    # Unless the panel has stopped being tuxweb. Stock answers
+                    # a stream request carrying no session with exactly these
+                    # statuses, so a panel rolled back under a running entry
+                    # would otherwise end its stream for good with a warning
+                    # blaming the token. The client asks once: if the list is
+                    # still declared it returns and the refusal is raised
+                    # below; if not it raises TuxedoTouchFirmwareChanged with
+                    # itself in stock mode, which lands in async_run's
+                    # ordinary reconnect, and the next connection opens on a
+                    # session cookie. That reconnect's login is the stock
+                    # path's own, on its own one-login budget.
+                    await self._client.async_recheck_capabilities(resp.status)
                     raise TuxedoTouchTokenRejected(
                         f"tuxweb refused the bearer token on the push stream: "
                         f"HTTP {resp.status}"
                     )
                 raise PushSessionExpired(f"push stream refused: HTTP {resp.status}")
             if resp.status == 404:
+                if self._client.tuxweb:
+                    # A tuxweb that declared its list a moment ago and now
+                    # has no stream is either not tuxweb any more - the same
+                    # one question as above, and the same reconnect on stock
+                    # if so - or a firmware with no stream, which is the
+                    # permanent answer below.
+                    await self._client.async_recheck_capabilities(resp.status)
                 raise PushStreamUnsupported("no push endpoint on this firmware")
             if resp.status != 200:
                 raise TuxedoTouchError(f"push stream returned HTTP {resp.status}")
@@ -694,9 +816,22 @@ class TuxedoPushStream:
             return
         if (payload := STATUS_TEXT_RE.search(frame)) is None:
             return
-        status = decode_status_frame(payload.group(1))
+        text = payload.group(1)
+        if (display := decode_console_frame(text)) is not None:
+            if self._on_display is not None:
+                self._on_display(display)
+            return
+        status = decode_status_frame(text)
         if status is None or status.cmd not in STATUS_CMDS:
-            _LOGGER.debug("Push frame carries no partition status: %r", frame)
+            if _command_id_of(text) == CMD_CONSOLE:
+                # An id-20 record in a shape the console decoder did not
+                # take. Said at debug rather than dropped in silence, because
+                # the shape was read from the handler rather than captured,
+                # and a line lost here is a line the keypad sensor never
+                # shows.
+                _LOGGER.debug("Console record in an unexpected shape: %r", frame)
+            else:
+                _LOGGER.debug("Push frame carries no partition status: %r", frame)
             return
         self._on_status(status)
 

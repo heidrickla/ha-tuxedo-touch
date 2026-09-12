@@ -23,7 +23,12 @@ rules:
     comment: |
       Brand images ship in-repo at custom_components/tuxedo_touch/brand/,
       which Home Assistant serves from 2026.3 on; hacs.json floors there.
-  common-modules: done
+  common-modules:
+    status: done
+    comment: |
+      coordinator.py holds the coordinator and entity.py the base every
+      entity shares - the device info, the entry, has_entity_name - so the
+      three platforms differ only in what they read off the coordinator.
   config-flow-test-coverage:
     status: done
     comment: |
@@ -67,19 +72,22 @@ rules:
   entity-event-setup:
     status: done
     comment: |
-      The entity is a CoordinatorEntity, which subscribes to the coordinator
-      in async_added_to_hass and unsubscribes on removal. Nothing else is
-      subscribed to: the push stream belongs to the coordinator, which runs
-      it as a background task on the config entry and cancels it on unload,
-      so no entity holds a subscription of its own.
+      Every entity is a CoordinatorEntity (entity.py), which subscribes to
+      the coordinator in async_added_to_hass and unsubscribes on removal.
+      Nothing else is subscribed to: the push stream belongs to the
+      coordinator, which runs it as a background task on the config entry
+      and cancels it on unload, and the keypad display and the ECP link are
+      read off the coordinator the stream feeds, so no entity holds a
+      subscription of its own.
   entity-unique-id: done
   has-entity-name:
     status: done
     comment: |
-      The entity is named "Partition N" under the device name. Two partition
-      entries on one panel are two devices with the same name (one device per
-      config entry since HA 2026.8), so the partition in the entity name is
-      what tells the two alarms apart.
+      The alarm panel is named "Partition N" under the device name. Two
+      partition entries on one panel are two devices with the same name (one
+      device per config entry since HA 2026.8), so the partition in the
+      entity name is what tells the two alarms apart. The keypad display and
+      the ECP link are named for what they are, under the same device.
   runtime-data: done
   test-before-configure:
     status: done
@@ -156,6 +164,18 @@ rules:
       Both sources answer and neither is reading the alarm, so the entity is
       unavailable for as long as that is true rather than holding an armed or
       disarmed reading the panel can no longer see.
+      The keypad display and the ECP link have a rule of their own
+      (TuxedoTouchCoordinator.stream_observing), because the poll carries
+      neither: they are available while the stream is connected - and, when
+      the stream is a relay's socket rather than the panel's, while the
+      panel's poll is answering too, for the reason above. Not
+      panel_available, twice over: a working poll says nothing about a
+      display text the stream stopped carrying, and panel_available goes
+      false on the dead ECP link, which for the sensor whose purpose is to
+      report that link would be going unavailable at the one moment it has
+      something to say. A stream drop also forgets the last display, so the
+      sensor reads unavailable and then unknown, never a line from before
+      the drop.
   integration-owner: done
   log-when-unavailable:
     status: done
@@ -174,7 +194,16 @@ rules:
       doomed handshake. A dead ECP link gets one warning line naming the bus
       to check and one info line when it returns, not one per frame - the
       panel repeats that frame every 33 s for as long as the link is down.
-  parallel-updates: done
+      A panel found to have gone back to stock firmware gets one warning
+      naming the change and what happens next; the stock contract's own
+      lines take over from there.
+  parallel-updates:
+    status: done
+    comment: |
+      The alarm panel serialises its service calls at 1, because the panel is
+      a fragile embedded server with per-session crypto state. The keypad
+      display and the ECP link are read-only and fed by the coordinator -
+      nothing in either platform calls the panel - so they declare 0.
   reauthentication-flow:
     status: done
     comment: |
@@ -189,6 +218,11 @@ rules:
       says the accounts may be locked rather than the password wrong, which
       needs different instructions. A successful reauth clears the flag and
       the issue, and the reload that follows is the entry coming back.
+      A refused tuxweb token raises the card too, naming the token, and
+      writes no flag - tuxweb counts nothing. But not before the panel has
+      been asked once more whether it still runs tuxweb: a panel rolled back
+      to stock refuses a token-only request with the same 401, and that is
+      a firmware change to fall back from, not a credential to ask for.
   test-coverage:
     status: done
     comment: |
@@ -216,6 +250,22 @@ rules:
       payloads from the live capture are asserted byte for byte with utf-8 as
       the positive control. tools/validate_local.py refuses a workflow that
       drops the gate.
+      tests/test_tuxweb.py and tests/ha/test_tuxweb.py hold the tuxweb
+      contract to the same fake in its other mode, with the stock control
+      beside every tuxweb assertion, and the firmware re-check to what the
+      panel saw: one probe per refusal, a refusal still declaring the list
+      raised as the token, a panel back on stock spoken to as stock from the
+      next poll and the next stream connection with no login spent by the
+      re-check itself, a stock client never re-asked, and a re-check that
+      cannot connect raised rather than read as a verdict. The console
+      decoder is pinned in tests/test_push_frames.py, including that no
+      console record - the id-20 one or its id -1 copies - produces a
+      partition status; tests/ha/test_sensor.py and
+      tests/ha/test_binary_sensor.py drive the two entities over the fake's
+      console records and dead-link frames: state, attributes, the
+      255-character guard, availability following the stream, the relay
+      clause, and the link entity absent on stock and on a tuxweb that does
+      not declare it.
 
   # Gold
   devices:
@@ -240,6 +290,9 @@ rules:
       fallback poll's interval and last result. The two sources fail in
       different ways, so a report that named neither could not distinguish a
       stream that never came up from a panel that is not answering at all.
+      Since 0.5.0 it names the contract the entry is on and what the panel
+      declared, and it carries ecp_link_down on every firmware and the
+      console record the keypad display is showing, as it arrived.
   discovery:
     status: done
     comment: |
@@ -263,7 +316,7 @@ rules:
       manifest.json also asks for `{"registered_devices": true}`, so a panel
       whose lease hostname was changed still starts a flow: the entry's
       device carries the panel's MAC as a CONNECTION_NETWORK_MAC connection
-      (alarm_control_panel.py). async_step_dhcp corrects the stored host on
+      (entity.py). async_step_dhcp corrects the stored host on
       every entry carrying that MAC - one per partition - and reloads them,
       and an entry that was added by hand, and so was keyed on its address,
       adopts the MAC from the lease. tests/ha/test_config_flow.py drives the
@@ -288,18 +341,34 @@ rules:
     status: done
     comment: |
       The alarm panel is the primary entity, for which the default (no
-      category) is the correct assignment.
+      category) is the correct assignment. The keypad display and the ECP
+      link are DIAGNOSTIC: the panel's own words and the health of its link
+      to the alarm, about the device rather than the alarm state.
   entity-device-class:
     status: done
-    comment: alarm_control_panel has no device classes, so there is nothing to assign.
+    comment: |
+      The ECP link is a PROBLEM binary sensor - on is the link being down.
+      alarm_control_panel has no device classes, and the keypad display is
+      free text, which no sensor device class describes, so those two have
+      nothing to assign.
   entity-disabled-by-default:
     status: exempt
-    comment: One entity, and it is the reason to install this.
+    comment: |
+      Three entities and each is a reason to install this. The alarm panel
+      is the integration; the ECP link is the failure that was invisible
+      from Home Assistant, now one automation from a notification; the
+      keypad display is the only place the panel names a faulted zone. The
+      display repaints every ~2 s through an exit delay, which is bounded and
+      documented, and a recorder exclude is the tool for that - not an entity
+      that is off until somebody finds it.
   entity-translations:
     status: done
     comment: |
-      The entity name is the translation key `partition` with the partition
-      number as a placeholder.
+      The alarm panel's name is the translation key `partition` with the
+      partition number as a placeholder; the keypad display and the ECP
+      link are `keypad_display` and `ecp_link` under their platforms.
+      tools/validate_local.py holds every platform's keys and strings.json
+      to each other.
   exception-translations:
     status: done
     comment: |
@@ -312,8 +381,11 @@ rules:
   icon-translations:
     status: done
     comment: |
-      No icons.json: alarm_control_panel has no device class, and the
-      domain's default state icons are the right ones for an alarm panel.
+      icons.json carries the keypad display's icon, the one entity with
+      neither a device class nor a domain that draws for it. The alarm panel
+      takes its domain's state icons, and the ECP link takes the problem
+      class's; tools/validate_local.py refuses an icon for an entity that
+      does not exist.
   reconfiguration-flow:
     status: done
     comment: |

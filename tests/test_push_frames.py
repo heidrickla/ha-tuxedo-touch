@@ -8,6 +8,7 @@ that makes the latin-1 decoding load-bearing.
 
 import pytest
 
+from tests.fake_panel import console_frames
 from tests.no_ha import load
 
 push = load("push")
@@ -295,3 +296,134 @@ def test_a_frame_without_a_flag_byte_carries_no_status(label, raw):
     state belongs.
     """
     assert push.decode_status_frame(raw.decode("latin-1")) is None, label
+
+
+# ---------------------------------------------------------- console records
+
+# The keypad LCD, as the vendor's type-20 handler spells it and tuxweb repeats
+# it: `0:20:2<line 1>|<line 2>`, then the same text three more times as
+# command id -1. The id-20 shape was read out of the disassembly and has since
+# been seen on the live stream - the two lines below are from a capture across
+# an arm STAY and a disarm (docs/feature-spec-keypad-link-changedby.md, item
+# 3) - while the three id -1 copies are still the handler's reading. What is
+# pinned here is the decoder's reading of that shape, and tests/fake_panel.py
+# emits the same one. The day a capture disagrees, the two change together.
+CONSOLE_RECORD = "0:20:2****DISARMED****|  Ready to Arm  "
+CONSOLE_COPY = "0:-1:2****DISARMED****|  Ready to Arm  "
+
+
+def test_a_console_record_decodes_to_the_two_lcd_lines():
+    """Field 2 is the literal "2", then line 1, a pipe, line 2. The LCD pads
+    each line to its width, so the lines come back stripped, and the record
+    is kept whole beside them."""
+    display = push.decode_console_frame(CONSOLE_RECORD)
+    assert display is not None
+    assert display.line_1 == "****DISARMED****"
+    assert display.line_2 == "Ready to Arm"
+    assert display.raw == CONSOLE_RECORD
+    assert display.text == "****DISARMED**** Ready to Arm"
+
+
+def test_the_joined_text_collapses_whitespace_and_the_lines_keep_theirs():
+    """The state is the two lines as one, for reading and for matching, so
+    runs of spaces collapse to one. The lines are the panel's own spelling:
+    the double space the captured exit-delay line carries is sent as is and
+    stays in the attribute."""
+    display = push.decode_console_frame("0:20:2ARMED ***STAY***|May Exit Now  60")
+    assert display is not None
+    assert display.line_1 == "ARMED ***STAY***"
+    assert display.line_2 == "May Exit Now  60"
+    assert display.text == "ARMED ***STAY*** May Exit Now 60"
+
+
+def test_a_colon_inside_the_text_stays_in_its_line():
+    """Split at most twice, so the third field is everything after the second
+    colon. The panel replaces the FIRST colon in an id-20 record's text with
+    "-", but a second one is sent as it is, and it belongs to the line rather
+    than starting a field."""
+    display = push.decode_console_frame("0:20:2TIME 12-30|AND 12:45")
+    assert display is not None
+    assert display.line_1 == "TIME 12-30"
+    assert display.line_2 == "AND 12:45"
+
+
+def test_a_record_with_one_line_reads_the_other_as_empty():
+    display = push.decode_console_frame("0:20:2SYSTEM LO BAT")
+    assert display is not None
+    assert display.line_1 == "SYSTEM LO BAT"
+    assert display.line_2 == ""
+    assert display.text == "SYSTEM LO BAT"
+
+
+def test_the_unsolicited_copies_of_a_console_record_are_not_decoded():
+    """Each LCD change is four records: one id 20, then three id -1 copies of
+    the same text. One record per change is its own deduplication; decoding
+    the copies too would publish every line three times."""
+    assert push.decode_console_frame(CONSOLE_COPY) is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "0:20:1FAULT 03|FRONT DOOR",  # id 20 without the literal "2"
+        "0:20:",  # id 20 with nothing after the second colon
+        "0:20",  # too short to have a body at all
+        "0:notanumber:2FAULT 03|FRONT DOOR",
+        "",
+        b"0:21:1:fe:\xfe1Ready To Arm:2".decode("latin-1"),  # a partition status
+        b"0:-1:\xfe1Ready To Arm".decode("latin-1"),  # the id -1 status shape
+        "0:504:1:P1  H:1:0:3:3",  # registration data
+    ],
+)
+def test_a_payload_that_is_not_a_console_record_decodes_to_no_display(payload):
+    """The other direction of the guard: a partition frame must never come
+    out of this decoder as keypad text, and an id-20 record in a shape the
+    handler was not read to produce is nothing rather than a guess."""
+    assert push.decode_console_frame(payload) is None
+
+
+def test_the_fake_panel_spells_a_console_change_as_the_handler_does():
+    """Four parts per change, in order: the id-20 record with the first colon
+    past index 0 replaced by "-", then three id -1 copies of the raw text.
+
+    Pinned as the exact payloads because the end-to-end tests drive this
+    shape through a real socket, and because it is the shape the decoder
+    was written for: change the fake and the decoder together, or not at all.
+    """
+    payloads = [
+        push.STATUS_TEXT_RE.search(frame.decode("latin-1")).group(1)
+        for frame in console_frames("FAULT 03: FRONT", "DOOR 12:30")
+    ]
+    assert payloads == [
+        "0:20:2FAULT 03- FRONT|DOOR 12:30",
+        "0:-1:2FAULT 03: FRONT|DOOR 12:30",
+        "0:-1:2FAULT 03: FRONT|DOOR 12:30",
+        "0:-1:2FAULT 03: FRONT|DOOR 12:30",
+    ]
+    # The mangled colon is the one the id-20 record loses; the second colon,
+    # in the other line, survives into the reading.
+    display = push.decode_console_frame(payloads[0])
+    assert display is not None
+    assert display.line_1 == "FAULT 03- FRONT"
+    assert display.line_2 == "DOOR 12:30"
+    assert [push.decode_console_frame(copy) for copy in payloads[1:]] == [None] * 3
+
+
+@pytest.mark.parametrize(
+    "frame",
+    console_frames("FAULT 03: FRONT", "DOOR OPEN"),
+    ids=["id 20 record", "id -1 copy 1", "id -1 copy 2", "id -1 copy 3"],
+)
+def test_a_console_record_never_produces_a_partition_status(frame):
+    """The guard that keeps the LCD out of the alarm entity, pinned.
+
+    The id -1 copies share their command id with the unsolicited partition
+    record, which the partition path ingests. What keeps them out is the raw
+    0xFE/0xFF flag byte the partition decoder locates its display field by:
+    a console record carries none, so every one of the four decodes to
+    nothing there. That guard was written to find the field, not to exclude
+    console text, so this pins the behaviour rather than a design - loosen it
+    and the panel's words land where the alarm state belongs.
+    """
+    payload = push.STATUS_TEXT_RE.search(frame.decode("latin-1")).group(1)
+    assert push.decode_status_frame(payload) is None

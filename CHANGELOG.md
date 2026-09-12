@@ -4,6 +4,78 @@ Notable changes to this integration, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version
 numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [Unreleased]
+
+### Added
+
+- **The panel's keypad display, as a `sensor`.** The stream carries the
+  panel's own two-line LCD while console mode is on - the one place the panel
+  says which zone is faulted **by name**, and the `Check`, bypass, trouble and
+  AC-loss text nothing else exposes. `sensor.honeywell_tuxedo_touch_keypad_display`
+  shows the two lines joined with a single space, whitespace collapsed, with
+  `line_1`, `line_2` and the record as it arrived (`raw`) as attributes. A
+  state longer than Home Assistant's 255-character limit is cut rather than
+  dropped, with the full text still in the attributes. Each LCD change reaches
+  the stream as four records - one with command id 20, then three copies with
+  id -1 - and only the id-20 record is decoded: one record per change is its
+  own deduplication, at the cost of the first colon in its text, which the
+  panel itself replaces with `-` before sending. The copies are left alone,
+  and they still cannot reach the alarm entity, whose decoder keys on a flag
+  byte no console record carries. A diagnostic entity; unavailable whenever
+  the stream is down, because the text has no other source and a line from
+  before a drop is a line nothing is vouching for. On stock firmware the panel
+  sends console records only while someone has its `/console.html` page open,
+  so there the sensor mostly reads `unknown`; tuxweb holds console mode on.
+  Two things measured on a live arm and disarm to know about: during an exit
+  delay the LCD repaints every ~2 s (`May Exit Now  60`, then 58, 56 ...), so
+  the sensor changes state at that rate for the length of the delay - normal
+  and bounded, and if the recorder churn bothers you the answer is a recorder
+  `exclude`, not a slower sensor; and the LCD's countdown is a 60 s "exit
+  now" window while the status frame counts the whole exit delay, so the two
+  disagree throughout arming by design. `arming_seconds_remaining` on the
+  alarm entity is the countdown; this sensor is the panel's words.
+- **The ECP link, as a `problem` binary sensor.** The Tuxedo losing its link
+  to the VISTA behind it has been visible only in a diagnostics download since
+  0.4.2. `binary_sensor.honeywell_tuxedo_touch_ecp_link` is `on` for as long
+  as the panel says it cannot see the alarm, and is the entity an automation
+  can notify on - an unavailable alarm entity is not. A diagnostic entity,
+  unavailable while the stream is down (on a relay-fed entry, while the
+  panel's own poll is failing too), since the stream is the only observer of
+  the link. **Created only on tuxweb**, which declares `panel_link_state`: the
+  same `-1` marker does arrive on stock, as a side effect of the vendor's
+  producer, but nothing on stock promises it, and a problem sensor reading
+  `off` because a promise was never made looks exactly like one reading `off`
+  because the link is fine. The diagnostics download still reports
+  `ecp_link_down` on every firmware.
+- The diagnostics download reports `keypad_display`: the console record the
+  sensor is showing, as it arrived.
+
+### Fixed
+
+- **A panel rolled back to stock firmware under a running entry is talked to
+  as stock, not as tuxweb for ever.** The firmware verdict from setup was
+  cached for the life of the entry, so a panel returned to stock while Home
+  Assistant ran went on receiving the bearer token, and its refusals - stock
+  answers a request carrying no session with the same 401 tuxweb uses for a
+  bad token - were surfaced as a token the user should re-enter. A refusal
+  that is consistent with tuxweb no longer being there - a 401 on the token,
+  the stream being redirected to a login page, or a tuxweb path answering
+  404, on the poll, a command or the stream - is now asked about once more
+  before it is believed: the same `GetCapabilities` GET as the setup probe,
+  under the same rules - no session, no token, no login, and a connection
+  failure raised rather than read as an answer. A panel still
+  declaring its capability list makes the refusal real, and it is raised
+  exactly as before. A panel declaring none drops the entry to the stock
+  contract from its next request, with one warning naming the change and no
+  re-authentication card, since the panel said nothing about the web
+  credentials the entry also holds. One re-check per refusal and never a retry
+  of the refused request, so a panel genuinely refusing a bad token cannot put
+  the integration in a probe loop; a stock entry is never re-asked, because a
+  stock 401 is a session to renew, and a panel moving **to** tuxweb still
+  takes a reload. Stock remains the default: a positive detection is the only
+  thing that leaves it, and a detection that has stopped being true no longer
+  persists.
+
 ## [0.5.0] - 2026-09-11
 
 ### Added

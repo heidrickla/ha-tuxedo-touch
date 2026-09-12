@@ -14,16 +14,12 @@ from homeassistant.components.alarm_control_panel.const import (
 from homeassistant.const import CONF_CODE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers.device_registry import (
-    CONNECTION_NETWORK_MAC,
-    DeviceInfo,
-)
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import TuxedoStatus, TuxedoTouchError
-from .const import CONF_MAC, COUNTDOWN_RE, DOMAIN, STATUS_STATES
+from .const import COUNTDOWN_RE, DOMAIN, STATUS_STATES
 from .coordinator import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
+from .entity import TuxedoTouchEntity
 
 # The panel is a fragile embedded web server with per-session crypto state;
 # serialize entity service calls so concurrent arm/disarm from automations
@@ -80,12 +76,9 @@ async def async_setup_entry(
     async_add_entities([TuxedoAlarmPanel(entry.runtime_data, entry)])
 
 
-class TuxedoAlarmPanel(
-    CoordinatorEntity[TuxedoTouchCoordinator], AlarmControlPanelEntity
-):
+class TuxedoAlarmPanel(TuxedoTouchEntity, AlarmControlPanelEntity):
     """Represents one Tuxedo Touch partition."""
 
-    _attr_has_entity_name = True
     # Named after the partition, not the device: two partition entries on one
     # panel are two devices with the same name, and the entities would
     # otherwise be identical rows apart from a numeric suffix.
@@ -99,8 +92,7 @@ class TuxedoAlarmPanel(
     def __init__(
         self, coordinator: TuxedoTouchCoordinator, entry: TuxedoTouchConfigEntry
     ) -> None:
-        super().__init__(coordinator)
-        self._entry = entry
+        super().__init__(coordinator, entry)
         # No partition suffix: the entry's OWN unique id already carries the
         # partition, and a partition change is a reconfigure of the same entry
         # - a suffix here orphaned the registry row on every such change.
@@ -112,18 +104,6 @@ class TuxedoAlarmPanel(
         stored_code = bool(entry.data.get(CONF_CODE))
         self._attr_code_arm_required = not stored_code
         self._attr_code_format = None if stored_code else CodeFormat.NUMBER
-        mac = entry.data.get(CONF_MAC)
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            # The MAC records which physical panel this is. Since HA 2026.8 a
-            # device belongs to one config entry, so a second partition entry
-            # gets its own device carrying the same connection, not a merge.
-            connections={(CONNECTION_NETWORK_MAC, mac)} if mac else set(),
-            name="Honeywell Tuxedo Touch",
-            manufacturer="Honeywell",
-            model="Tuxedo Touch WIFI",
-            configuration_url=coordinator.client.base_url,
-        )
 
     @property
     def available(self) -> bool:

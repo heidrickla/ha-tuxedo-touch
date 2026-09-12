@@ -15,7 +15,11 @@ A panel running tuxweb - the replacement web server - is a second, simpler
 contract on the same paths: no login page, no key page, no AES, and a
 pre-shared bearer token instead of a session. The client asks once which of
 the two it is talking to (async_probe_capabilities) and keeps the answer; the
-stock path below is untouched by that answer being "stock".
+stock path below is untouched by that answer being "stock". The one thing that
+reopens the question is a tuxweb refusal - a 401 on the token, or a tuxweb
+path answering 404 - which asks once more before it is believed
+(async_recheck_capabilities), so a panel rolled back to stock under a running
+entry is talked to as stock from the next call rather than for ever as tuxweb.
 """
 
 from __future__ import annotations
@@ -130,6 +134,24 @@ class TuxedoTouchCommandNotConfirmed(TuxedoTouchError):
     fails with this so an automation is not told an alarm armed when it did
     not. Stock firmware cannot say this - it answers 200 whatever the panel
     then does - so it is raised on the tuxweb path only.
+    """
+
+
+class TuxedoTouchFirmwareChanged(TuxedoTouchError):
+    """A tuxweb refusal turned out to be the panel no longer running tuxweb.
+
+    Raised once, from the call that was refused, after the re-probe it
+    triggered came back with no capability list: the panel has gone back to
+    stock firmware under a running entry. By the time this is raised the
+    client is a stock client - the next call logs in with the web credentials
+    and speaks the stock contract - and the call that ends here was never
+    retried on that path, so it spent no login and the caller's one-login
+    accounting is untouched. Deliberately NOT a TuxedoTouchAuthError: the
+    panel refused a token it no longer recognises, which says nothing about
+    the web credentials the entry also holds, and an auth error here would
+    stop the poll and ask the user for a token the panel has stopped wanting.
+    It is an ordinary failed read instead - UpdateFailed on the poll, a
+    reconnect on the stream - and the retry that follows is the stock one.
     """
 
 
@@ -327,9 +349,102 @@ class TuxedoTouchClient:
         start a login handshake. A connection failure is raised and NOT
         cached, so the next setup asks again rather than remembering an
         answer it never got.
+
+        "For good" has one exception, and it only ever moves the verdict one
+        way: a tuxweb refusal asks again (async_recheck_capabilities), and a
+        panel that has stopped declaring the list drops the client to stock.
+        A stock client is never re-asked - its 401 is a session to renew, its
+        login budget is the guard, and a move TO tuxweb takes a reload.
         """
         if self._tuxweb is not None:
             return self._tuxweb
+        status, capabilities = await self._async_ask_capabilities()
+        self._tuxweb = capabilities is not None
+        self._capabilities = capabilities or frozenset()
+        if self._tuxweb:
+            _LOGGER.debug(
+                "The panel at %s runs tuxweb, declaring %s",
+                self._host,
+                sorted(self._capabilities),
+            )
+        else:
+            _LOGGER.debug(
+                "The panel at %s answered HTTP %s to the capability probe: "
+                "stock firmware",
+                self._host,
+                status,
+            )
+        return self._tuxweb
+
+    async def async_recheck_capabilities(self, status: int) -> None:
+        """Ask again, after a tuxweb refusal, whether the panel is still tuxweb.
+
+        The stale case the probe above cannot see: the verdict is cached for
+        the client's lifetime, so a panel rolled back to stock while Home
+        Assistant runs went on being spoken to as tuxweb - bearer token,
+        plaintext body, `command_result` semantics - and its refusals were
+        surfaced as a token the user should re-enter. A refusal that is
+        consistent with the contract having gone away - `status` is the 401
+        or 404 the caller just read - is worth one more question before it
+        is believed, and that question is the same GET as the setup probe,
+        under the same rules: no login, no session, and a connection failure
+        raised rather than turned into a verdict.
+
+        Returns if the panel still declares a list: the refusal was real, and
+        the caller raises it exactly as it always did. Raises
+        TuxedoTouchFirmwareChanged if the list is gone, with the client
+        already in stock mode: the caller lets that through unretried, so the
+        call that was refused spends no login, and the next call is an
+        ordinary stock call. One question per refusal and never a retry of
+        the refused request, which is what keeps a panel that is genuinely
+        refusing a bad token from turning into a probe loop - after the poll
+        surfaces the auth error Home Assistant stops polling, and the stream
+        stops for good, so the two re-probes that took are the last.
+
+        The capability set is refreshed either way. A tuxweb that still
+        answers is believed about what it offers now, not what it offered at
+        setup.
+        """
+        if not self.tuxweb:
+            raise TuxedoTouchError("async_recheck_capabilities is for tuxweb mode only")
+        probe_status, capabilities = await self._async_ask_capabilities()
+        if capabilities is not None:
+            self._capabilities = capabilities
+            _LOGGER.debug(
+                "The panel at %s answered HTTP %s as tuxweb and still declares "
+                "%s: the refusal stands",
+                self._host,
+                status,
+                sorted(capabilities),
+            )
+            return
+        self._tuxweb = False
+        self._capabilities = frozenset()
+        _LOGGER.warning(
+            "The panel at %s answered HTTP %s to a tuxweb request and now "
+            "answers HTTP %s to the capability probe, with no capability list: "
+            "it has gone back to stock firmware. This entry talks to it on the "
+            "stock contract from here - the web login, not the token - and "
+            "a return to tuxweb needs the entry reloaded",
+            self._host,
+            status,
+            probe_status,
+        )
+        raise TuxedoTouchFirmwareChanged(
+            f"The panel answered HTTP {status} as tuxweb and then declared no "
+            "capabilities: it has gone back to stock firmware, and this entry "
+            "talks to it on the stock contract from the next request"
+        )
+
+    async def _async_ask_capabilities(self) -> tuple[int, frozenset[str] | None]:
+        """One GET of GetCapabilities: the status, and the list if it declared one.
+
+        The request behind both the probe and the re-check, so the two cannot
+        drift: built by hand, no session and no token, redirects not followed,
+        and a connection failure raised as such. None for the list is "not
+        tuxweb", whatever the status was; see _capabilities_of for why an
+        empty list is not the same thing.
+        """
         url = f"{self.base_url}{API_BASE_PATH}{CAPABILITIES_PATH}"
         try:
             async with self._session.get(
@@ -348,23 +463,7 @@ class TuxedoTouchClient:
                     capabilities = _capabilities_of(payload)
         except (aiohttp.ClientError, TimeoutError) as err:
             raise TuxedoTouchConnectionError(str(err)) from err
-
-        self._tuxweb = capabilities is not None
-        self._capabilities = capabilities or frozenset()
-        if self._tuxweb:
-            _LOGGER.debug(
-                "The panel at %s runs tuxweb, declaring %s",
-                self._host,
-                sorted(self._capabilities),
-            )
-        else:
-            _LOGGER.debug(
-                "The panel at %s answered HTTP %s to the capability probe: "
-                "stock firmware",
-                self._host,
-                status,
-            )
-        return self._tuxweb
+        return status, capabilities
 
     def _tuxweb_headers(self) -> dict[str, str]:
         """The whole of tuxweb's auth: the token, as a bearer header.
@@ -838,10 +937,27 @@ class TuxedoTouchClient:
             # Not a session that expired, and never retried: there is no
             # login to fall back on, and the stock path's re-login on 401 is
             # the reflex this branch exists to keep off the tuxweb path.
+            #
+            # But asked about once first. Stock firmware answers a request
+            # carrying no session with exactly this status, so a panel rolled
+            # back to stock looks, from here, like a token it refuses - and
+            # until the re-check existed that was surfaced as the token, for
+            # ever. If the panel still declares tuxweb's list the refusal is
+            # real and raised below; if it does not, the re-check raises
+            # TuxedoTouchFirmwareChanged with the client already in stock
+            # mode, and this request is not retried on that path.
+            await self.async_recheck_capabilities(status)
             raise TuxedoTouchTokenRejected(
                 "tuxweb refused the bearer token (HTTP 401) - it has been "
                 "revoked or reissued on the panel, so enter the current one"
             )
+        if status == 404:
+            # The other answer consistent with tuxweb no longer being there:
+            # its paths are the vendor's, but a panel answering 404 on one it
+            # declared a moment ago is either not that panel any more or a
+            # server fault. Same one question; a tuxweb that still declares
+            # the list gets the ordinary failure below.
+            await self.async_recheck_capabilities(status)
         reason = _tuxweb_reason(payload)
         if status == 504:
             raise TuxedoTouchCommandNotConfirmed(

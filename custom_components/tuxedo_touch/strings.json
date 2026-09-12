@@ -112,6 +112,16 @@
       "partition": {
         "name": "Partition {partition}"
       }
+    },
+    "binary_sensor": {
+      "ecp_link": {
+        "name": "ECP link"
+      }
+    },
+    "sensor": {
+      "keypad_display": {
+        "name": "Keypad display"
+      }
     }
   },
   "exceptions": {

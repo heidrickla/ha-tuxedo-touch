@@ -15,7 +15,9 @@ local network - no Total Connect Comfort cloud account involved. Ported from the
 
 It gives you one `alarm_control_panel` entity per partition, with Arm Home (Stay), Arm
 Away, Arm Night and Disarm, using the reverse-engineered login and encryption flow
-documented in [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md).
+documented in [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md) - plus
+a sensor showing the panel's own keypad display and, on tuxweb, a problem sensor for
+the Tuxedo's link to the alarm panel (see [Supported functions](#supported-functions)).
 
 Since 0.4.0 the panel **pushes** its state: the integration holds the unit's own event
 stream open, so an arm or a disarm at the keypad shows up in seconds, the exit-delay
@@ -89,6 +91,21 @@ failing to connect. The diagnostics download says which contract an entry is on
 (`firmware`) and what the panel declared (`capabilities`); the token itself is redacted
 like the password.
 
+**Stock is the default, and the answer is re-checked when it stops fitting.** The
+question is asked once at setup and the answer kept, with one exception: a refusal
+that is consistent with tuxweb no longer being there - a 401 on the token, the stream
+redirected to a login page, or a tuxweb path answering 404 - is asked about once more
+before it is believed, with the same GET and under the same rules (no session, no
+login, and a connection failure raised rather than read as an answer). A panel still
+declaring its capability list makes the refusal real, and it is reported exactly as
+above. A panel declaring none has gone back to stock under a running entry, and the
+entry talks to it as stock from its next request, with one warning in the log and no
+re-authentication card - the panel said nothing about the web credentials the entry
+also holds. One re-check per refusal and never a retry of the refused request, so a
+panel refusing a genuinely bad token cannot put the integration in a loop of
+questions; a stock entry is never re-asked, because a stock 401 is a session to renew;
+and a panel moving *to* tuxweb still takes a reload of the entry.
+
 ## Supported functions
 
 One `alarm_control_panel` entity per configured partition, named **Partition N** under
@@ -128,6 +145,51 @@ The entity carries four attributes:
 | `tuxedo_color` | the colour the panel showed it in: `green`, `red` or `yellow`, **lower case whichever source reported it** (the poll's own word is `Green`, and is lower-cased on the way in) |
 | `tuxedo_source` | where it came from: `stream` (the panel pushed it), `poll` (the 30 s status read) or `assumed` (a command the panel accepted but neither source reported) |
 | `arming_seconds_remaining` | seconds left of the exit delay while the state is `arming`, `null` otherwise |
+
+### The keypad display
+
+`sensor.honeywell_tuxedo_touch_keypad_display`, a diagnostic entity under the same
+device, shows the panel's own two-line keypad LCD as the event stream carries it. It is
+the one place the panel says which zone is faulted **by name**, and the `Check`, bypass,
+trouble and AC-loss text nothing else exposes. The state is the two lines joined with a
+single space, whitespace collapsed - `****DISARMED**** Ready to Arm`, say - and the
+attributes are `line_1` and `line_2` as the panel drew them and `raw`, the record as it
+arrived. A state longer than Home Assistant's 255-character limit is cut, with the full
+text still in the attributes.
+
+Two things to know, both measured on a live arm and disarm:
+
+- **During an exit delay the LCD repaints every ~2 s** (`May Exit Now  60`, then 58, 56
+  ...), so the sensor changes state at that rate for the length of the delay. That is
+  normal and bounded. If the recorder churn bothers you the answer is a recorder
+  `exclude` for this entity, not a slower sensor: a dropped repaint is a wrong display.
+- **The LCD's countdown and the alarm entity's are different numbers, by design.** The
+  LCD shows a 60-second "exit now" window while the status frame counts the whole exit
+  delay, so the two disagree throughout arming. `arming_seconds_remaining` is the
+  countdown; this sensor is the panel's words. Do not derive one from the other.
+
+The sensor is `unavailable` whenever the stream is down - the text has no other source,
+so a line from before a drop is a line nothing is vouching for - and `unknown` from the
+moment the stream is back until the panel next draws. On stock firmware the panel sends
+its display only while someone has its own `/console.html` page open, so there the
+sensor mostly reads `unknown`; tuxweb holds that mode on.
+
+### The ECP link
+
+`binary_sensor.honeywell_tuxedo_touch_ecp_link`, a diagnostic `problem` sensor under the
+same device, is `on` for as long as the Tuxedo says it has lost its ECP link to the VISTA
+panel behind it - the condition that takes the alarm entity `unavailable` (see
+[Troubleshooting](#troubleshooting)). An unavailable alarm entity is not something an
+automation can notify on; this is. It is `unavailable` while the stream is down, because
+the stream is the only thing that can see the link, and on a relay-fed entry also while
+the panel's own poll is failing.
+
+**It exists only on tuxweb**, which declares the `panel_link_state` capability. The same
+marker does arrive on stock firmware, as a side effect of the vendor's producer, and the
+integration acts on it there too - but nothing on stock promises it, and a problem sensor
+reading `off` because the promise was never made would look exactly like one reading
+`off` because the link is fine. The diagnostics download reports `ecp_link_down` on every
+firmware.
 
 ## Use cases
 
@@ -642,7 +704,9 @@ answered 404 and has no stream at all, whether it stopped because the panel refu
 credentials, the connection id the panel handed out, how many clients it thinks it has,
 how many frames have arrived, and how far a failing stream has backed off - beside the
 fallback poll's interval and last result. It also carries `ecp_link_down`, which is the
-one case where every other field reads healthy and the entity is unavailable anyway. The two sources fail differently, so which one
+one case where every other field reads healthy and the entity is unavailable anyway, and
+`keypad_display`, the console record the keypad display sensor is showing as it
+arrived. The two sources fail differently, so which one
 was speaking is the first thing to read, and the two terminal flags are what separate a
 stream that is reconnecting from one that has stopped on purpose.
 

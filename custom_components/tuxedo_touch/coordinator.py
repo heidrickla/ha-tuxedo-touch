@@ -47,7 +47,7 @@ from .const import (
     status_means_armed,
     status_names_a_state,
 )
-from .push import PushStatus, TuxedoPushStream
+from .push import KeypadDisplay, PushStatus, TuxedoPushStream
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -168,10 +168,16 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             self.client,
             self._async_push_status,
             self._async_push_connection_changed,
+            on_display=self._async_push_display,
             push_url=entry.options.get(OPT_PUSH_URL),
             push_token=entry.options.get(OPT_PUSH_TOKEN),
         )
         self._push_task: asyncio.Task[None] | None = None
+        # The panel's keypad LCD as the stream last carried it, for the
+        # keypad display sensor. None until a console record arrives, and
+        # None again whenever the stream drops: the text has no other source,
+        # so a line from before a drop is a line nothing is vouching for.
+        self.keypad_display: KeypadDisplay | None = None
         # Whether the stream has ever delivered a status. Connected but
         # silent is not yet a source of truth: the panel sends its first
         # partition status on connect, and until it arrives the poll's answer
@@ -385,6 +391,46 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         return self._ecp_link_down
 
     @callback
+    def _async_push_display(self, display: KeypadDisplay) -> None:
+        """A console record arrived: the keypad LCD reads this now.
+
+        Kept beside the status rather than in it. The LCD is not the alarm
+        state - it is the panel's own words, which name a faulted zone, a
+        trouble or a bypass that the status text never does - and it changes
+        on its own schedule, once a second through an exit delay. Writing it
+        into `data` would restart the poll clock and re-run every listener's
+        state logic for text that settles nothing about arming.
+        """
+        self.keypad_display = display
+        self.async_update_listeners()
+
+    @property
+    def stream_observing(self) -> bool:
+        """Whether the stream is in a position to report what only it can see.
+
+        The rule for the two entities that have no fallback: the keypad
+        display and the ECP link. Both are read off the stream and nothing
+        else - the poll carries neither - so panel_available is the wrong
+        question for them twice over. It counts a working poll as
+        availability, and a working poll says nothing about a display text
+        the stream stopped carrying a minute ago; and it goes FALSE on a dead
+        ECP link, which for a sensor whose whole purpose is to report that
+        link would mean going unavailable at the one moment it has something
+        to say.
+
+        So: the stream is connected. And when it is a relay's socket rather
+        than the panel's, the panel's poll must be answering too, for the
+        reason panel_available gives - a relay that stays up while the panel
+        dies behind it would otherwise hold both entities on whatever it last
+        forwarded.
+        """
+        if not self.push.connected:
+            return False
+        if self.push.from_relay:
+            return self.last_update_success
+        return True
+
+    @callback
     def _async_push_connection_changed(self, connected: bool) -> None:
         """Availability follows the stream as well as the poll, so say so."""
         if connected:
@@ -395,6 +441,10 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 _LOGGER.debug("The panel's push stream is connected")
         else:
             self._push_status_seen = False
+            # The LCD text has no other source, so a line from before the
+            # drop is stale by definition; the sensor reads unavailable now
+            # and unknown after the reconnect, until the panel draws again.
+            self.keypad_display = None
             if not self._push_loss_logged:
                 self._push_loss_logged = True
                 _LOGGER.info(
