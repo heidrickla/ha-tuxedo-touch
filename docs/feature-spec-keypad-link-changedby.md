@@ -1,0 +1,174 @@
+# Spec: keypad display, ECP link health, and `changed_by`
+
+Three additions, agreed with Lewis 2026-09-12. They are ordered by value against
+cost and by dependency: (3) needs (1)'s parsing to exist.
+
+None of them adds a request to the panel. Every byte they need is already
+arriving on the push stream this integration is already connected to, or is
+already held in the coordinator. That is the point — the panel's session budget
+is ten slots and the integration deliberately holds one, so a feature that costs
+a poll starts at a disadvantage.
+
+Build to the platinum ruleset from the first commit, as every integration here
+does: `quality_scale.yaml` updated in the same commit, entity and exception
+translations, `PARALLEL_UPDATES`, typed `runtime_data`, `mypy --strict`, and
+`tools/validate_local.py` green. No `quality_scale` key in the manifest — this
+is a custom integration and the badge is core-only.
+
+---
+
+## 1. Keypad display text — `sensor`
+
+### What exists
+
+The panel already broadcasts its keypad LCD to us and we throw it away.
+
+`decode_status_frame` in `push.py` walks `fields[2:]` and accepts a field only
+when its first byte is `0xFE`/`0xFF` (`FLAG_READY`/`FLAG_ARMED`):
+
+```python
+if not field or ord(field[0]) not in (FLAG_READY, FLAG_ARMED):
+    continue
+```
+
+Console records carry no such flag byte, so every one of them decodes to `None`
+and is dropped before the command filter is reached. That guard is load-bearing
+for partition status — it is what locates the display field — so **do not
+loosen it**. Add a second decoder rather than widening this one.
+
+Observed console payload shape, latin-1 decoded:
+
+```
+0:20:2<line1>|<line2>
+| |  |
+| |  +-- the two LCD lines, pipe-separated
+| +----- 2, observed constant
++------- command id 20, SERV_CONSOLE_MSG_BROADCAST
+```
+
+The vendor also rebroadcasts the same text as command id `-1`
+(`CMD_UNSOLICITED`), which is one of the two ids the partition path ingests —
+hence `_status_code_of`'s note that "field 2 is the display text on the
+unsolicited record". Both ids carry it; decode from one and ignore the other, or
+you will publish every line twice.
+
+**The `0xFE`/`0xFF` guard is currently the only thing keeping console text out of
+the partition entity.** It is incidental rather than designed for that, so when
+you add the console decoder, add a test that pins the existing behaviour: a
+console frame must still never produce a `PushStatus`.
+
+### What to build
+
+- A `sensor` platform with one entity per entry, translation key `keypad_display`.
+- State: the two lines joined with a single space, whitespace collapsed.
+  **Guard the 255-character state limit** — HA drops a state longer than that and
+  logs it, which would look like the sensor silently dying. Truncate and put the
+  full text in an attribute.
+- Attributes: `line_1`, `line_2`, and `raw`.
+- `_attr_entity_category = EntityCategory.DIAGNOSTIC`.
+- Availability follows the coordinator exactly as the alarm entity does: when the
+  stream is down this is stale, not correct, and must read unavailable rather
+  than hold the last line.
+
+### Why it is worth doing
+
+This is the only place the panel says things HA cannot otherwise see: which zone
+is faulted **by name**, `Check` messages, bypass notices, trouble and AC-loss
+text. The Envisalink gives zone *states*; it does not give the panel's own words.
+
+---
+
+## 2. ECP link health — `binary_sensor`
+
+### What exists
+
+Almost all of it. `coordinator.py` already tracks `self._ecp_link_down`, already
+exposes it as a property (`ecp_link_down`), already flips it from the stream's
+status code `-1`, and already reports it in diagnostics alongside
+`relay_unreachable`. `const.py` already defines `CAP_PANEL_LINK_STATE`, which
+tuxweb declares in `GetCapabilities`.
+
+Today all of that is visible only by downloading a diagnostics file.
+
+### What to build
+
+- A `binary_sensor`, translation key `ecp_link`, `device_class: PROBLEM`, `on`
+  when the link is down.
+- `_attr_entity_category = EntityCategory.DIAGNOSTIC`.
+- On **stock** firmware `CAP_PANEL_LINK_STATE` is absent. Decide explicitly and
+  write the reason in the code: either the entity is not created on stock, or it
+  is created and reports `unknown`. Prefer **not created** — an always-`off`
+  problem sensor is worse than no sensor, because it reads as "checked, fine".
+- A second entity for `relay_unreachable` is reasonable if it is independently
+  meaningful; if it is not, say so in a comment rather than shipping two entities
+  that always agree.
+
+### Why it is worth doing
+
+A dark ECP feed is the failure that cost this project months of investigation.
+It is currently undetectable from HA without a human downloading diagnostics,
+which means in practice it is undetectable. As a `problem` binary_sensor it is
+one automation away from a notification.
+
+---
+
+## 3. `changed_by` on the alarm entity
+
+### What exists
+
+`AlarmControlPanelEntity` supports `changed_by`; ours is permanently `None`, so
+the logbook cannot say who armed or disarmed.
+
+### What to build
+
+Populate it from the console text decoded in (1) — the panel names the user in
+its display on an arm or disarm.
+
+**Do not ship a guess.** Capture real frames for a disarm by user first and pin
+the format in a test before writing the parser. If the text does not reliably
+name a user, say so and drop this item rather than shipping a regex that is right
+on one sample. A `changed_by` that is subtly wrong is worse than `None`, because
+it will be believed.
+
+---
+
+## Explicitly NOT in scope
+
+- **No keypad key sending, and no Lovelace keypad.** `/console.html` proves the
+  path works, but **A/B/C/D are the panic keys** and the server does not
+  distinguish them from a digit — the vendor UI gates them behind a confirmation
+  the API has no equivalent of. Anything exposing key entry would put a silent
+  police/fire/medical dispatch one mis-tap away, and nothing below our code would
+  stop it.
+- **No cameras or doorbell.** UniFi Protect already covers the house properly.
+- **No zones.** `ha-envisalink-field-programmer` already exposes them.
+- **Scenes are deferred, not rejected.** `GetSceneList` answers with data, but on
+  stock firmware it leaked ~780 B per request and that was never attributed.
+  Confirm whether tuxweb retired that before building on it.
+
+---
+
+## Verification bar
+
+Per Lewis's standing rule, a green test is not evidence on its own: revert the
+change and watch the new test go red, or it guards nothing.
+
+- Unit tests against `tests/fake_panel.py` for both decoders, including the
+  negative: a console frame must not produce a `PushStatus`, and a partition
+  frame must not produce a keypad reading.
+- An HA-level test under `tests/ha/` for entity creation, availability and the
+  stock-firmware case where `CAP_PANEL_LINK_STATE` is absent.
+- Live verification on the panel before release, the same shape as stage 8d:
+  drive a real zone fault and a real arm/disarm, and confirm the keypad sensor
+  and link sensor move. The Envisalink remains the independent witness on a
+  second ECP path.
+
+## Release
+
+`main` is `066ca3c` at version 0.5.0. This is additive, so **0.6.0**, with the
+`CHANGELOG.md` entry written under `[Unreleased]` and renamed at release — that
+is how 0.5.0 was cut.
+
+Both `main` and `tuxweb-api` declared 0.4.2 before the last release, which would
+have shipped different code under a published version. **Bump the manifest in the
+same commit that renames the changelog heading.**
