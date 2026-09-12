@@ -55,9 +55,31 @@ honours, because on stock a third bad login disables every web account.
 
 ## 1. Keypad display text — `sensor`
 
-### What exists
+### ⚠ Premise corrected 2026-09-12 — this is NOT free any more
 
-The panel already broadcasts its keypad LCD to us and we throw it away.
+This item was written on the claim that "the data is already arriving and being
+discarded", so it cost no panel traffic. **That was the VENDOR era.** The firmware
+session reports that tuxweb routes `msgType 20` to its diagnostic channel and
+emits nothing, so on the panel as it runs today **no console text reaches HA at
+all**. Item 1 therefore needs a tuxweb change before the integration change is
+worth anything, and it is no longer the cheapest item on this list.
+
+Two further facts from that session that change the shape:
+
+- `/tuxedo` only sends `msgType 20` while console mode is ON (command 19), which
+  on the vendor happened only while someone had `/console.html` open. For HA to
+  receive keypad text continuously, tuxweb must send 19 after registering and
+  hold console mode on. That is passive — display only, no key sending — but it
+  is a standing behaviour change on the panel.
+- Console mode **and** the whole push broadcast (`F7_Mesgs_enabled`) are cleared
+  by `home_back_press`. The vendor survived that because every new push
+  connection re-registered; tuxweb registers once, so a Home/Back press on the
+  touchscreen silences the stream until tuxweb relaunches. That is a latent
+  defect in what is deployed now, independent of this feature.
+
+### What exists in the vendor firmware
+
+The vendor broadcast its keypad LCD and this integration discarded it.
 
 `decode_status_frame` in `push.py` walks `fields[2:]` and accepts a field only
 when its first byte is `0xFE`/`0xFF` (`FLAG_READY`/`FLAG_ARMED`):
@@ -78,9 +100,26 @@ Observed console payload shape, latin-1 decoded:
 0:20:2<line1>|<line2>
 | |  |
 | |  +-- the two LCD lines, pipe-separated
-| +----- 2, observed constant
+| +----- see below - do NOT assume this is a constant 2
 +------- command id 20, SERV_CONSOLE_MSG_BROADCAST
 ```
+
+**Searched for a verbatim capture and there is none.** No cmd-20 or cmd-`-1`
+console record exists anywhere in `ha-tuxedo-touch`, `tuxedo-touch-firmware` or
+`iot-protocol-tools`, and HA's current log holds none (the only rotated file,
+`home-assistant.log.fault`, is 0 bytes). The shape above is **derived from
+disassembly**, not observed on the wire — `tuxedo-touch-firmware`
+`docs/TUXEDO-AUDIT-BUGS.md` §Code 20. Treat it as a reading to be confirmed, not
+as evidence.
+
+**And that source is ambiguous on the third field**, which the decoder has to
+get right. It says the `2` "is the CSS digit" while also saying "the literal
+separator is the 2-char string `\":2\"` @0x000852f4". Those imply different
+things: a CSS digit varies (on the partition record 1 is green and 2 is red), a
+literal `":2"` does not. **A decoder that keys on `2` will silently drop every
+console line if the digit turns out to vary with colour** — and red is exactly
+the state you most want surfaced. Resolve it from the handler before writing the
+parser, and if it stays ambiguous, accept any digit there.
 
 The vendor also rebroadcasts the same text as command id `-1`
 (`CMD_UNSOLICITED`), which is one of the two ids the partition path ingests —
