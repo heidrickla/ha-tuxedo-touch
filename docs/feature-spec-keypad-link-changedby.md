@@ -112,14 +112,33 @@ disassembly**, not observed on the wire — `tuxedo-touch-firmware`
 `docs/TUXEDO-AUDIT-BUGS.md` §Code 20. Treat it as a reading to be confirmed, not
 as evidence.
 
-**And that source is ambiguous on the third field**, which the decoder has to
-get right. It says the `2` "is the CSS digit" while also saying "the literal
-separator is the 2-char string `\":2\"` @0x000852f4". Those imply different
-things: a CSS digit varies (on the partition record 1 is green and 2 is red), a
-literal `":2"` does not. **A decoder that keys on `2` will silently drop every
-console line if the digit turns out to vary with colour** — and red is exactly
-the state you most want surfaced. Resolve it from the handler before writing the
-parser, and if it stays ambiguous, accept any digit there.
+**SETTLED 2026-09-12 from the type-20 handler — the `2` is a fixed literal, not
+a colour digit.** `bprintf`'s format is `"%d%s%d%s%s"` (0x85304) with args
+(session, `":"`, 20, `":2"`, text); the second separator is the 2-character
+constant `":2"` at 0x852f4, loaded from the constant pool and reused unchanged
+for the `-1` copies. It cannot vary. The audit doc's "CSS digit" wording came
+from the vendor's *page* reading it as a colour class, and that sentence has been
+corrected. **Keying on the literal `":2"` is safe.** The earlier "accept any
+digit" tolerance is harmless and can stay as belt-and-braces.
+
+**Three more facts from the same handler, and they decide the decoder's shape:**
+
+- Each LCD change produces **four** records: one `0:20:2…` and **three**
+  `0:-1:2…` copies.
+- The **id-20 record's text is lossy**: its first `:` at index > 0 is replaced by
+  `-`. The three `-1` copies carry the **raw** text.
+- The arm only runs when the reply session is `0`, i.e. a broadcast.
+
+**Recommended: decode the id-20 record and ignore the `-1` copies.** One record
+per change is its own deduplication, and the cost is a single mangled colon in a
+16-character line. Taking the `-1` copies instead buys raw text at the price of
+publishing every line three times, which needs dedup state that can drift.
+
+Whichever is chosen, **the `-1` copies must not reach the partition path**. `-1`
+is `CMD_UNSOLICITED`, one of the two ids the partition decoder ingests; today the
+`0xFE`/`0xFF` guard rejects them and that must stay true. Test both directions:
+a console frame produces no `PushStatus`, and a partition frame produces no
+keypad reading.
 
 The vendor also rebroadcasts the same text as command id `-1`
 (`CMD_UNSOLICITED`), which is one of the two ids the partition path ingests —
