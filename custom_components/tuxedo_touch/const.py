@@ -8,6 +8,12 @@ DOMAIN = "tuxedo_touch"
 CONF_MAC = "mac"
 CONF_PARTITION = "partition"
 CONF_USE_HTTPS = "use_https"
+# The bearer token a panel running tuxweb - the replacement web server - was
+# issued for this integration (`tuxweb --issue-token <label>`, 64 hex chars).
+# Optional: stock firmware has no such thing and an entry without one is a
+# stock entry. Stored beside the web credentials because it is one: it opens
+# the alarm, so it is masked on every form and never suggested back.
+CONF_TUXWEB_TOKEN = "tuxweb_token"
 
 # Set on the entry's OPTIONS once the panel has refused the stored credentials.
 # On the options rather than in memory because surviving a restart is the whole
@@ -37,6 +43,32 @@ API_REV = "API_REV01"
 API_BASE_PATH = f"/system_http_api/{API_REV}"
 LOGIN_PATH = "/authenticated/index.html"
 KEYS_PATH = "/tuxedoapi.html"
+
+# The one question this integration asks a panel before it knows what it is
+# talking to. Inside the vendor namespace, where stock firmware answers an
+# unknown endpoint with 404 and the measured 20-byte body `{Status:"Not
+# Found"}` - a permanent answer, and the one the stock path keys on. tuxweb
+# answers 200 with a JSON body whose `capabilities` list is the whole of what
+# is branched on; `firmware` and `contract` are in it for people. The
+# endpoint needs no session and no token on either firmware, so asking costs
+# a stock panel one GET and no login.
+CAPABILITIES_PATH = "/GetCapabilities"
+# The capability strings tuxweb declares, as it spells them. Unknown strings
+# are ignored, so a newer tuxweb adding one changes nothing here.
+#
+# `command_result`: arm and disarm answer 200 only once the panel has been
+# seen to act (the state byte flipped), 504 if it was sent and not confirmed
+# within tuxweb's own 8 s. On stock the same 200 says "sent" and nothing else.
+CAP_COMMAND_RESULT = "command_result"
+# `status_refresh`: GetSecurityStatus reads the live state model rather than
+# the ECP-fed cache, so it cannot answer "Not available" and carries the armed
+# flag the stock poll lacks.
+CAP_STATUS_REFRESH = "status_refresh"
+# `panel_link_state`: the stream's dead-ECP-link marker (status code -1) is
+# produced deliberately rather than as a side effect. The decoder already
+# reads it on stock, so nothing branches on this one; it is named so a
+# diagnostics report can show it.
+CAP_PANEL_LINK_STATE = "panel_link_state"
 
 # The push stream, which is where the state actually comes from. The slash
 # before "G." is required: without it the server answers 404. Nothing else is
@@ -136,6 +168,16 @@ SOURCE_POLL = "poll"
 # Neither source reported the change, so the entity shows what was asked for
 # rather than a state the panel never confirmed.
 SOURCE_ASSUMED = "assumed"
+# Neither source reported the change either, but the panel confirmed it in the
+# command's own reply: a tuxweb 200 is sent only once the state byte has been
+# seen to flip. What was asked for is therefore what the panel did, not a
+# guess, and it is labelled as such. Stock firmware cannot produce this.
+SOURCE_COMMAND = "command"
+
+# The stream's colour digit and the poll's word, in one vocabulary. Same codes
+# and same meaning as the REST API's "Color" field; tuxweb's status answer
+# carries the digit in front of the display text, exactly as the stream does.
+COLOURS = {"1": "green", "2": "red", "3": "yellow"}
 
 # The fallback poll, and the initial sync before the stream is open.
 SCAN_INTERVAL = timedelta(seconds=30)

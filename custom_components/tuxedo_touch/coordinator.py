@@ -24,10 +24,12 @@ from .api import (
     TuxedoTouchClient,
     TuxedoTouchError,
     TuxedoTouchHttpsRequiredError,
+    TuxedoTouchTokenRejected,
 )
 from .const import (
     COMMAND_CONFIRM_TIMEOUT,
     CONF_PARTITION,
+    CONF_TUXWEB_TOKEN,
     CONF_USE_HTTPS,
     DEFAULT_PARTITION,
     DOMAIN,
@@ -38,6 +40,7 @@ from .const import (
     OPT_PUSH_URL,
     SCAN_INTERVAL,
     SOURCE_ASSUMED,
+    SOURCE_COMMAND,
     SOURCE_STREAM,
     STATUS_NOT_AVAILABLE,
     issue_id,
@@ -153,6 +156,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             use_https=entry.data[CONF_USE_HTTPS],
             username=entry.data[CONF_USERNAME],
             password=entry.data[CONF_PASSWORD],
+            tuxweb_token=entry.data.get(CONF_TUXWEB_TOKEN),
         )
         self._last_command_monotonic = 0.0
         # One poll at a time, and a handle on the one in flight: see
@@ -471,7 +475,18 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         code the panel will not take. Writing the assumed status over it is
         reporting an alarm state the panel never reported, in the direction
         the caller wanted, which is the one direction it must never be wrong.
+
+        On tuxweb with `command_result` the reply itself is evidence: 200 is
+        sent only once the panel has been seen to act, and a command it did
+        not act on raises TuxedoTouchCommandNotConfirmed out of `command`
+        before any rung is reached. The stream and the poll still come first
+        - they name the mode, which the reply does not - but the bottom rung
+        then labels the requested status as confirmed by the command rather
+        than assumed, and a poll answering the opposite is the panel having
+        moved on since rather than a refusal: the reading stands and the
+        call succeeds, because the command did.
         """
+        confirmed_by_reply = self.client.confirms_commands
         waiter: (
             tuple[Callable[[TuxedoStatus], bool | None], asyncio.Future[None]] | None
         ) = None
@@ -512,6 +527,19 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             verdict = confirms(self.data)
             if verdict is True:
                 return
+            if verdict is False and confirmed_by_reply:
+                # The panel acted - tuxweb watched the state byte flip before
+                # it answered - and has since reported the other state: an
+                # arm that ran its exit delay and was disarmed at the keypad
+                # in the same breath, say. The poll's reading is the panel's
+                # current account and it stands; the command is not failed
+                # for it, because it did what was asked.
+                _LOGGER.debug(
+                    "The panel confirmed the command and now reports '%s'; "
+                    "keeping its reading",
+                    self.data.status,
+                )
+                return
             if verdict is False:
                 # The poll ran, succeeded, and named the opposite state. That
                 # is the panel's own account of what it did with the command,
@@ -537,16 +565,19 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         # Neither the stream nor the poll could say anything: no frame
         # arrived, and the poll either failed or answered with a text that
         # names no state. The command itself succeeded, so show what it asked
-        # for and mark it assumed; the next real status replaces it.
+        # for and mark it assumed; the next real status replaces it. Unless
+        # the reply was the panel's own confirmation, in which case what was
+        # asked for is what the panel did, and the label says so.
         _LOGGER.debug(
-            "Neither the stream nor a poll reported the command; assuming %s",
+            "Neither the stream nor a poll reported the command; %s %s",
+            "the panel confirmed" if confirmed_by_reply else "assuming",
             assumed_status,
         )
         self.async_set_updated_data(
             TuxedoStatus(
                 status=assumed_status,
                 color=self.data.color if self.data else None,
-                source=SOURCE_ASSUMED,
+                source=SOURCE_COMMAND if confirmed_by_reply else SOURCE_ASSUMED,
             )
         )
 
@@ -609,6 +640,31 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         self._https_issue_raised = False
         ir.async_delete_issue(self.hass, DOMAIN, self._https_issue_id)
 
+    async def _async_setup(self) -> None:
+        """Ask the panel which firmware it runs, once, before the first poll.
+
+        Home Assistant runs this ahead of the first refresh and never again
+        for this coordinator; a setup retry builds a new one, which asks
+        again. The answer decides everything the client does afterwards -
+        login-and-AES or bearer-token-and-plaintext - so it has to be in
+        hand before the poll that follows, and the client caches it. On
+        stock firmware it is one GET answering 404, and a stock entry then
+        behaves exactly as it did before the question existed.
+
+        A panel that cannot be reached fails this the way it would fail the
+        poll: UpdateFailed, which the first refresh turns into a setup retry.
+        Nothing here can spend a login - the probe never touches the
+        handshake - so a panel that is down costs nothing but the retry.
+        """
+        try:
+            await self.client.async_probe_capabilities()
+        except TuxedoTouchError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
     async def _async_update_data(self) -> TuxedoStatus:
         """Poll the panel, one poll at a time.
 
@@ -623,6 +679,20 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         poll_started = time.monotonic()
         try:
             status = await self.client.get_status()
+        except TuxedoTouchTokenRejected as err:
+            # tuxweb refused the token, or there is none to send. The user
+            # has to supply one, so this starts the reauth flow like a refused
+            # password does - but it writes no flag and raises no issue. Both
+            # exist because a stock panel counts failed logins and locks its
+            # accounts at three; tuxweb counts nothing and a 256-bit token
+            # cannot be guessed, so a restart asking again costs one 401 and
+            # nothing else. Caught before the parent class so a token never
+            # wears the three-strike wording.
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="tuxweb_auth_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
         except TuxedoTouchAuthError as err:
             # This class means one thing and the whole branch rests on it: the
             # panel compared a credential and said no. api.py raises it at the

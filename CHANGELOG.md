@@ -4,6 +4,29 @@ Notable changes to this integration, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version
 numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [Unreleased]
+
+### Added
+
+- **A panel running tuxweb, the replacement web server, is talked to on its
+  own contract.** At setup the integration asks the panel once, with
+  `GET /system_http_api/API_REV01/GetCapabilities`, which firmware it runs.
+  Stock answers its ordinary 404 and nothing else changes: the question needs
+  no session and spends no login, and a stock entry behaves exactly as before.
+  tuxweb answers 200 with a capability list, and on that answer the client
+  takes a second path: a pre-shared bearer token instead of the login
+  handshake and the per-session AES key, a plain form body on the same paths,
+  the same token on the event stream, and replies that mean something - 200 to
+  arm or disarm is the panel having acted, 504 is sent-but-not-confirmed and
+  fails the call rather than leaving a state assumed. A 401 is the token, is
+  never answered with a login, and records no lockout, because tuxweb counts
+  nothing. The token is a new optional field on the setup, discovery,
+  reconfigure and re-authentication forms; the diagnostics download reports
+  which contract an entry is on and what the panel declared.
+- `tuxedo_source` gains the value `command`: a command tuxweb confirmed in
+  its reply that neither the stream nor a poll has reported yet. Stock
+  firmware cannot produce it.
+
 ## [0.4.2] - 2026-09-05
 
 ### Fixed

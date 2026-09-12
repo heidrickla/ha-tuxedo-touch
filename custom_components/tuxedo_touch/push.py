@@ -11,7 +11,10 @@ so a client on the stream cannot see `"Not available"` at all.
 
 The slash before `G.` is the whole trick; the vendor's own client appends
 `G.` to a base URL that already ends in one, which is how it is easy to get
-wrong. Only the session cookie is needed: no token, no query string.
+wrong. Only the session cookie is needed: no token, no query string. On
+tuxweb the same path serves byte-identical frames and only the auth differs:
+the bearer token instead of a cookie, and a 401 is the token being refused
+rather than a session that could be renewed.
 
 The reply is `multipart/x-mixed-replace; boundary="EH912ZZ"`, one part per
 event, and it MUST be decoded latin-1 - the state flag is a raw 0xFE/0xFF
@@ -38,8 +41,14 @@ from dataclasses import dataclass
 
 import aiohttp
 
-from .api import TuxedoTouchAuthError, TuxedoTouchClient, TuxedoTouchError
+from .api import (
+    TuxedoTouchAuthError,
+    TuxedoTouchClient,
+    TuxedoTouchError,
+    TuxedoTouchTokenRejected,
+)
 from .const import (
+    COLOURS,
     COUNTDOWN_RE,
     PUSH_BACKOFF_INITIAL,
     PUSH_BACKOFF_MAX,
@@ -66,8 +75,8 @@ CLIENT_COUNT_RE = re.compile(r"'noOfClient',\s*\[(-?\d+)\]\]")
 # once as this raw byte. fe = ready/disarmed, ff = arming or armed.
 FLAG_READY = 0xFE
 FLAG_ARMED = 0xFF
-# Same codes and same meaning as the REST API's "Color" field.
-COLOURS = {"1": "green", "2": "red", "3": "yellow"}
+# The colour digit's names, COLOURS, live in const.py: the tuxweb status
+# answer carries the same digit and api.py reads it the same way.
 
 # Command ids, carried in field 1 of a payload.
 CMD_HOME_PARTITION = 18
@@ -117,7 +126,11 @@ class PushStreamUnsupported(TuxedoTouchError):
 
 
 class PushSessionExpired(TuxedoTouchError):
-    """The panel refused the session cookie the stream opened with."""
+    """The panel refused the session cookie the stream opened with.
+
+    Stock only. A tuxweb 401 is the token being refused, which no re-login
+    can mend, and is raised as TuxedoTouchTokenRejected instead.
+    """
 
 
 @dataclass(frozen=True)
@@ -438,7 +451,20 @@ class TuxedoPushStream:
                 # ConfigEntryAuthFailed on the same credentials and starts the
                 # reauth flow, which is the only thing that can fix this, and
                 # the reload it ends with builds a new stream.
+                #
+                # A refused tuxweb token ends the task the same way and for a
+                # simpler reason: a token that was wrong on this attempt is
+                # wrong on the next, and there is no handshake to re-run. The
+                # wording differs because the danger does not exist there.
                 self.auth_failed = True
+                if isinstance(err, TuxedoTouchTokenRejected):
+                    _LOGGER.warning(
+                        "The panel's tuxweb server rejected the bearer token, so "
+                        "its push stream has stopped (%s). Enter the current "
+                        "token on the integration's re-authentication card",
+                        err,
+                    )
+                    return
                 _LOGGER.warning(
                     "The panel rejected the web login credentials, so its push "
                     "stream has stopped and Home Assistant will not try them "
@@ -520,7 +546,17 @@ class TuxedoPushStream:
 
     async def _async_stream_once(self) -> None:
         """One connection, from login to the moment the panel stops talking."""
-        cookie = await self._client.async_session_cookie()
+        if self._client.tuxweb:
+            # No login and no cookie: the bearer token is the whole of the
+            # auth, and asking the client for a session would be a login
+            # against a panel that serves no login page. The frames behind
+            # the request are byte-identical to stock, so nothing past the
+            # headers knows the difference.
+            cookie = None
+            headers = self._client.stream_headers()
+        else:
+            cookie = await self._client.async_session_cookie()
+            headers = {"Cookie": cookie}
         # A configured stream source replaces the panel for THIS request only;
         # login and commands are untouched, and must be, because the panel
         # binds a session to the address that created it.
@@ -537,12 +573,16 @@ class TuxedoPushStream:
             sock_connect=PUSH_CONNECT_TIMEOUT,
             sock_read=PUSH_READ_TIMEOUT,
         )
-        headers = {"Cookie": cookie}
         if self._push_token:
             # Sent both ways because a shim may gate on either, and sending one
-            # it ignores costs nothing.
+            # it ignores costs nothing. The relay's token replaces the panel's
+            # own auth on this request: a relay is not the panel, and it is
+            # this token that it gates on. The panel's session cookie still
+            # rides alongside on stock, because a shim may validate the real
+            # session instead; on tuxweb there is no cookie to carry.
             headers["Authorization"] = f"Bearer {self._push_token}"
-            headers["Cookie"] = f"{cookie}; tuxweb_token={self._push_token}"
+            token_cookie = f"tuxweb_token={self._push_token}"
+            headers["Cookie"] = f"{cookie}; {token_cookie}" if cookie else token_cookie
         # The client's SSL argument is a DELIBERATELY BROKEN context - no
         # certificate verification, no hostname check - and it is justified by
         # exactly one thing: the panel's own expired 2009 self-signed
@@ -574,6 +614,15 @@ class TuxedoPushStream:
                     raise TuxedoTouchError(
                         f"push relay refused the stream: HTTP {resp.status} "
                         f"from {url} - check the push token"
+                    )
+                if self._client.tuxweb:
+                    # The token, not a session: tuxweb has no session to
+                    # renew, so this is terminal for the same reason a
+                    # refused password is, and it must never reach the
+                    # re-login the expiry handler performs.
+                    raise TuxedoTouchTokenRejected(
+                        f"tuxweb refused the bearer token on the push stream: "
+                        f"HTTP {resp.status}"
                     )
                 raise PushSessionExpired(f"push stream refused: HTTP {resp.status}")
             if resp.status == 404:

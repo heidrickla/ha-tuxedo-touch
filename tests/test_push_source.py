@@ -45,6 +45,8 @@ class _Client:
     """Only what the stream reads off the client."""
 
     base_url = "https://panel.example:443"
+    # A stock panel: the stream authenticates on the session cookie.
+    tuxweb = False
 
 
 def _stream(url: str | None = None, token: str | None = None):
@@ -131,6 +133,7 @@ class _RecordingSession:
 class _RecordingClient:
     base_url = "https://panel.example:443"
     ssl_arg = PANEL_CTX
+    tuxweb = False
 
     def __init__(self, status: int) -> None:
         self.session = _RecordingSession(status)
