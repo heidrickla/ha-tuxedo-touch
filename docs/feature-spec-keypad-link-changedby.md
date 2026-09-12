@@ -17,6 +17,42 @@ is a custom integration and the badge is core-only.
 
 ---
 
+## 0. Stock is the default, and a stale verdict must not outlive it
+
+Lewis, 2026-09-12: *"You should auto detect custom firmware so your default is
+standard firmware unless custom is detected."*
+
+**At setup this is already right, and deliberately so.** `async_probe_capabilities`
+treats a capability list as the only thing that flips the verdict — a 404, a 302,
+an HTML 200, a body with no list, even a 401 ("which neither firmware does")
+all read as stock, and a connection failure is raised rather than cached, so the
+next setup asks again instead of remembering an answer it never got. Do not
+weaken any of that.
+
+**What is missing is the stale case.** `self._tuxweb` is assigned once and never
+reset; the only guard is `if self._tuxweb is not None: return self._tuxweb`. So
+the verdict is cached for the client's lifetime and the probe runs at setup only.
+Roll the panel back to stock while HA is running — and four rollback binaries are
+staged on it right now — and the integration keeps speaking tuxweb: bearer token,
+`command_result` semantics, the lot. It fails *visibly* rather than dangerously
+(a 401 is correctly raised as an auth failure and never answered with a login),
+but the symptom a user sees is "tuxweb refused the bearer token", which points at
+the token rather than at the firmware having changed under it.
+
+**Required:** when the panel is on tuxweb and a request fails in a way that is
+consistent with the contract no longer being there — a 401 on the token, or the
+tuxweb paths 404ing — re-run the probe once before surfacing an auth failure, and
+fall back to stock if the capability list is gone. The default is stock; a
+positive detection is the only thing that leaves it, and a detection that stops
+being true must not persist.
+
+Guard the obvious failure mode: a panel that is genuinely refusing a bad token
+must not put the integration in a re-probe loop. One re-probe per failure, and
+the re-probe must not log in — the same constraint the setup probe already
+honours, because on stock a third bad login disables every web account.
+
+---
+
 ## 1. Keypad display text — `sensor`
 
 ### What exists
