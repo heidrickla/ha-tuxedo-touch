@@ -164,6 +164,22 @@ console frame must still never produce a `PushStatus`.
   stream is down this is stale, not correct, and must read unavailable rather
   than hold the last line.
 
+### Two measured behaviours to design around
+
+- **During an exit delay the LCD repaints every ~2 s** (`May Exit Now  60`, then
+  58, 56, 54 …), so this sensor changes state at that rate for the length of the
+  delay. That is normal and bounded, not a fault — say so in the entity's
+  documentation so nobody reads the recorder churn as a bug. If it proves noisy
+  in practice the answer is a recorder `exclude`, not throttling the decoder;
+  a dropped frame is a wrong display, and this sensor's whole value is being
+  the panel's actual words.
+- **The LCD countdown and the status frame's countdown do NOT agree, by design.**
+  The LCD shows a 60 s "exit now" window (`May Exit Now  60`) while the status
+  frame counts the full exit delay (`259  Secs Remaining`). They measure
+  different things and will disagree throughout arming. **Do not cross-check them
+  and do not derive one from the other** — and do not use this sensor as a
+  countdown source; `seconds_remaining` on the status path is the real one.
+
 ### Why it is worth doing
 
 This is the only place the panel says things HA cannot otherwise see: which zone
@@ -206,7 +222,32 @@ one automation away from a notification.
 
 ---
 
-## 3. `changed_by` on the alarm entity
+## 3. `changed_by` on the alarm entity — ⛔ DROPPED 2026-09-12, REFUTED
+
+**The LCD does not name the user.** Captured off the live stream across a real
+arm STAY → disarm (`emu/lcd-capture.py`, 14 id-20 records, 107 status texts,
+panel left disarmed):
+
+```
+[  0.1s] '****DISARMED****|  Ready to Arm  '
+[  7.1s] 'ARMED ***STAY***|May Exit Now  60'    then 58, 56, 54 ... every ~2 s
+[ 21.0s] '****DISARMED****|  Ready to Arm  '
+```
+
+Neither the arm nor the disarm carries a user. The display shows state and the
+exit countdown, nothing else. This item was written on the assumption that it
+did, and the spec's own rule was "if the text does not reliably name a user, say
+so and drop this item rather than shipping a regex that is right on one sample".
+So: dropped, on evidence, before any code was written. That is the rule working.
+
+**Where "who" actually lives:** the VISTA's event log, command 17
+`EVENT_LOG_UPLOAD`, paged. That is a separate and much larger feature — reading
+and paginating an event log — not a parse of the display. Scope it as a new item
+if it is ever wanted; do not smuggle it in here.
+
+The release is therefore items **0, 2 and 1**.
+
+## 3 (historical) — what was asked for
 
 ### What exists
 
