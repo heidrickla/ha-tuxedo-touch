@@ -26,10 +26,11 @@ from custom_components.tuxedo_touch.api import TuxedoStatus, TuxedoTouchError
 from custom_components.tuxedo_touch.const import (
     CONF_MAC,
     CONF_PARTITION,
+    CONF_TUXWEB_TOKEN,
     CONF_USE_HTTPS,
     DOMAIN,
 )
-from tests.fake_panel import FakePanel
+from tests.fake_panel import TUXWEB_TOKEN, FakePanel
 
 HOST = "203.0.113.60"
 PORT = 443
@@ -48,6 +49,7 @@ ENTRY_DATA = {
 
 STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"
 PUSH_RUN = "custom_components.tuxedo_touch.push.TuxedoPushStream.async_run"
+PROBE = "custom_components.tuxedo_touch.api.TuxedoTouchClient.async_probe_capabilities"
 
 
 @pytest.fixture(autouse=True)
@@ -65,18 +67,21 @@ async def _idle_stream(self):
 def no_panel_behind_the_fixtures(request):
     """Nothing in these tests may dial the address in ENTRY_DATA.
 
-    Setting an entry up starts two things that talk to a panel: the poll and
-    the push stream. Every test that wants either patches it; this is what is
-    underneath, so a path nobody patched fails here rather than opening a
-    socket to whatever is at that address on the machine running the suite.
+    Setting an entry up starts three things that talk to a panel: the
+    capability probe, the poll and the push stream. Every test that wants
+    one patches it; this is what is underneath, so a path nobody patched
+    fails here rather than opening a socket to whatever is at that address
+    on the machine running the suite. The probe answers "stock", which is
+    what every entry in ENTRY_DATA is: a test about tuxweb brings the fake.
 
-    A test that brings its own `fake_panel` is opted out - it has a real
-    server on 127.0.0.1 and wants the real client to reach it.
+    A test that brings its own `fake_panel` or `fake_tuxweb` is opted out -
+    it has a real server on 127.0.0.1 and wants the real client to reach it.
     """
-    if "fake_panel" in request.fixturenames:
+    if {"fake_panel", "fake_tuxweb"} & set(request.fixturenames):
         yield
         return
     with (
+        patch(PROBE, return_value=False),
         patch(STATUS, side_effect=TuxedoTouchError("no panel in this test")),
         patch(PUSH_RUN, _idle_stream),
     ):
@@ -95,6 +100,35 @@ async def fake_panel(socket_enabled):
     await panel.start()
     yield panel
     await panel.close()
+
+
+@pytest.fixture
+async def fake_tuxweb(socket_enabled):
+    """The same server as a panel running tuxweb: token-gated, no login."""
+    panel = FakePanel(tuxweb=True)
+    await panel.start()
+    yield panel
+    await panel.close()
+
+
+@pytest.fixture
+def tuxweb_entry(fake_tuxweb):
+    """An entry pointing at the fake tuxweb, carrying its token."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Tuxedo Touch (127.0.0.1)",
+        unique_id=f"127.0.0.1:{fake_tuxweb.port}:1",
+        data={
+            CONF_HOST: "127.0.0.1",
+            CONF_PORT: fake_tuxweb.port,
+            CONF_USE_HTTPS: False,
+            CONF_USERNAME: fake_tuxweb.username,
+            CONF_PASSWORD: fake_tuxweb.password,
+            CONF_CODE: "1234",
+            CONF_PARTITION: 1,
+            CONF_TUXWEB_TOKEN: TUXWEB_TOKEN,
+        },
+    )
 
 
 @pytest.fixture

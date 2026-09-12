@@ -10,6 +10,12 @@ should be harmless even if a given unit doesn't strictly require it.
 See ../../../docs/tuxedo_touch_api_notes.md for the full reverse-engineering
 writeup this implementation is based on (login flow, HMAC/AES quirks, TLS
 gotchas, known device bugs).
+
+A panel running tuxweb - the replacement web server - is a second, simpler
+contract on the same paths: no login page, no key page, no AES, and a
+pre-shared bearer token instead of a session. The client asks once which of
+the two it is talking to (async_probe_capabilities) and keeps the answer; the
+stock path below is untouched by that answer being "stock".
 """
 
 from __future__ import annotations
@@ -32,7 +38,17 @@ import aiohttp
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from .const import API_BASE_PATH, KEYS_PATH, LOGIN_PATH, SOURCE_POLL
+from .const import (
+    API_BASE_PATH,
+    CAP_COMMAND_RESULT,
+    CAPABILITIES_PATH,
+    COLOURS,
+    COUNTDOWN_RE,
+    KEYS_PATH,
+    LOGIN_PATH,
+    SOURCE_POLL,
+    STATUS_NOT_AVAILABLE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,14 +92,44 @@ class TuxedoTouchAuthError(TuxedoTouchError):
     """The panel judged a credential of ours and said no.
 
     Raised at exactly the places the panel's own three-strike counter moves,
-    which are the two `_failed_logins += 1` sites in login(). Nothing else may
-    raise it, and that is load-bearing rather than tidy: the coordinator turns
-    this class into a permanent `credentials_rejected` flag on the config
-    entry and the push stream stops for good on it, so a server or session
-    fault wearing this class condemns the entry - and the reauthentication
-    card then refuses the password that was right all along. Faults after an
-    accepted login are TuxedoTouchSessionError; a login POST that answered
-    without judging anything is a connection or panel error.
+    which are the two `_failed_logins += 1` sites in login(), and at the one
+    other place a credential is judged: tuxweb refusing the bearer token,
+    which has its own subclass below. Nothing else may raise it, and that is
+    load-bearing rather than tidy: the coordinator turns this class into a
+    permanent `credentials_rejected` flag on the config entry and the push
+    stream stops for good on it, so a server or session fault wearing this
+    class condemns the entry - and the reauthentication card then refuses
+    the password that was right all along. Faults after an accepted login
+    are TuxedoTouchSessionError; a login POST that answered without judging
+    anything is a connection or panel error.
+    """
+
+
+class TuxedoTouchTokenRejected(TuxedoTouchAuthError):
+    """tuxweb would not take the bearer token, or there was none to send.
+
+    A credential judged and refused, so it routes as the auth error it is:
+    the poll stops and asks the user, the stream stops for good, and a
+    command fails with a reason. What it must NOT do is start a login - there
+    is no login page on tuxweb, and the stock path's re-login on 401 is
+    exactly the reflex this class exists to keep out. Its own class because
+    the consequences differ in one way that matters: tuxweb counts nothing
+    and locks nothing, so the coordinator does not write the three-strike
+    flag for it, and the wording the user reads names the token rather than
+    the web password.
+    """
+
+
+class TuxedoTouchCommandNotConfirmed(TuxedoTouchError):
+    """tuxweb sent the command and the panel did not act on it in time.
+
+    Its 504: the state byte never flipped within tuxweb's own 8 s ceiling,
+    so the panel refused the arm (a faulted zone, say) or the disarm (a code
+    it does not accept), or is simply slow. Either way nothing is assumed:
+    the entity keeps showing what the panel reports, and the service call
+    fails with this so an automation is not told an alarm armed when it did
+    not. Stock firmware cannot say this - it answers 200 whatever the panel
+    then does - so it is raised on the tuxweb path only.
     """
 
 
@@ -138,7 +184,9 @@ class TuxedoStatus:
     # Lower case whichever source filled it in: "green", "red", "yellow".
     color: str | None = None
     source: str = SOURCE_POLL
-    # None from a poll, which reports display text and nothing else.
+    # None from a stock poll, which reports display text and nothing else. A
+    # tuxweb poll reads the same state model the stream is fed from and
+    # carries the flag, so it fills this in too.
     armed: bool | None = None
     seconds_remaining: int | None = None
 
@@ -185,6 +233,7 @@ class TuxedoTouchClient:
         use_https: bool,
         username: str,
         password: str,
+        tuxweb_token: str | None = None,
     ) -> None:
         self._session = session
         self._host = host
@@ -192,6 +241,14 @@ class TuxedoTouchClient:
         self._scheme = "https" if use_https else "http"
         self._username = username
         self._password = password
+        # Blank and absent are the same thing: no token was configured.
+        self._tuxweb_token = tuxweb_token or None
+        # Which of the two contracts this panel speaks. None until
+        # async_probe_capabilities has asked; a client nobody asked on behalf
+        # of is a stock client, which is what every caller before tuxweb
+        # existed was. The capability set is empty on stock.
+        self._tuxweb: bool | None = None
+        self._capabilities: frozenset[str] = frozenset()
 
         self._session_cookie: str | None = None
         self._key_hex: str | None = None
@@ -228,6 +285,110 @@ class TuxedoTouchClient:
         """What to pass as aiohttp's `ssl=`, shared for the pool key's sake."""
         return self._ssl_ctx or True
 
+    # ------------------------------------------------------------------
+    # Which firmware: one GET, once, before anything else
+    # ------------------------------------------------------------------
+    @property
+    def tuxweb(self) -> bool:
+        """Whether this panel runs tuxweb. False until a probe says so."""
+        return self._tuxweb is True
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """What tuxweb declared, as it spelled it. Empty on stock."""
+        return self._capabilities
+
+    @property
+    def confirms_commands(self) -> bool:
+        """Whether a 200 to arm or disarm means the panel ACTED.
+
+        tuxweb with `command_result` answers 200 only once it has seen the
+        state byte flip, and 504 otherwise. Stock answers 200 for a command
+        it sent, whatever the panel then does; the coordinator's ladder of
+        stream, poll and assumed status exists for exactly that.
+        """
+        return CAP_COMMAND_RESULT in self._capabilities
+
+    async def async_probe_capabilities(self) -> bool:
+        """Ask the panel, once, whether it runs tuxweb. Cached for good.
+
+        GET GetCapabilities, which needs no session and no token on either
+        firmware. 200 with a JSON body carrying a `capabilities` list is
+        tuxweb; anything else is stock - a 404 with the measured body on
+        stock firmware, but equally a 302 to https over plain HTTP, a 200
+        that is an HTML page, or a body with no list in it. The branch is on
+        the list being there and on the strings in it; `firmware` and
+        `contract` are never consulted, and strings nothing here names are
+        kept but ignored.
+
+        Nothing on this path can log in: the request is built by hand below
+        and never touches _ensure_authenticated, so a panel answering 401
+        here - which neither firmware does - would read as stock rather than
+        start a login handshake. A connection failure is raised and NOT
+        cached, so the next setup asks again rather than remembering an
+        answer it never got.
+        """
+        if self._tuxweb is not None:
+            return self._tuxweb
+        url = f"{self.base_url}{API_BASE_PATH}{CAPABILITIES_PATH}"
+        try:
+            async with self._session.get(
+                url,
+                ssl=self._ssl_ctx or True,
+                timeout=_TIMEOUT,
+                allow_redirects=False,
+            ) as resp:
+                status = resp.status
+                capabilities = None
+                if status == 200:
+                    try:
+                        payload = await resp.json(content_type=None)
+                    except ValueError:
+                        payload = None
+                    capabilities = _capabilities_of(payload)
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise TuxedoTouchConnectionError(str(err)) from err
+
+        self._tuxweb = capabilities is not None
+        self._capabilities = capabilities or frozenset()
+        if self._tuxweb:
+            _LOGGER.debug(
+                "The panel at %s runs tuxweb, declaring %s",
+                self._host,
+                sorted(self._capabilities),
+            )
+        else:
+            _LOGGER.debug(
+                "The panel at %s answered HTTP %s to the capability probe: "
+                "stock firmware",
+                self._host,
+                status,
+            )
+        return self._tuxweb
+
+    def _tuxweb_headers(self) -> dict[str, str]:
+        """The whole of tuxweb's auth: the token, as a bearer header.
+
+        tuxweb takes the same token as a `tuxweb_token` cookie too, but the
+        header is the form it documents first and one form is enough. Raised
+        rather than sent empty when there is no token: a request without one
+        is a 401 the caller would then have to read, and on this class a
+        refusal must never look like a session that could be renewed.
+        """
+        if self._tuxweb_token is None:
+            raise TuxedoTouchTokenRejected(
+                "This panel runs tuxweb, which needs a bearer token, and none "
+                "is configured for this entry - issue one on the panel with "
+                "'tuxweb --issue-token' and enter it on the re-authentication card"
+            )
+        return {"Authorization": f"Bearer {self._tuxweb_token}"}
+
+    def stream_headers(self) -> dict[str, str]:
+        """What the push stream sends instead of a session cookie on tuxweb."""
+        if not self.tuxweb:
+            raise TuxedoTouchError("stream_headers is for tuxweb mode only")
+        return self._tuxweb_headers()
+
     async def async_session_cookie(self) -> str:
         """Log in if needed and hand back the cookie a stream opens with.
 
@@ -235,6 +396,10 @@ class TuxedoTouchClient:
         authtoken, no identity header, no encrypted body - so this is the
         whole of what it needs from the client.
         """
+        if self.tuxweb:
+            # There is no session on tuxweb to hand out, and reaching for one
+            # would be a login: see stream_headers.
+            raise TuxedoTouchError("tuxweb has no session cookie; use stream_headers")
         await self._ensure_authenticated()
         if self._session_cookie is None:
             raise TuxedoTouchError("no session cookie after authenticating")
@@ -268,6 +433,14 @@ class TuxedoTouchClient:
     #    store it and attach it to every request from here on.
     # ------------------------------------------------------------------
     async def login(self) -> None:
+        if self.tuxweb:
+            # The one chokepoint every stock request passes through, so this
+            # is what makes "tuxweb mode never logs in" a property of the
+            # client rather than a habit of its callers. tuxweb serves no
+            # login page - the GET below would answer 404 - and a 401 from it
+            # is a refused token, which _tuxweb_call raises as such before
+            # any retry could land here.
+            raise TuxedoTouchError("tuxweb has no web login; the token is the auth")
         if self._failed_logins >= LOGIN_ATTEMPT_BUDGET:
             # Before the login-page GET, not merely before the POST: the unit
             # serves ONE connection at a time, so an attempt that is going to
@@ -621,6 +794,86 @@ class TuxedoTouchClient:
             raise TuxedoTouchError(f"Could not decrypt API response: {err}") from err
 
     # ------------------------------------------------------------------
+    # The same calls on tuxweb
+    #
+    # Same paths, same parameter names, and the same reply shapes as stock -
+    # `Sucess`, and arm answering under "Response" while disarm answers under
+    # "Result" - because tuxweb reproduces the vendor's, misspellings and all,
+    # so that one integration serves both. What differs is everything around
+    # the call: the parameters go as a plain form body rather than inside
+    # AES, the token goes as a bearer header rather than a cookie plus
+    # authtoken plus identity, and the status codes mean something. 200 on a
+    # command is the panel having ACTED; 504 is sent-but-not-confirmed; 400
+    # is a missing code; 401 is the token.
+    # ------------------------------------------------------------------
+    async def _tuxweb_call(
+        self, endpoint_path: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        headers = self._tuxweb_headers()
+        url = f"{self.base_url}{API_BASE_PATH}{endpoint_path}"
+        try:
+            async with self._session.post(
+                url,
+                # A dict is sent application/x-www-form-urlencoded, in this
+                # order, which is the order the stock path spells the same
+                # parameters in.
+                data=params,
+                headers=headers,
+                ssl=self._ssl_ctx or True,
+                timeout=_TIMEOUT,
+                allow_redirects=False,
+            ) as resp:
+                status = resp.status
+                try:
+                    payload = await resp.json(content_type=None)
+                except ValueError:
+                    # The failure bodies are JSON too, but a reason is worth
+                    # less than the status it came with; nothing below needs
+                    # the body to be readable.
+                    payload = None
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise TuxedoTouchConnectionError(str(err)) from err
+
+        if status == 401:
+            # Not a session that expired, and never retried: there is no
+            # login to fall back on, and the stock path's re-login on 401 is
+            # the reflex this branch exists to keep off the tuxweb path.
+            raise TuxedoTouchTokenRejected(
+                "tuxweb refused the bearer token (HTTP 401) - it has been "
+                "revoked or reissued on the panel, so enter the current one"
+            )
+        reason = _tuxweb_reason(payload)
+        if status == 504:
+            raise TuxedoTouchCommandNotConfirmed(
+                f"The panel did not confirm the command: tuxweb sent it and saw "
+                f"no change of state within its 8 s ceiling (HTTP 504{reason})"
+            )
+        if status != 200:
+            raise TuxedoTouchError(
+                f"tuxweb answered HTTP {status} to {endpoint_path}{reason}"
+            )
+        if not isinstance(payload, dict):
+            raise TuxedoTouchError(f"Unexpected tuxweb response shape: {payload!r}")
+        return payload
+
+    async def async_check_credentials(self) -> None:
+        """Prove the stored credentials against the panel, once.
+
+        The config flow's probe. On stock that is a full login - cookie and
+        key material, the same thing a poll would need - and it spends one
+        credential POST. On tuxweb it is one status read on the token, which
+        is the cheapest request the token gates; a refused token raises
+        TuxedoTouchTokenRejected, and a missing one raises it before anything
+        is sent. Which of the two it is comes from the probe, so a token
+        entered for a stock panel is simply not used and a tuxweb panel is
+        never asked for a login page it does not serve.
+        """
+        if await self.async_probe_capabilities():
+            await self.get_status()
+            return
+        await self.login()
+
+    # ------------------------------------------------------------------
     # Public operations
     # ------------------------------------------------------------------
     async def get_status(self) -> TuxedoStatus:
@@ -635,7 +888,16 @@ class TuxedoTouchClient:
         What it reads is a cache the firmware fills from ECP messages, which
         is why it can answer "Not available" on a panel that is working
         perfectly. The push stream does not read it.
+
+        On tuxweb the same call reads the live state model instead - the one
+        the stream is fed from - so it carries the armed flag and cannot
+        answer the placeholder; see _tuxweb_status for the one case that is
+        mapped onto it anyway.
         """
+        if self.tuxweb:
+            return _tuxweb_status(
+                await self._tuxweb_call("/GetSecurityStatus", {"operation": "get"})
+            )
         result = await self._call("/GetSecurityStatus", "operation=get")
         colour = result.get("Color")
         return TuxedoStatus(
@@ -702,14 +964,98 @@ class TuxedoTouchClient:
         The general lesson, since it has now cost three wrong turns here: a
         symbol proves capability, only the wire proves a route, and a jump
         table proves which message id rather than what triggers it.
+
+        All of the above is stock. On tuxweb the same reply IS worth acting
+        on: it is sent only once the state byte has flipped, and a command
+        the panel did not act on comes back as TuxedoTouchCommandNotConfirmed
+        instead. That is what `confirms_commands` reports to the coordinator.
         """
+        if self.tuxweb:
+            return await self._tuxweb_call(
+                "/AdvancedSecurity/ArmWithCode",
+                {
+                    "arming": mode,
+                    "pID": str(partition),
+                    "ucode": code,
+                    "operation": "set",
+                },
+            )
         params = f"arming={mode}&pID={partition}&ucode={code}&operation=set"
         return await self._call(
             "/AdvancedSecurity/ArmWithCode", params, allow_empty=True
         )
 
     async def disarm(self, code: str, partition: int = 1) -> dict[str, Any]:
+        if self.tuxweb:
+            return await self._tuxweb_call(
+                "/AdvancedSecurity/DisarmWithCode",
+                {"pID": str(partition), "ucode": code, "operation": "set"},
+            )
         params = f"pID={partition}&ucode={code}&operation=set"
         return await self._call(
             "/AdvancedSecurity/DisarmWithCode", params, allow_empty=True
         )
+
+
+def _capabilities_of(payload: Any) -> frozenset[str] | None:
+    """The capability strings in a probe answer, or None if it declared none.
+
+    None rather than an empty set is the point: a 200 whose body carries no
+    `capabilities` list - an HTML page, a JSON document about something else
+    - is not tuxweb, whereas tuxweb declaring an empty list would still be
+    tuxweb with nothing to offer. Only strings count; anything else in the
+    list is dropped rather than compared.
+    """
+    if not isinstance(payload, dict):
+        return None
+    declared = payload.get("capabilities")
+    if not isinstance(declared, list):
+        return None
+    return frozenset(item for item in declared if isinstance(item, str))
+
+
+def _tuxweb_reason(payload: Any) -> str:
+    """The `Result.Response` text of a tuxweb failure body, for an error message."""
+    if isinstance(payload, dict) and isinstance(payload.get("Result"), dict):
+        response = payload["Result"].get("Response")
+        if isinstance(response, str) and response:
+            return f": {response}"
+    return ""
+
+
+def _tuxweb_status(result: dict[str, Any]) -> TuxedoStatus:
+    """tuxweb's status answer as a TuxedoStatus.
+
+        {"partition": 1, "armed": true, "state": "2Armed Away"}
+
+    `state` is the stream's display field exactly as it follows the raw flag
+    byte: the colour digit first, then the text - so it is read the way
+    push.decode_status_frame reads that field, and both sources leave the
+    client in one vocabulary. `armed` is the flag itself, which a stock poll
+    never carries.
+
+    An empty `state` is tuxweb having seen no partition status yet, which is
+    what it answers between its own start and the panel's first report. That
+    is the same condition the stock cache reports as "Not available" - a
+    failed read rather than a state - and it is mapped onto that placeholder
+    so the coordinator handles both the one way it already does: the poll
+    fails, nothing is stored, and the stream's first frame ends it.
+    """
+    state = result.get("state")
+    armed = result.get("armed")
+    if not isinstance(state, str) or not isinstance(armed, bool):
+        raise TuxedoTouchError(f"Unexpected tuxweb status shape: {result}")
+    colour = None
+    if state[:1] in COLOURS:
+        colour = COLOURS[state[0]]
+        state = state[1:]
+    text = state.strip()
+    if not text:
+        return TuxedoStatus(status=STATUS_NOT_AVAILABLE)
+    countdown = COUNTDOWN_RE.match(text)
+    return TuxedoStatus(
+        status=text,
+        color=colour,
+        armed=armed,
+        seconds_remaining=int(countdown.group(1)) if countdown else None,
+    )

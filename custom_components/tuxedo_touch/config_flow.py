@@ -33,10 +33,12 @@ from .api import (
     TuxedoTouchClient,
     TuxedoTouchConnectionError,
     TuxedoTouchError,
+    TuxedoTouchTokenRejected,
 )
 from .const import (
     CONF_MAC,
     CONF_PARTITION,
+    CONF_TUXWEB_TOKEN,
     CONF_USE_HTTPS,
     DEFAULT_PARTITION,
     DEFAULT_PORT_HTTPS,
@@ -57,18 +59,35 @@ _PASSWORD = selector.TextSelector(
     selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
 )
 
-# The web password and the keypad code are both secrets: masked in the form,
-# never given a default and never sent back as a suggested value. A default
-# reaches the frontend, where the field can reveal it, and is also applied
-# when the user clears the field.
-SECRETS = (CONF_PASSWORD, CONF_CODE)
+# The web password, the keypad code and the tuxweb token are all secrets:
+# masked in the form, never given a default and never sent back as a
+# suggested value. A default reaches the frontend, where the field can reveal
+# it, and is also applied when the user clears the field.
+SECRETS = (CONF_PASSWORD, CONF_CODE, CONF_TUXWEB_TOKEN)
 
-# Everything the login handshake depends on. A reconfigure that changes none
-# of these - a different partition, a new keypad code - has nothing to prove
-# against the panel, and on this device an unnecessary probe is not free: see
+# Everything the login handshake depends on - and the token, which on tuxweb
+# is the handshake. A reconfigure that changes none of these - a different
+# partition, a new keypad code - has nothing to prove against the panel, and
+# on this device an unnecessary probe is not free: see
 # _async_validate_reconfigure.
-PROBED = (CONF_HOST, CONF_PORT, CONF_USE_HTTPS, CONF_USERNAME, CONF_PASSWORD)
+PROBED = (
+    CONF_HOST,
+    CONF_PORT,
+    CONF_USE_HTTPS,
+    CONF_USERNAME,
+    CONF_PASSWORD,
+    CONF_TUXWEB_TOKEN,
+)
 
+# The credentials a reauthentication can replace. A resubmission identical in
+# all of these is the set the panel has already refused.
+CREDENTIALS = (CONF_USERNAME, CONF_PASSWORD, CONF_TUXWEB_TOKEN)
+
+# The token is optional on every form and blank on every stock panel: it is
+# the one field a panel running tuxweb needs and stock firmware has no use
+# for, and which of the two a panel is comes from asking it, not from the
+# form. A blank token on a form that has one stored keeps the stored one,
+# the way the other secrets do.
 STEP_USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): str,
@@ -78,10 +97,11 @@ STEP_USER_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): _PASSWORD,
         vol.Optional(CONF_CODE): _PASSWORD,
         vol.Optional(CONF_PARTITION, default=DEFAULT_PARTITION): int,
+        vol.Optional(CONF_TUXWEB_TOKEN): _PASSWORD,
     }
 )
 
-# Same fields, but both secrets may be left blank to keep the stored values.
+# Same fields, but every secret may be left blank to keep the stored value.
 STEP_RECONFIGURE_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): str,
@@ -91,6 +111,7 @@ STEP_RECONFIGURE_SCHEMA = vol.Schema(
         vol.Optional(CONF_PASSWORD): _PASSWORD,
         vol.Optional(CONF_CODE): _PASSWORD,
         vol.Optional(CONF_PARTITION, default=DEFAULT_PARTITION): int,
+        vol.Optional(CONF_TUXWEB_TOKEN): _PASSWORD,
     }
 )
 
@@ -98,6 +119,7 @@ STEP_REAUTH_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): _PASSWORD,
+        vol.Optional(CONF_TUXWEB_TOKEN): _PASSWORD,
     }
 )
 
@@ -114,6 +136,7 @@ STEP_DHCP_CONFIRM_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): _PASSWORD,
         vol.Optional(CONF_CODE): _PASSWORD,
         vol.Optional(CONF_PARTITION, default=DEFAULT_PARTITION): int,
+        vol.Optional(CONF_TUXWEB_TOKEN): _PASSWORD,
     }
 )
 
@@ -145,6 +168,18 @@ def _without_secrets(data: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k not in SECRETS}
 
 
+def _without_blank_optionals(data: Mapping[str, Any]) -> dict[str, Any]:
+    """A form's input as it is stored: an emptied optional field is absent.
+
+    An empty code field must not be stored as a code, and an empty token
+    field must not be stored as a token - the entry with no token is the
+    stock entry, and "" is not that.
+    """
+    return {
+        k: v for k, v in data.items() if k not in (CONF_CODE, CONF_TUXWEB_TOKEN) or v
+    }
+
+
 def _needs_a_probe(entry: ConfigEntry[Any], data: Mapping[str, Any]) -> bool:
     """Whether anything the login handshake depends on has changed."""
     return any(data.get(field) != entry.data.get(field) for field in PROBED)
@@ -159,6 +194,11 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     the coordinator's, so this login lands on the connection the entry left
     behind rather than opening a second one to a panel that serves one at a
     time.
+
+    The client asks the panel which firmware it runs first, and that decides
+    what "a real login" is: the handshake on stock, one token-gated status
+    read on tuxweb. A tuxweb panel with no token entered fails here with the
+    token named rather than with a login the panel does not serve.
     """
     session = async_create_clientsession(hass, auto_cleanup=False)
     try:
@@ -169,8 +209,9 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
             use_https=data[CONF_USE_HTTPS],
             username=data[CONF_USERNAME],
             password=data[CONF_PASSWORD],
+            tuxweb_token=data.get(CONF_TUXWEB_TOKEN),
         )
-        await client.login()
+        await client.async_check_credentials()
     finally:
         # detach(), not close(): helper-created sessions share HA's connector
         # pool, so HA replaces close() with a warn-and-no-op wrapper. detach()
@@ -199,6 +240,14 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         """Validate credentials against the panel, returning form errors."""
         try:
             await _validate_input(self.hass, data)
+        except TuxedoTouchTokenRejected as err:
+            # Before the parent class, so a token is named as a token. The
+            # message tells the two apart: a token the panel refused, or a
+            # tuxweb panel that was given none.
+            _LOGGER.debug("Tuxedo Touch setup refused on the tuxweb token: %s", err)
+            if data.get(CONF_TUXWEB_TOKEN):
+                return {"base": "invalid_token"}
+            return {"base": "tuxweb_token_required"}
         except TuxedoTouchAuthError:
             return {"base": "invalid_auth"}
         except TuxedoTouchConnectionError:
@@ -284,10 +333,7 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             )
             errors = await self._async_validate(user_input)
             if not errors:
-                data = dict(user_input)
-                # An emptied code field must not be stored as a code.
-                if not data.get(CONF_CODE):
-                    data.pop(CONF_CODE, None)
+                data = _without_blank_optionals(user_input)
                 # A panel typed in by hand carries no MAC: the panel reports
                 # none over its API and only a DHCP lease has one. The entry
                 # gains it the first time Home Assistant sees a lease for the
@@ -443,9 +489,7 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             data = {**user_input, CONF_HOST: host, CONF_MAC: mac}
             errors = await self._async_validate(data)
             if not errors:
-                # An emptied code field must not be stored as a code.
-                if not data.get(CONF_CODE):
-                    data.pop(CONF_CODE, None)
+                data = _without_blank_optionals(data)
                 await self.async_set_unique_id(
                     build_unique_id(mac, host, data[CONF_PORT], data[CONF_PARTITION])
                 )
@@ -582,14 +626,26 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         A failed probe on an entry already flagged says so differently: at
         that point the account may be locked rather than the password wrong,
         and the two need different instructions.
+
+        The same card serves a tuxweb panel whose token was refused. There
+        the probe is one token-gated status read, which spends no login and
+        risks no lockout, so the flag is never set for it and the only
+        question is whether the token typed is a new one.
         """
         errors: dict[str, str] = {}
         reauth_entry = self._get_reauth_entry()
         already_rejected = bool(reauth_entry.options.get(OPT_CREDENTIALS_REJECTED))
         if user_input is not None:
+            # A blank token keeps the stored one, as the other forms do with
+            # their secrets; the card is most often answered for a password.
+            merged = dict(user_input)
+            if not merged.get(CONF_TUXWEB_TOKEN):
+                merged.pop(CONF_TUXWEB_TOKEN, None)
+                if reauth_entry.data.get(CONF_TUXWEB_TOKEN):
+                    merged[CONF_TUXWEB_TOKEN] = reauth_entry.data[CONF_TUXWEB_TOKEN]
             if all(
-                user_input.get(field) == reauth_entry.data.get(field)
-                for field in (CONF_USERNAME, CONF_PASSWORD)
+                merged.get(field) == reauth_entry.data.get(field)
+                for field in CREDENTIALS
             ):
                 # Unchanged credentials are the ones the panel refused, so
                 # nothing goes out on the strength of the Submit button. But
@@ -599,13 +655,20 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                 # and re-enabling it at the touchscreen makes the stored
                 # password correct again with nothing in the entry to say so.
                 # Ask once, name the cost, and probe only if the user says yes.
+                #
+                # No flag and a stored token is the tuxweb card: a refused
+                # token wrote no flag, because resending one is free, so the
+                # thing to say is that the token is still the refused one.
                 if already_rejected:
                     return await self.async_step_reauth_retry()
-                errors = {"base": "invalid_auth"}
+                if merged.get(CONF_TUXWEB_TOKEN):
+                    errors = {"base": "invalid_token"}
+                else:
+                    errors = {"base": "invalid_auth"}
             else:
-                errors = await self._async_validate({**reauth_entry.data, **user_input})
+                errors = await self._async_validate({**reauth_entry.data, **merged})
                 if not errors:
-                    return self._async_credentials_accepted(reauth_entry, user_input)
+                    return self._async_credentials_accepted(reauth_entry, merged)
                 if already_rejected and errors.get("base") == "invalid_auth":
                     errors = {"base": "possibly_locked_out"}
 

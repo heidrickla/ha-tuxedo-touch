@@ -8,11 +8,19 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_MAC
+from .const import CONF_MAC, CONF_TUXWEB_TOKEN
 from .coordinator import TuxedoTouchConfigEntry
 
 # The host is on the user's LAN and the credentials open their alarm panel.
-REDACT = {CONF_PASSWORD, CONF_USERNAME, CONF_HOST, CONF_MAC, "code"}
+# The tuxweb token is a credential in exactly that sense.
+REDACT = {
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    CONF_HOST,
+    CONF_MAC,
+    CONF_TUXWEB_TOKEN,
+    "code",
+}
 
 
 async def async_get_config_entry_diagnostics(
@@ -23,6 +31,14 @@ async def async_get_config_entry_diagnostics(
     status = coordinator.data
     return {
         "config": async_redact_data(dict(entry.data), REDACT),
+        # Which contract the panel answered to when it was asked at setup:
+        # stock, or tuxweb with the capabilities it declared. Read before
+        # anything else in the report, because the two fail differently - a
+        # tuxweb entry has no login to be refused and no status cache to
+        # answer "Not available" from, and its commands are confirmed or
+        # failed rather than merely sent.
+        "firmware": "tuxweb" if coordinator.client.tuxweb else "stock",
+        "capabilities": sorted(coordinator.client.capabilities),
         # The partition this entry addresses on the REST poll and on every
         # arm/disarm command. NOT a filter on the push stream, which carries
         # no partition field and is scoped by the firmware to whichever
@@ -55,7 +71,8 @@ async def async_get_config_entry_diagnostics(
         # differently and the rest of the report cannot be read without
         # knowing which was speaking: `stream` is the panel reporting itself,
         # `poll` the fallback status read, `assumed` a command the panel
-        # accepted that neither source has confirmed yet.
+        # accepted that neither source has confirmed yet, `command` one that
+        # tuxweb confirmed in its reply before either source spoke.
         # The strings are the last good ones - a `Not available` answer fails
         # the poll rather than being stored. That answer is a firmware quirk
         # rather than a fault, and it is why a poll-only install can sit

@@ -40,30 +40,54 @@ the only assumption it makes. Nothing here requires a modified panel.
 
 The panel has no version, model or firmware endpoint of any kind — confirmed from the
 vendor's own `script/tuxapi.js`, where the whole API surface is enumerated. The firmware
-string is readable only on the unit's own screen. **So this integration cannot detect
-which firmware it is talking to, and therefore assumes the strictest case in every
-instance where behaviour differs.**
+string is readable only on the unit's own screen. **So this integration cannot tell a
+stock panel from a patched vendor build, and therefore assumes the strictest case in
+every instance where behaviour differs.**
 
 | Behaviour | Stock firmware | Modified firmware |
 |---|---|---|
 | Failed web logins | Three disable **every** web account, permanently, with no timeout. Recovery needs someone at the touchscreen: account setup, Enable All, Apply. | Some builds allow five and clear themselves after five minutes. |
 | What this integration does | Spends **one** automatic login attempt per credential set and then waits for you — see [One login attempt, then it waits for you](#one-login-attempt-then-it-waits-for-you). | Identical. The safe behaviour is the same behaviour, so no detection is needed. |
 
-That table has one row today because one row is all that differs. It exists so the
-pattern is established: **if a future capability needs a firmware this integration
-cannot detect, it is documented here as unavailable on stock rather than assumed
-present.** Any such capability has to be optional, detected before use, and absent
-without complaint — probing an unknown endpoint to find out what a panel does with it
-is not something this integration will do on someone else's alarm.
+That table has one row because one row is all that differs between stock and a patched
+vendor build. It exists so the pattern is established: **if a capability needs a
+firmware this integration cannot detect, it is documented here as unavailable on stock
+rather than assumed present.** Any such capability has to be optional, detected before
+use, and absent without complaint — probing an unknown endpoint to find out what a
+panel does with it is not something this integration will do on someone else's alarm.
 
-Work is underway elsewhere on replacement panel firmware. If capabilities arrive with
-it, they will keep the same endpoints, the same schema and the same field names as the
-vendor surface, so that one integration serves both and a stock panel loses nothing.
-A capability-detection route is planned alongside it, and that is what would let this
-table grow: the integration could ask the panel once what it supports and light up a
-better path only where it is genuinely present, rather than probing to find out. Until
-that exists, the row above is the whole of the difference and stock is the only
-behaviour assumed.
+### tuxweb, the replacement web server
+
+The one question the integration does ask is `GET /system_http_api/API_REV01/GetCapabilities`,
+once, when an entry is set up. Stock firmware answers it with its ordinary 404 for an
+unknown endpoint (measured, and permanent), and nothing else changes: the endpoint needs
+no session, no login is spent on the question, and a stock entry then behaves exactly
+as it did before the question existed. A panel running **tuxweb** — the replacement
+panel web server developed alongside this integration — answers 200 with a JSON body
+whose `capabilities` list is the only thing branched on; the `firmware` and `contract`
+fields in it are for people, and a capability string this integration does not know is
+ignored. That is the detection route this section used to promise. A panel that cannot
+be reached at all fails the question the way it would fail a poll: a setup retry, with
+nothing remembered from a connection that never happened.
+
+On tuxweb the same paths carry a simpler contract, and the client keeps a second path
+for it beside the stock one rather than papering over the difference:
+
+| | Stock firmware | tuxweb |
+|---|---|---|
+| Authentication | Challenge/HMAC login, a per-session AES key, `authtoken` and `identity` headers, a session cookie | A pre-shared bearer token, issued on the panel with `tuxweb --issue-token <label>` (64 hex characters) and sent as `Authorization: Bearer`. No login page, no key page, no AES. |
+| Event stream | Same path and frames, on the session cookie | Same path, byte-identical frames, on the bearer token |
+| Arm and disarm reply | 200 means the command was *sent*; what the panel did arrives on the stream | 200 means the panel *acted* (its state flipped); 504 means sent and not confirmed within eight seconds, which fails the call rather than leaving a state assumed |
+| Status read | The ECP-fed cache, which can answer `Not available` | The live state model the stream is fed from, carrying the armed flag |
+| A refused credential | Counts towards the three-strike lockout above; the integration stops and asks you | A 401. Nothing is counted and nothing locks, so the integration asks you for the current token and records no lockout |
+
+The token goes in the **tuxweb token** field, optional on every form and blank on every
+stock panel. Which of the two contracts a panel speaks comes from asking it, not from
+whether a token was typed: a token given to a stock panel is stored and not used, and a
+tuxweb panel given none is asked for one on the re-authentication card rather than
+failing to connect. The diagnostics download says which contract an entry is on
+(`firmware`) and what the panel declared (`capabilities`); the token itself is redacted
+like the password.
 
 ## Supported functions
 
@@ -163,11 +187,14 @@ no lease - add it by hand with Add Integration -> "Honeywell Tuxedo Touch".
 | Web login password | The unit's web login password. Masked; never shown again once stored. |
 | Keypad user code | Optional. The 4-digit user code used as the default for arm and disarm so automations and dashboards need not supply one. Masked; never shown again once stored. Leave it empty to be asked for a code on every arm and disarm. |
 | Partition number | The panel partition this entry controls. Default 1. Add the integration once per partition for a multi-partition panel. |
+| tuxweb token | Optional, and empty on stock firmware. Only for a panel running the tuxweb replacement web server: the token issued on the panel with `tuxweb --issue-token`. Masked; never shown again once stored. See [tuxweb, the replacement web server](#tuxweb-the-replacement-web-server). |
 
 Setup performs a real login against the panel before the entry is created, so a wrong
 password, an unreachable address or a panel that answered oddly is caught on the form
 with a message that says which. This is true of the discovered panel's form too: the
 address comes from the lease, everything else is asked for and checked the same way.
+On a panel running tuxweb the check is one token-gated status read instead of a login,
+and a wrong or missing token is named as such on the form.
 
 **On HTTPS**: leave it enabled unless you have specifically disabled "Secured Web Server
 Access" in the unit's settings. The unit's command endpoints redirect to HTTPS regardless
@@ -339,6 +366,13 @@ cannot show the change either, the entity shows the state that was asked for and
 it `assumed` in `tuxedo_source`, because nothing confirmed it. The next real status from
 either source replaces it. A poll that was already in flight when the command went out
 is discarded rather than allowed to flip the entity back.
+
+On a panel running tuxweb the reply itself is evidence: 200 is sent only once the panel
+has been seen to act, and a command it did not act on within eight seconds comes back
+as 504 and fails the call with that reason — nothing is assumed. The stream and the poll
+still come first, because they name the mode and the reply does not; when neither can
+speak, the state that was asked for is shown with `tuxedo_source` set to `command`
+rather than `assumed`, because the panel confirmed it.
 
 ### When the two sources disagree
 

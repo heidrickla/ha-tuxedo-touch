@@ -6,6 +6,14 @@ docs/tuxedo_touch_api_notes.md, so a test drives the actual request
 building, cookie handling, encryption and frame parsing rather than a mock
 of them.
 
+The same server stands in for a panel running tuxweb, the replacement web
+server, with `tuxweb=True`: the capability endpoint answers 200, the login
+and key pages are gone, the API takes a plain form body behind a bearer
+token, and commands are confirmed or refused by status code. Implemented
+from tuxweb's own src/api.rs and src/serve.rs, shape for shape - the same
+paths, the vendor's misspelt `Sucess`, arm answering under `Response` and
+disarm under `Result` - because that is what the integration is held to.
+
 Plain HTTP on 127.0.0.1: the panel's expired 1024-bit demo certificate and
 its legacy renegotiation are a property of the transport, not of anything
 tested here, and tests/test_client_io.py already pins the SSLContext they
@@ -32,6 +40,27 @@ BLOB = KEY_HEX + IV_HEX
 CHALLENGE = "a1b2c3d4e5f60718293a4b5c6d7e8f9"
 SESSION_COOKIE_NAME = "z9ZAqJtI_1392221684"
 BOUNDARY = "EH912ZZ"
+
+# What tuxweb issues: 32 bytes from the CSPRNG as 64 hex characters.
+TUXWEB_TOKEN = "5f4dcc3b5aa765d61d8327deb882cf99e99a18c428cb38d5f260853678922e03"
+# The capabilities tuxweb 0.1.0 declares, as api.rs spells them.
+TUXWEB_CAPABILITIES = ("panel_link_state", "command_result", "status_refresh")
+# The stock answer to the capability endpoint: 404 with this exact 20-byte
+# body, measured on TUXW_V5.3.21.0_VA and reproduced by tuxweb's not_found().
+# The key is unquoted, so it is not JSON, and that is part of the measurement.
+STOCK_NOT_FOUND = b'{Status:"Not Found"}'
+# tuxweb's reply bodies, byte for byte from api.rs and serve.rs.
+TUXWEB_ARM_OK = b'{"Status":"Sucess","Result":{"Response":"Command sent sucessfully"}}'
+TUXWEB_DISARM_OK = b'{"Status":"Sucess","Result":{"Result":"Disarmed"}}'
+TUXWEB_NOT_CONFIRMED = (
+    b'{"Status":"Failure","Result":{"Response":"command sent but not confirmed"}}'
+)
+TUXWEB_CODE_REQUIRED = (
+    b'{"Status":"Failure","Result":{"Response":"a user code is required"}}'
+)
+# The colour digit tuxweb puts in front of the display text, from the word
+# the stock poll spells it with.
+COLOUR_DIGITS = {"Green": "1", "Red": "2", "Yellow": "3"}
 
 # The two frames of the live capture, byte for byte. The flag is a raw
 # 0xFE/0xFF byte, so these are bytes objects and never str.
@@ -101,11 +130,57 @@ class FakePanel:
         push_status: int = 200,
         empty_command_body: bool = True,
         auto_push: bool = False,
+        tuxweb: bool = False,
+        token: str | None = TUXWEB_TOKEN,
+        capabilities: tuple[str, ...] = TUXWEB_CAPABILITIES,
     ) -> None:
         self.username = username
         self.password = password
         self.status = status
         self.colour = colour
+        # Which firmware this fake is. tuxweb serves no login page and no key
+        # page, gates the API and the stream on `token` - the one token in
+        # its store; None is an empty store, which authenticates nobody - and
+        # confirms commands rather than merely sending them.
+        self.tuxweb = tuxweb
+        self.token = token
+        self.capabilities = list(capabilities)
+        # tuxweb's state model: the armed flag its status answer carries and
+        # its commands are confirmed against. A stock panel has no such
+        # thing on the API - its poll carries display text only.
+        self.armed = False
+        # Whether a tuxweb command is confirmed (200, the state flipped) or
+        # sent and never confirmed (504, the state unchanged): a faulted zone
+        # refusing an arm, or a code the panel will not take.
+        self.confirm_commands = True
+        # The probe, counted separately from everything else because the
+        # contract is "once, at setup" - and because on stock it is the one
+        # request this integration makes before knowing what it talks to.
+        self.capability_probes = 0
+        # Overrides for the probe's answer: a status other than the
+        # firmware's own, or a 200 carrying this body instead of the
+        # capability document. What is detected must be the capability list
+        # and nothing else, and these are how a test shows that.
+        self.capability_status: int | None = None
+        self.capability_body: bytes | None = None
+        # Reported in the capability document for people; a client must not
+        # branch on either, and a test changes them to prove it does not.
+        self.firmware = "tuxweb/0.1.0"
+        self.contract = 1
+        # Every request to the status or command endpoints, authenticated or
+        # not - a refusal that was retried shows up here as two.
+        self.api_requests = 0
+        # A tuxweb status answer that is not the documented one: a 200 with
+        # this body instead. For the shape checks on the client's side.
+        self.tuxweb_status_body: bytes | None = None
+        # Every GET of the login page, so a test can assert that tuxweb mode
+        # never asks for one. `login_attempts` below counts credential POSTs.
+        self.login_page_requests = 0
+        # What the most recent API request carried, so a test can assert on
+        # the wire shape - bearer token versus authtoken/identity/cookie, form
+        # body versus ciphertext - rather than on the outcome alone.
+        self.last_api_headers: dict[str, str] = {}
+        self.last_command_body: str | None = None
         # A busy or rebooting embedded server, on the two requests that are
         # not the credential comparison. Neither is the panel judging a
         # password, and telling them apart from one that is is what several
@@ -167,6 +242,9 @@ class FakePanel:
         app.router.add_get("/authenticated/index.html", self._login_page)
         app.router.add_post("/authenticated/index.html", self._login)
         app.router.add_get("/tuxedoapi.html", self._keys)
+        app.router.add_get(
+            "/system_http_api/API_REV01/GetCapabilities", self._capabilities
+        )
         app.router.add_post(
             "/system_http_api/API_REV01/GetSecurityStatus", self._status
         )
@@ -204,7 +282,50 @@ class FakePanel:
         self._cookie_value = "expired"
 
     # ------------------------------------------------------------ handlers
+    async def _capabilities(self, request: web.Request) -> web.Response:
+        """The one endpoint that says which firmware this is. No auth either way."""
+        self.capability_probes += 1
+        if self.capability_status is not None:
+            return web.Response(status=self.capability_status, body=b"")
+        if self.capability_body is not None:
+            return web.Response(body=self.capability_body, content_type="text/html")
+        if not self.tuxweb:
+            return web.Response(
+                status=404, body=STOCK_NOT_FOUND, content_type="application/json"
+            )
+        return web.json_response(
+            {
+                "contract": self.contract,
+                "firmware": self.firmware,
+                "panel_model": "TUXW",
+                "capabilities": self.capabilities,
+            }
+        )
+
+    def _token_ok(self, request: web.Request) -> bool:
+        """tuxweb's auth.token_from_head: a bearer header or a tuxweb_token cookie."""
+        if self.token is None:
+            return False
+        bearer = request.headers.get("Authorization", "")
+        if bearer.startswith("Bearer "):
+            return bearer.removeprefix("Bearer ").strip() == self.token
+        for part in request.headers.get("Cookie", "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == "tuxweb_token":
+                return value == self.token
+        return False
+
+    @staticmethod
+    def _unauthorized() -> web.Response:
+        """tuxweb's 401: a real status with an empty body, so a stream client
+        sees the denial rather than reading a login page to EOF."""
+        return web.Response(status=401, body=b"")
+
     async def _login_page(self, request: web.Request) -> web.Response:
+        self.login_page_requests += 1
+        if self.tuxweb:
+            # tuxweb serves nothing outside the API namespace and the stream.
+            return web.Response(status=404, body=b"")
         resp = web.Response(text="<html>login</html>")
         resp.headers["Random"] = CHALLENGE
         resp.headers["RandomID"] = "42"
@@ -215,6 +336,8 @@ class FakePanel:
         # Counted BEFORE the comparison: what a panel counts is the attempt,
         # not the outcome.
         self.login_attempts += 1
+        if self.tuxweb:
+            return web.Response(status=404, body=b"")
         if self.login_post_failures_left:
             # The web server failing, above the login logic: the request
             # arrived, and no credential was ever compared.
@@ -243,6 +366,8 @@ class FakePanel:
         return f"{SESSION_COOKIE_NAME}={self._cookie_value}"
 
     async def _keys(self, request: web.Request) -> web.Response:
+        if self.tuxweb:
+            return web.Response(status=404, body=b"")
         if not self._authenticated(request):
             return web.Response(status=302, text="")
         if self.keys_failures_left:
@@ -251,6 +376,25 @@ class FakePanel:
         return web.Response(text=f'<input id="readit" value="{BLOB}">')
 
     async def _status(self, request: web.Request) -> web.Response:
+        self.api_requests += 1
+        self.last_api_headers = dict(request.headers)
+        if self.tuxweb:
+            if not self._token_ok(request):
+                return self._unauthorized()
+            self.polls += 1
+            if self.tuxweb_status_body is not None:
+                return web.Response(
+                    body=self.tuxweb_status_body, content_type="text/html"
+                )
+            # push.rs status_json: the display field after the flag byte, so
+            # the colour digit leads the text; empty before any status has
+            # been seen at all.
+            state = ""
+            if self.status:
+                state = COLOUR_DIGITS.get(self.colour, "") + self.status
+            return web.json_response(
+                {"partition": 1, "armed": self.armed, "state": state}
+            )
         if not self._authenticated(request):
             return web.Response(status=401, text="")
         self.polls += 1
@@ -260,6 +404,10 @@ class FakePanel:
         return web.json_response({"Result": _encrypt(_json.dumps(body))})
 
     async def _command(self, request: web.Request) -> web.Response:
+        self.api_requests += 1
+        self.last_api_headers = dict(request.headers)
+        if self.tuxweb:
+            return await self._tuxweb_command(request)
         if not self._authenticated(request):
             return web.Response(status=401, text="")
         command = request.match_info["command"]
@@ -281,12 +429,55 @@ class FakePanel:
             {"Result": _encrypt(_json.dumps({"Result": {"Response": "Sucess"}}))}
         )
 
+    async def _tuxweb_command(self, request: web.Request) -> web.Response:
+        """serve.rs handle_security, answer for answer.
+
+        The token first, then the code, then the command: sent and confirmed
+        (200, the state byte flipped) or sent and not (504). A confirmed
+        command moves the state model the status answer reads from, and puts
+        a frame on the stream when `auto_push` says a real panel would.
+        """
+        if not self._token_ok(request):
+            return self._unauthorized()
+        self.last_command_body = await request.text()
+        form = await request.post()
+        command = request.match_info["command"]
+        self.commands.append(command)
+        try:
+            ucode = int(str(form.get("ucode", "0")))
+        except ValueError:
+            ucode = 0
+        if ucode == 0:
+            return web.Response(
+                status=400, body=TUXWEB_CODE_REQUIRED, content_type="application/json"
+            )
+        if not self.confirm_commands:
+            return web.Response(
+                status=504, body=TUXWEB_NOT_CONFIRMED, content_type="application/json"
+            )
+        if command == "DisarmWithCode":
+            self.armed = False
+            self.status = "Ready To Arm"
+            self.colour = "Green"
+            if self.auto_push:
+                await self.push_status_text("Ready To Arm", armed=False)
+            return web.Response(body=TUXWEB_DISARM_OK, content_type="application/json")
+        self.armed = True
+        self.status = "59  Secs Remaining"
+        self.colour = "Red"
+        if self.auto_push:
+            await self.push(COUNTDOWN_FRAME)
+        return web.Response(body=TUXWEB_ARM_OK, content_type="application/json")
+
     async def _stream(self, request: web.Request) -> Any:
         self.stream_requests += 1
         self.last_push_headers = dict(request.headers)
         if self.push_status != 200:
             return web.Response(status=self.push_status, text="")
-        if not self._authenticated(request):
+        if self.tuxweb:
+            if not self._token_ok(request):
+                return self._unauthorized()
+        elif not self._authenticated(request):
             return web.Response(status=302, text="")
 
         resp = web.StreamResponse(

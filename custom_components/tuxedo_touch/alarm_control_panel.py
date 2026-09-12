@@ -164,8 +164,9 @@ class TuxedoAlarmPanel(
             "tuxedo_status": status.status,
             "tuxedo_color": status.color,
             # Which source reported it: "stream" (the panel pushed it),
-            # "poll" (GetSecurityStatus) or "assumed" (neither could report
-            # the command that was just sent).
+            # "poll" (GetSecurityStatus), "assumed" (neither could report
+            # the command that was just sent) or "command" (neither could,
+            # but the panel confirmed it in the reply - tuxweb only).
             "tuxedo_source": status.source,
             # Seconds left of the exit delay, straight from the countdown the
             # panel pushes once a second; None whenever it is not counting.
@@ -192,7 +193,9 @@ class TuxedoAlarmPanel(
         on the push stream. `expect_armed` is what to watch for there - the
         stream's own armed flag, which needs no display text to be read -
         and the coordinator falls back to a poll, then to the assumed status,
-        if the panel never reports it.
+        if the panel never reports it. On tuxweb the reply itself says
+        whether the panel acted, and a command it did not act on fails here
+        with the reason rather than leaving anything assumed.
         """
 
         def confirms(status: TuxedoStatus) -> bool | None:
