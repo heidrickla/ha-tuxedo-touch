@@ -17,6 +17,85 @@ is a custom integration and the badge is core-only.
 
 ---
 
+## 4. Panel-offline (cmd 22) — and why the link sensor cannot trip without it
+
+**Raised 2026-09-12, after 0.6.0 shipped. The ECP link sensor released in 0.6.0
+is presently unable to trip, and this is the fix.** Two separate reasons, both
+confirmed by reading the code rather than assumed:
+
+- `STATUS_CMDS = frozenset({CMD_PARTITION_STATUS, CMD_UNSOLICITED})` — **21 and
+  −1 only** — so `_handle_frame` (`push.py:825`) **drops every cmd 22**.
+  `decode_status_frame` handles a 22 correctly (it locates the flag byte); the
+  frame never reaches it.
+- On v15 tuxweb a 22 was never emitted, and −1 was printed as `4294967295`, so
+  the marker the sensor keys on was unreachable there too. v16 fixes the
+  firmware side; this fixes the integration side, and the fix is **also correct
+  for stock**, which puts the same shape on the wire.
+
+### What the producer actually does
+
+`/tuxedo` `CReceiverThread::sltSendChangedPartitionStatus` @0x144880:
+
+- `msgType` is **21 while `GetOnlineStatus() == 1`, and 22 otherwise**.
+  `GetOnlineStatus()` is the VISTA's own online byte (1..4; 1 = online, the rest
+  its busy / downloading / offline family).
+- Field `+0x08` — our `panel_status_code` — is `PanelIsTalking() ?
+  GetOnlineStatus() : -1`.
+
+**So two independent facts ride each frame: the TYPE says whether the VISTA calls
+itself online; the CODE says whether the Tuxedo can hear it.** `-1` can appear on
+a 21 *or* a 22. They are not the same condition and a user needs both.
+
+### Wire shapes
+
+```
+21:  0:21:<code>:<flag hex>:<flag><css><text>:<quickarm>   then THREE  0:-1:<flag><css><text>
+22:  0:22:<flag><css><text>:<code>                          then TWO    0:-1:<flag><css><text>
+```
+
+**The 22 carries its code in the LAST field and has no separate hex field.** So
+`panel_status_code = _status_code_of(fields[2])` is right for a 21 and wrong for
+a 22, where field 2 is the text. It currently returns `None` there, which breaks
+nothing but sees nothing.
+
+### Required
+
+1. Add **22** to `STATUS_CMDS`. Take the code from `fields[-1]` for a 22 and from
+   `fields[2]` for a 21. The `-1` copies are unchanged and still carry no code.
+2. Keep the ECP link sensor on `code == -1`, now reachable from both types.
+3. **Add a second diagnostic `problem` binary sensor for panel-offline**, on while
+   the latest status frame is a 22. Not an attribute: it is a distinct fact from
+   the link, and the whole argument for the link sensor — that an automation
+   needs something to act on and an unavailable entity is not it — applies
+   identically here. Carry the raw code (2..4) in diagnostics.
+   **Create it on both firmwares**, unlike the link sensor: cmd 22 is emitted by
+   stock and tuxweb alike, so there is no capability to gate on and no
+   promise-never-made problem.
+4. The 22's text is the panel's real status prompt and is fine to show as the
+   alarm text.
+
+### Tests — pin all four, no capture exists
+
+**No capture holds a 22 or a `-1`: this panel has never been offline while
+anyone was recording.** These fixtures are the disassembled shapes, not observed
+traffic, and the tests must say so.
+
+| frame | link sensor | offline sensor |
+|---|---|---|
+| `0:22:\xfe1Ready To Arm:3` | off | **on** |
+| `0:22:\xfe1Ready To Arm:-1` | **on** | **on** |
+| `0:21:-1:fe:\xfe1Ready To Arm:2` | **on** | off |
+| the `-1` copies | unchanged | never carry a code |
+
+### Changelog must say what was not observed
+
+State plainly that **the condition has not been seen live on this panel** — the
+producer was read, not captured — and that v15 tuxweb never sent a 22 and printed
+`-1` as `4294967295`, so the 0.6.0 link sensor could not trip there. Someone will
+otherwise read "ECP link sensor, 0.6.0" and believe it was working.
+
+---
+
 ## 0. Stock is the default, and a stale verdict must not outlive it
 
 Lewis, 2026-09-12: *"You should auto detect custom firmware so your default is
