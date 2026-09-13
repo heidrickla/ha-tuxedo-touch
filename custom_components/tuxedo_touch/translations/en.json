@@ -116,6 +116,9 @@
     "binary_sensor": {
       "ecp_link": {
         "name": "ECP link"
+      },
+      "panel_offline": {
+        "name": "Panel offline"
       }
     },
     "sensor": {
