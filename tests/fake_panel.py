@@ -94,6 +94,32 @@ def status_frame(
     )
 
 
+def offline_frames(
+    text: str, armed: bool, colour: str = "1", status_code: int = 3
+) -> list[bytes]:
+    """The parts one panel-offline status (command 22) puts on the stream.
+
+    The same producer as status_frame's 21 - CReceiverThread::
+    sltSendChangedPartitionStatus - on the other branch of its
+    GetOnlineStatus() == 1 test: the VISTA reported itself not online, so
+    the type is 22. Barracuda's handler for it (0xd9c4) formats
+    `session:22:<flag><css><text>:<code>` - no hex field, the code LAST -
+    and follows it with TWO -1 copies of the text where a 21 gets three.
+    `status_code` is the VISTA's online byte, 2..4 by construction, or -1
+    when the ECP link is down at the same time.
+
+    NOT A CAPTURE. No recording from this panel holds a 22, because it has
+    never been offline while anything was listening; this is the shape read
+    out of the vendor's handler and reproduced by tuxweb from v16.
+    """
+    flag = 0xFF if armed else 0xFE
+    body = bytes([flag]) + f"{colour}{text}".encode("latin-1")
+    head = b"['ud','SimpleDbgServer2ClientIntf','statusMessageText',[\""
+    record = head + b"0:22:" + body + f":{status_code}".encode("latin-1") + b'"]]'
+    copy = head + b"0:-1:" + body + b'"]]'
+    return [record, copy, copy]
+
+
 def console_frames(line_1: str, line_2: str) -> list[bytes]:
     """The FOUR parts one keypad LCD change puts on the stream, in order.
 
@@ -331,6 +357,15 @@ class FakePanel:
         while someone had /console.html open; see console_frames.
         """
         for frame in console_frames(line_1, line_2):
+            await self.push(frame)
+
+    async def push_offline(self, text: str, armed: bool, status_code: int = 3) -> None:
+        """One panel-offline status: the id-22 record, then its two -1 copies.
+
+        See offline_frames for the shape and for the fact that it is read
+        from the handler rather than captured.
+        """
+        for frame in offline_frames(text, armed, "2" if armed else "1", status_code):
             await self.push(frame)
 
     def expire_session(self) -> None:

@@ -63,6 +63,14 @@ async def async_get_config_entry_diagnostics(
         # whole explanation for an alarm entity that is unavailable while
         # `last_update_success` and `push.connected` below are both true.
         "ecp_link_down": coordinator.ecp_link_down,
+        # The other half of the panel's health: whether the VISTA's last
+        # status came as a command-22 record - the panel reporting ITSELF as
+        # not online - and the online byte that record carried (2..4, or -1
+        # when the link was down at the same time; null while online). A
+        # different fact from the link above: the Tuxedo may hear the panel
+        # perfectly well while the panel says it is busy or downloading.
+        "panel_offline": coordinator.panel_offline,
+        "panel_offline_code": coordinator.panel_offline_code,
         # The fallback poll: its interval, and whether it last worked.
         "update_interval": str(coordinator.update_interval),
         "last_update_success": coordinator.last_update_success,

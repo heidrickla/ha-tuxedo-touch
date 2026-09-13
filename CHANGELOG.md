@@ -4,6 +4,53 @@ Notable changes to this integration, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version
 numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [Unreleased]
+
+### Fixed
+
+- **The ECP link sensor released in 0.6.0 could not trip, and the panel
+  reporting itself offline was invisible.** Two causes, both read out of the
+  firmware rather than assumed. The Tuxedo's status producer
+  (`sltSendChangedPartitionStatus`) sends command **22** instead of 21
+  whenever the VISTA reports itself not online, and puts `-1` in the status
+  code whenever it is not hearing the VISTA - two independent facts, and the
+  `-1` can ride either type. This integration dropped every command 22 before
+  it reached the decoder, so a panel calling itself busy, downloading or
+  offline showed nothing, and a dead link reported on a 22 never reached the
+  link latch. Command 22 is now decoded like a 21, with its code read from the
+  last field, where that record carries it. On the firmware side, tuxweb v15
+  never emitted a 22 at all and printed `-1` as `4294967295`, so the link
+  sensor could not trip against it whatever this integration did; tuxweb v16
+  fixes both. Stock firmware has always put both shapes on the wire, so this
+  change is right there too.
+
+### Added
+
+- **The panel's own online state, as a `problem` binary sensor.**
+  `binary_sensor.honeywell_tuxedo_touch_panel_offline` is `on` while the
+  VISTA's last status came as a command-22 record - the panel reporting
+  itself not online - and `off` once a 21 arrives again; the
+  `panel_online_status` attribute and the diagnostics download carry the code
+  the panel gave (`2`..`4`, or `-1` when the link was down at the same time).
+  A second entity rather than an attribute on the link sensor, because it is
+  a different fact and an automation needs something to act on for each.
+  Created on both firmwares, unlike the link sensor: the record is the
+  vendor's own producer answering the VISTA's own online byte, put on the
+  wire by stock and by tuxweb alike, so there is no promise to gate on.
+  Diagnostic, and `unavailable` while the stream is down.
+
+### Stated plainly
+
+- **Neither condition has been observed live on the panel this integration
+  was written against.** No capture holds a command 22 or a `-1`: the panel
+  has never been offline while anything was recording. The wire shapes in the
+  tests are read out of the vendor's handler and reproduced byte for byte by
+  tuxweb v16, not observed traffic, and the tests say so. Someone reading
+  "ECP link sensor, 0.6.0" should not believe it was working: on tuxweb v15 it
+  could not have been, and on any firmware a dead link reported on a 22 was
+  lost. Provoking the condition for real means taking the VISTA offline or
+  pulling the ECP cable, which is the owner's call.
+
 ## [0.6.0] - 2026-09-12
 
 ### Added

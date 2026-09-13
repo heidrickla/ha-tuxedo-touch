@@ -1,6 +1,8 @@
-"""Binary sensor platform for Honeywell Tuxedo Touch: the ECP link."""
+"""Binary sensor platform for Honeywell Tuxedo Touch: the ECP link and the panel."""
 
 from __future__ import annotations
+
+from typing import Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -25,20 +27,74 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    if CAP_PANEL_LINK_STATE not in coordinator.client.capabilities:
-        # Not created on stock, and the reason is what a problem sensor's
-        # "off" means. On tuxweb the panel DECLARES panel_link_state: the
-        # dead-link marker is produced on purpose, so an "off" here is a
-        # checked answer - the link was looked at and it is up. On stock the
-        # same -1 does arrive, as a side effect of the vendor's producer that
-        # the decoder happens to read, and the coordinator acts on it there
-        # too; but nothing on stock promises it, and a problem sensor that is
-        # off because the promise was never made reads exactly like one that
-        # is off because the link is fine. "Checked, fine" on a panel that
-        # made no such promise is worse than no sensor. The diagnostics
-        # download still reports ecp_link_down on every firmware.
-        return
-    async_add_entities([TuxedoEcpLink(coordinator, entry)])
+    # The panel-offline sensor is created on BOTH firmwares. The command-22
+    # record it reads is the vendor's own producer answering the VISTA's own
+    # online byte, put on the wire by stock and by tuxweb alike, so there is
+    # no capability to gate on and none of the promise-never-made problem the
+    # link sensor below has: an "off" here is the VISTA saying it is online.
+    entities: list[BinarySensorEntity] = [TuxedoPanelOffline(coordinator, entry)]
+    if CAP_PANEL_LINK_STATE in coordinator.client.capabilities:
+        # The link sensor is NOT created on stock, and the reason is what a
+        # problem sensor's "off" means. On tuxweb the panel DECLARES
+        # panel_link_state: the dead-link marker is produced on purpose, so
+        # an "off" here is a checked answer - the link was looked at and it
+        # is up. On stock the same -1 does arrive, as a side effect of the
+        # vendor's producer that the decoder happens to read, and the
+        # coordinator acts on it there too; but nothing on stock promises
+        # it, and a problem sensor that is off because the promise was never
+        # made reads exactly like one that is off because the link is fine.
+        # "Checked, fine" on a panel that made no such promise is worse than
+        # no sensor. The diagnostics download still reports ecp_link_down on
+        # every firmware.
+        entities.append(TuxedoEcpLink(coordinator, entry))
+    async_add_entities(entities)
+
+
+class TuxedoPanelOffline(TuxedoTouchEntity, BinarySensorEntity):
+    """Whether the alarm panel behind the Tuxedo reports itself as not online.
+
+    On while the latest status frame was a command-22 record - the VISTA
+    answering the Tuxedo's status poll with an online byte other than 1, its
+    busy, downloading and offline family - and off once a 21 arrives again.
+    Not the ECP link: that sensor says whether the Tuxedo can HEAR the panel,
+    this one what the panel SAYS about itself, and the producer sets the two
+    independently, so a panel can be talking and offline (a 22 with a real
+    code) or silent and, as far as anyone knew, online (a 21 with -1). An
+    automation that wants "the alarm is not fully in service" wants both.
+
+    Stated plainly: no capture from this panel holds a 22. The record's
+    shape was read out of the vendor's handler and reproduced by tuxweb from
+    v16, and the vendor firmware has emitted it since long before this
+    integration; what has not happened is the VISTA going offline while
+    anyone was recording. The raw code the frame carried is in diagnostics.
+    """
+
+    _attr_translation_key = "panel_offline"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self, coordinator: TuxedoTouchCoordinator, entry: TuxedoTouchConfigEntry
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_panel_offline"
+
+    @property
+    def available(self) -> bool:
+        """Available while the stream, the only carrier of the record, is up."""
+        return self.coordinator.stream_observing
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.panel_offline
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        # The VISTA's own online byte from the last 22: 2..4 by construction,
+        # or -1 when the ECP link was down at the same time. Absent while the
+        # panel reports itself online.
+        code = self.coordinator.panel_offline_code
+        return {} if code is None else {"panel_online_status": code}
 
 
 class TuxedoEcpLink(TuxedoTouchEntity, BinarySensorEntity):

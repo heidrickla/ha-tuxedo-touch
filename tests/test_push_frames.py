@@ -115,6 +115,74 @@ def test_an_ordinary_status_code_is_not_a_dead_link():
     assert status is not None
     assert status.panel_status_code == 1
     assert status.link_down is False
+    assert status.panel_offline is False
+
+
+# The panel-offline record, command 22. NO CAPTURE HOLDS ONE: this panel has
+# never been offline while anything was recording, so these payloads are the
+# shape read out of Barracuda's handler at 0xd9c4 (`%d%s%d%s%s%s%d` with the
+# reply's +0x08 as the last conversion) and reproduced byte for byte by tuxweb
+# v16, not observed traffic. The same producer as the 21 - the other branch of
+# its GetOnlineStatus() == 1 test - with the code moved to the LAST field.
+OFFLINE_TALKING = b"0:22:\xfe1Ready To Arm:3".decode("latin-1")
+OFFLINE_AND_LINK_DOWN = b"0:22:\xfe1Ready To Arm:-1".decode("latin-1")
+
+
+def test_a_panel_offline_record_is_a_status_with_the_code_in_the_last_field():
+    """A 22 with a real code: the VISTA reports itself not online (3 is in its
+    busy / downloading / offline range; 1 would have made this a 21) while the
+    Tuxedo is still hearing it. Offline, link fine, text carried through."""
+    status = push.decode_status_frame(OFFLINE_TALKING)
+    assert status is not None
+    assert status.cmd == push.CMD_PANEL_OFFLINE
+    assert status.cmd in push.STATUS_CMDS, "22 must reach the coordinator"
+    assert status.panel_status_code == 3
+    assert status.panel_offline is True
+    assert status.link_down is False
+    assert status.text == "Ready To Arm"
+    assert status.armed is False
+    assert status.colour == "green"
+
+
+def test_a_panel_offline_record_can_carry_the_dead_link_too():
+    """The two facts are independent and a 22 can say both: not online AND
+    not talking. The -1 must reach the link latch from here as well."""
+    status = push.decode_status_frame(OFFLINE_AND_LINK_DOWN)
+    assert status is not None
+    assert status.panel_status_code == -1
+    assert status.panel_offline is True
+    assert status.link_down is True
+
+
+def test_a_21_with_a_dead_link_is_not_panel_offline():
+    """The other corner: online as far as the VISTA said, but not talking."""
+    status = push.decode_status_frame(
+        b"0:21:-1:fe:\xfe1Ready To Arm:2".decode("latin-1")
+    )
+    assert status is not None
+    assert status.link_down is True
+    assert status.panel_offline is False
+
+
+def test_the_copies_of_a_panel_offline_record_carry_no_code_and_no_verdict():
+    """Barracuda follows a 22 with TWO -1 copies of the text (a 21 gets three).
+    They decode as before - a status with no code - and say nothing about
+    either latch: the -1 in field 1 is the command id, not the link."""
+    status = push.decode_status_frame(b"0:-1:\xfe1Ready To Arm".decode("latin-1"))
+    assert status is not None
+    assert status.cmd == -1
+    assert status.panel_status_code is None
+    assert status.link_down is False
+    assert status.panel_offline is None
+
+
+def test_a_colon_in_the_text_does_not_move_a_22s_code():
+    """The code is the LAST field, so a colon inside the status text (which
+    the vendor does not escape on status frames) cannot displace it."""
+    status = push.decode_status_frame(b"0:22:\xfe2Exit: 59 secs:4".decode("latin-1"))
+    assert status is not None
+    assert status.panel_status_code == 4
+    assert status.panel_offline is True
 
 
 def test_a_status_code_field_that_is_not_a_number_decodes_to_no_code():

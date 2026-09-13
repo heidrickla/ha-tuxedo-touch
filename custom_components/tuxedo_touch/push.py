@@ -89,11 +89,26 @@ FLAG_ARMED = 0xFF
 # Command ids, carried in field 1 of a payload.
 CMD_HOME_PARTITION = 18
 CMD_PARTITION_STATUS = 21
+# SERV_PANEL_OFFLINE_MSG_BROADCAST: the same partition status, sent in place
+# of a 21 by the same producer whenever the VISTA reports itself not online.
+# The one function, CReceiverThread::sltSendChangedPartitionStatus at
+# 0x144880 in /tuxedo, writes both: the state byte and the text are the same,
+# the TYPE is 22 while GetOnlineStatus() != 1 - the VISTA's own online byte,
+# 1..4, 1 online and the rest its busy / downloading / offline family - and
+# field +0x08 is PanelIsTalking() ? GetOnlineStatus() : -1. So two facts ride
+# a frame: the type says whether the VISTA calls itself online, the code says
+# whether the Tuxedo can hear it, and -1 can arrive on either type. Barracuda
+# formats the 22 differently (see decode_status_frame), and tuxweb from v16
+# emits the same bytes. Until 0.6.0 this id was dropped at _handle_frame, so
+# a panel reporting itself offline was invisible, and the -1 a 22 can carry
+# never reached the link latch.
+CMD_PANEL_OFFLINE = 22
 CMD_INITIAL_DATA = 504
 CMD_UNSOLICITED = -1
-# Only these two carry a partition's armed state; 504 and 18 are registration
-# and housekeeping, and decode to nothing because they carry no flag byte.
-STATUS_CMDS = frozenset({CMD_PARTITION_STATUS, CMD_UNSOLICITED})
+# Only these three carry a partition's armed state; 504 and 18 are
+# registration and housekeeping, and decode to nothing because they carry no
+# flag byte.
+STATUS_CMDS = frozenset({CMD_PARTITION_STATUS, CMD_PANEL_OFFLINE, CMD_UNSOLICITED})
 # SERV_CONSOLE_MSG_BROADCAST: the panel's own keypad LCD, two lines, sent
 # while console mode is on. Read out of the vendor's type-20 handler, and the
 # id-20 record has since been seen on the live stream across an arm and a
@@ -171,9 +186,10 @@ class PushStatus:
     """One partition status as the stream reported it."""
 
     cmd: int
-    # Field 2 of a command-21 payload. NOT the partition - see the field map
-    # in decode_status_frame. None when the frame has no such field (the
-    # unsolicited record) or when it could not be read as an integer.
+    # Field 2 of a command-21 payload, the LAST field of a command-22 one.
+    # NOT the partition - see the field map in decode_status_frame. None
+    # when the frame has no such field (the unsolicited record) or when it
+    # could not be read as an integer.
     panel_status_code: int | None
     armed: bool
     colour: str | None
@@ -191,6 +207,23 @@ class PushStatus:
         over the first.
         """
         return self.panel_status_code == PANEL_STATUS_LINK_DOWN
+
+    @property
+    def panel_offline(self) -> bool | None:
+        """Whether the VISTA reported itself not online, as this frame's TYPE says.
+
+        True for a command-22 record, False for a 21, and None for the
+        unsolicited copies, which are the same text under the id -1 and say
+        nothing either way. Independent of link_down: the producer picks the
+        type from the VISTA's own online byte and the code from whether the
+        Tuxedo is hearing it, so a 22 with a real code is a panel that is
+        talking and calling itself busy, downloading or offline.
+        """
+        if self.cmd == CMD_PANEL_OFFLINE:
+            return True
+        if self.cmd == CMD_PARTITION_STATUS:
+            return False
+        return None
 
 
 def decode_status_frame(payload: str) -> PushStatus | None:
@@ -214,8 +247,32 @@ def decode_status_frame(payload: str) -> PushStatus | None:
     panelStatusCode: a capture of that page taken at the same instant as a
     frame answered `curStatus = "21:a1Ready To Arm:1"` while the frame read
     `0:21:1:fe:\xfe1Ready To Arm:2` - so the page's panelStatusCode is field
-    2, and the frame's trailing `:2` is the colour rather than the code.
-    Where the partition went is answered in TuxedoPushStream's docstring.
+    2. The frame's trailing `:2` is neither the code nor the colour: the
+    vendor's formatter (`%d%s%d%s%d%s%x%s%s%s%d`) ends with getQuickArmStatus(),
+    the panel's quick-arm setting, which this integration ignores. Where the
+    partition went is answered in TuxedoPushStream's docstring.
+
+    The panel-offline record, command 22, is the same status from the same
+    producer in a different layout - no hex field, and the code LAST:
+
+        0:22:\xfe1Ready To Arm:3
+        |  |  |||           |
+        |  |  |||           +--- panel status code: the VISTA's online byte
+        |  |  |||                (2..4 here by construction), or -1 when the
+        |  |  |||                ECP link is down as well
+        |  |  ||+--------------- display text
+        |  |  |+---------------- colour digit
+        |  |  +----------------- the raw flag byte
+        |  +-------------------- command id 22: the VISTA reports itself not online
+        +----------------------- 0
+
+    Barracuda's handler for it (0xd9c4) formats `%d%s%d%s%s%s%d` with the
+    reply's +0x08 as the last conversion and follows it with TWO -1 copies
+    where a 21 gets three; tuxweb v16 reproduces both. No capture holds one:
+    this shape is read from the disassembly, and this panel has never been
+    offline while anything was recording. Taking the code from the last field
+    for a 22 is safe against a colon inside the text; taking it from field 2
+    there would read the text.
 
     The raw flag byte is what locates the display field, so the caller must
     have decoded the stream latin-1: utf-8 turns 0xFE/0xFF into U+FFFD and
@@ -240,9 +297,12 @@ def decode_status_frame(payload: str) -> PushStatus | None:
             body = body[1:]
         text = body.strip()
         countdown = COUNTDOWN_RE.match(text)
+        # Where the code sits is the one thing the two layouts disagree on:
+        # field 2 on a 21, the last field on a 22 (the field map above).
+        code_field = fields[-1] if cmd == CMD_PANEL_OFFLINE else fields[2]
         return PushStatus(
             cmd=cmd,
-            panel_status_code=_status_code_of(fields[2]),
+            panel_status_code=_status_code_of(code_field),
             armed=armed,
             colour=colour,
             text=text,

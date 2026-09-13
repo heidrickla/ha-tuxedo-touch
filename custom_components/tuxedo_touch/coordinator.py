@@ -188,6 +188,13 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         # VISTA. Starts False: nothing has been observed yet, and the entry
         # must be allowed to come up on the poll while the stream connects.
         self._ecp_link_down = False
+        # Whether the last status frame was a command-22 record: the VISTA
+        # reporting itself not online (busy, downloading, offline), which is
+        # a different fact from the link above and moves independently of it.
+        # The code that frame carried is kept for diagnostics - the VISTA's
+        # online byte, 2..4, or -1 when the link was down at the same time.
+        self._panel_offline = False
+        self._panel_offline_code: int | None = None
         # Commands waiting for the panel to report what they asked for. The
         # callable is tri-state: see async_send_command.
         self._command_waiters: list[
@@ -238,6 +245,15 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         as a partition and compared against this entry's, which is precisely
         what made a dead ECP link invisible.
         """
+        # The frame's TYPE first, before the link question below can return
+        # early: a 22 says the VISTA reports itself not online, a 21 says it
+        # does not, and the -1 copies (None) say nothing. Independent of the
+        # code: a 22 carrying -1 is both conditions at once, and each latch
+        # answers its own.
+        if (offline := status.panel_offline) is not None:
+            self._async_note_panel_offline(
+                offline=offline, code=status.panel_status_code if offline else None
+            )
         if status.link_down:
             # Field 2 is -1: PanelIsTalking() answered 0 inside the producer,
             # so the Tuxedo has lost the ECP bus to the VISTA behind it. The
@@ -389,6 +405,53 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
     def ecp_link_down(self) -> bool:
         """Whether the panel last told us it cannot see the alarm."""
         return self._ecp_link_down
+
+    @callback
+    def _async_note_panel_offline(self, *, offline: bool, code: int | None) -> None:
+        """Record what the last status frame's type said about the VISTA.
+
+        A latch like the link's, moved only by a typed status frame: a 22
+        sets it, a 21 clears it, and the copies leave it alone. The VISTA
+        reporting itself busy, downloading or offline is its own condition -
+        the Tuxedo may be hearing it perfectly well - so this neither takes
+        the alarm entity unavailable nor blocks the status the same frame
+        carries: a 22's text is the panel's real status prompt and is written
+        through like a 21's.
+        """
+        self._panel_offline_code = code
+        if offline == self._panel_offline:
+            return
+        self._panel_offline = offline
+        if offline:
+            # Once per episode: the status repeats on the panel's own timer.
+            _LOGGER.warning(
+                "The alarm panel behind the Tuxedo Touch reports itself as not "
+                "online (its online status is %s; 1 is online, the rest are its "
+                "busy, downloading and offline states). The Tuxedo can still hear "
+                "it and the alarm state is still being written through, but the "
+                "panel may not act on commands until it is back",
+                code,
+            )
+        else:
+            _LOGGER.info(
+                "The alarm panel behind the Tuxedo Touch reports itself online again"
+            )
+        self.async_update_listeners()
+
+    @property
+    def panel_offline(self) -> bool:
+        """Whether the VISTA last reported itself as not online (a cmd-22 status)."""
+        return self._panel_offline
+
+    @property
+    def panel_offline_code(self) -> int | None:
+        """The online byte the last cmd-22 status carried, for diagnostics.
+
+        2..4 by construction (the VISTA's busy / downloading / offline family;
+        1 would have been a 21), or -1 when the ECP link was down at the same
+        time. None while the panel reports itself online.
+        """
+        return self._panel_offline_code
 
     @callback
     def _async_push_display(self, display: KeypadDisplay) -> None:

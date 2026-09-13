@@ -86,8 +86,9 @@ rules:
       The alarm panel is named "Partition N" under the device name. Two
       partition entries on one panel are two devices with the same name (one
       device per config entry since HA 2026.8), so the partition in the
-      entity name is what tells the two alarms apart. The keypad display and
-      the ECP link are named for what they are, under the same device.
+      entity name is what tells the two alarms apart. The keypad display, the
+      ECP link and the panel-offline sensor are named for what they are,
+      under the same device.
   runtime-data: done
   test-before-configure:
     status: done
@@ -164,9 +165,10 @@ rules:
       Both sources answer and neither is reading the alarm, so the entity is
       unavailable for as long as that is true rather than holding an armed or
       disarmed reading the panel can no longer see.
-      The keypad display and the ECP link have a rule of their own
-      (TuxedoTouchCoordinator.stream_observing), because the poll carries
-      neither: they are available while the stream is connected - and, when
+      The keypad display, the ECP link and the panel-offline sensor have a
+      rule of their own (TuxedoTouchCoordinator.stream_observing), because
+      the poll carries none of them: they are available while the stream is
+      connected - and, when
       the stream is a relay's socket rather than the panel's, while the
       panel's poll is answering too, for the reason above. Not
       panel_available, twice over: a working poll says nothing about a
@@ -265,7 +267,13 @@ rules:
       console records and dead-link frames: state, attributes, the
       255-character guard, availability following the stream, the relay
       clause, and the link entity absent on stock and on a tuxweb that does
-      not declare it.
+      not declare it. tests/ha/test_panel_offline.py pins the panel-offline
+      sensor over the fake's command-22 records, all four corners of the
+      type/code table (docs/feature-spec-keypad-link-changedby.md section
+      4), its creation on both firmwares, availability and diagnostics; the
+      decoder side of the 22 - the code in the last field, the copies with
+      no verdict - is in tests/test_push_frames.py, which states that those
+      shapes are disassembled, not captured.
 
   # Gold
   devices:
@@ -341,13 +349,15 @@ rules:
     status: done
     comment: |
       The alarm panel is the primary entity, for which the default (no
-      category) is the correct assignment. The keypad display and the ECP
-      link are DIAGNOSTIC: the panel's own words and the health of its link
-      to the alarm, about the device rather than the alarm state.
+      category) is the correct assignment. The keypad display, the ECP
+      link and the panel-offline sensor are DIAGNOSTIC: the panel's own
+      words, the health of its link to the alarm and the alarm's own online
+      state, about the device rather than the alarm state.
   entity-device-class:
     status: done
     comment: |
-      The ECP link is a PROBLEM binary sensor - on is the link being down.
+      The ECP link and the panel-offline sensor are PROBLEM binary sensors -
+      on is the link being down, and the panel reporting itself not online.
       alarm_control_panel has no device classes, and the keypad display is
       free text, which no sensor device class describes, so those two have
       nothing to assign.

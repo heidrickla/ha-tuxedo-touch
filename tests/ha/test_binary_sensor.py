@@ -25,6 +25,7 @@ from custom_components.tuxedo_touch.const import (
 from tests.fake_panel import TUXWEB_TOKEN, status_frame, wait_until
 
 ECP_LINK = "binary_sensor.honeywell_tuxedo_touch_ecp_link"
+PANEL_OFFLINE = "binary_sensor.honeywell_tuxedo_touch_panel_offline"
 KEYPAD = "sensor.honeywell_tuxedo_touch_keypad_display"
 PANEL = "alarm_control_panel.honeywell_tuxedo_touch_partition_1"
 STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"
@@ -85,7 +86,10 @@ async def test_a_tuxweb_that_does_not_declare_the_link_gets_no_entity(
     assert CAP_PANEL_LINK_STATE not in coordinator.client.capabilities
 
     assert _state(hass) is None
-    assert "binary_sensor" not in _domains_for(hass, tuxweb_entry)
+    # The platform itself still loads: the panel-offline sensor is created
+    # on every firmware (tests/ha/test_panel_offline.py), so what is missing
+    # is this entity, not the binary_sensor domain.
+    assert _state(hass, PANEL_OFFLINE) is not None
 
 
 async def test_stock_firmware_gets_no_link_entity(hass, fake_panel, panel_entry):
@@ -94,16 +98,21 @@ async def test_stock_firmware_gets_no_link_entity(hass, fake_panel, panel_entry)
     entity still goes unavailable and the diagnostics download still says
     ecp_link_down - but nothing on stock promises it, and a problem sensor
     reading "off" because the promise was never made looks exactly like one
-    reading "off" because the link is fine. The keypad sensor is the
-    control: it is created on stock, so what is missing is this entity and
-    not the platforms."""
+    reading "off" because the link is fine. The keypad sensor and the
+    panel-offline sensor are the controls: both are created on stock, so
+    what is missing is this entity and not the platforms."""
     coordinator = await _setup(hass, panel_entry)
     assert coordinator.client.tuxweb is False
     assert coordinator.client.capabilities == frozenset()
 
     assert _state(hass) is None
-    assert _domains_for(hass, panel_entry) == {"alarm_control_panel", "sensor"}
+    assert _domains_for(hass, panel_entry) == {
+        "alarm_control_panel",
+        "sensor",
+        "binary_sensor",
+    }
     assert _state(hass, KEYPAD) is not None
+    assert _state(hass, PANEL_OFFLINE) is not None
 
 
 # ------------------------------------------------------------------ state

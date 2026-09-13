@@ -191,6 +191,32 @@ reading `off` because the promise was never made would look exactly like one rea
 `off` because the link is fine. The diagnostics download reports `ecp_link_down` on every
 firmware.
 
+**Honestly stated:** the condition has never been observed on the panel this integration
+was written against. The `-1` marker was read out of the Tuxedo's own firmware, not
+captured, and the sensor's behaviour on a real cable fault is a reading of the producer
+rather than a measurement. Before firmware v16 the replacement web server also printed
+the marker as `4294967295`, so on tuxweb v15 this sensor could not trip at all.
+
+### The panel's own online state
+
+`binary_sensor.honeywell_tuxedo_touch_panel_offline`, a second diagnostic `problem`
+sensor, is `on` while the VISTA reports **itself** as not online - the panel answering
+the Tuxedo's status poll with its busy, downloading or offline state - and `off` once it
+reports online again. This is a different fact from the ECP link: that sensor says whether
+the Tuxedo can *hear* the panel, this one what the panel *says about itself*, and the
+firmware sets the two independently, so a panel can be talking and offline, or silent
+and, as far as anyone last knew, online. An automation that wants "the alarm is not fully
+in service" watches both. While it is `on`, the `panel_online_status` attribute carries
+the panel's own code (`2`..`4`, or `-1` when the link is down at the same time), and the
+alarm entity keeps following the status text, which is the panel's real prompt.
+
+It exists on **both** firmwares: the record it reads is the vendor's own producer, put on
+the wire by stock and by tuxweb alike, so there is no promise to gate on. Like the link
+sensor it is `unavailable` while the stream is down. And like the link sensor, no capture
+from this panel holds the record: its shape was read out of the vendor's handler and is
+reproduced by tuxweb from v16; until then the replacement server dropped it, and until
+the release after 0.6.0 this integration did too.
+
 ## Use cases
 
 - Arm away when the last person leaves and disarm when the first arrives, with the
@@ -704,9 +730,10 @@ answered 404 and has no stream at all, whether it stopped because the panel refu
 credentials, the connection id the panel handed out, how many clients it thinks it has,
 how many frames have arrived, and how far a failing stream has backed off - beside the
 fallback poll's interval and last result. It also carries `ecp_link_down`, which is the
-one case where every other field reads healthy and the entity is unavailable anyway, and
-`keypad_display`, the console record the keypad display sensor is showing as it
-arrived. The two sources fail differently, so which one
+one case where every other field reads healthy and the entity is unavailable anyway,
+`panel_offline` and `panel_offline_code` (whether the panel last reported itself not
+online, and the code it gave), and `keypad_display`, the console record the keypad
+display sensor is showing as it arrived. The two sources fail differently, so which one
 was speaking is the first thing to read, and the two terminal flags are what separate a
 stream that is reconnecting from one that has stopped on purpose.
 
