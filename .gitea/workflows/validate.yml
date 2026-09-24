@@ -104,14 +104,13 @@ jobs:
       - name: mypy strict
         run: python -m mypy custom_components/tuxedo_touch
 
-  # No continue-on-error: a red hassfest or HACS run is the answer, not noise.
-  hacs:
-    name: hassfest + HACS
+  # No continue-on-error: a red hassfest run is the answer, not noise.
+  # hacs/action reads the repository through the GitHub API, so it cannot
+  # check this tree here; .github/workflows/validate.yml runs it on GitHub.
+  hassfest:
+    name: hassfest
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
-      - uses: hacs/action@main
-        with:
-          category: integration
