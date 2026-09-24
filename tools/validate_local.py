@@ -355,7 +355,11 @@ def main() -> int:
             if todo:
                 notes.append(f"quality scale still todo: {', '.join(todo)}")
         except ImportError:
-            notes.append("PyYAML not installed - quality_scale.yaml not parsed")
+            check(
+                False,
+                "PyYAML not installed - quality_scale.yaml was not parsed, so its "
+                "checks did not run; run under the repo .venv",
+            )
 
     # ---------------------------------------------------- entity translations
     # Every translation key an entity uses needs a name, and every name needs
