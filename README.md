@@ -1,30 +1,14 @@
 # Honeywell Tuxedo Touch for Home Assistant
 
-[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/release/heidrickla/ha-tuxedo-touch.svg)](https://github.com/heidrickla/ha-tuxedo-touch/releases)
-[![License](https://img.shields.io/github/license/heidrickla/ha-tuxedo-touch.svg)](LICENSE)
-[![Validate](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/validate.yml/badge.svg)](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/validate.yml)
-[![Tests](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/tests.yml/badge.svg)](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/tests.yml)
+[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration) [![GitHub Release](https://img.shields.io/github/release/heidrickla/ha-tuxedo-touch.svg)](https://github.com/heidrickla/ha-tuxedo-touch/releases) [![License](https://img.shields.io/github/license/heidrickla/ha-tuxedo-touch.svg)](LICENSE) [![Validate](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/validate.yml/badge.svg)](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/validate.yml) [![Tests](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/tests.yml/badge.svg)](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/tests.yml)
 
 [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=heidrickla&repository=ha-tuxedo-touch&category=integration)
 
-Local (no cloud) Home Assistant custom integration for the Honeywell Tuxedo Touch WIFI
-security/home automation controller (TUXWIFIS/TUXWIFIW), talking to it entirely over your
-local network - no Total Connect Comfort cloud account involved. Ported from the
-[heidrickla/Hubitat](https://github.com/heidrickla/Hubitat) driver of the same name.
+Local (no cloud) Home Assistant custom integration for the Honeywell Tuxedo Touch WIFI security/home automation controller (TUXWIFIS/TUXWIFIW), talking to it entirely over your local network - no Total Connect Comfort cloud account involved. Ported from the [heidrickla/Hubitat](https://github.com/heidrickla/Hubitat) driver of the same name.
 
-It gives you one `alarm_control_panel` entity per partition, with Arm Home (Stay), Arm
-Away, Arm Night and Disarm, using the reverse-engineered login and encryption flow
-documented in [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md) - plus
-a sensor showing the panel's own keypad display, a problem sensor for the alarm panel
-reporting itself offline, and, on tuxweb, a problem sensor for the Tuxedo's link to the
-alarm panel (see [Supported functions](#supported-functions)).
+It gives you one `alarm_control_panel` entity per partition, with Arm Home (Stay), Arm Away, Arm Night and Disarm, using the reverse-engineered login and encryption flow documented in [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md) - plus a sensor showing the panel's own keypad display, a problem sensor for the alarm panel reporting itself offline, and, on tuxweb, a problem sensor for the Tuxedo's link to the alarm panel (see [Supported functions](#supported-functions)).
 
-The panel **pushes** its state: the integration holds the unit's own event
-stream open, so an arm or a disarm at the keypad shows up in seconds, the exit-delay
-countdown is visible while it runs, and the firmware's long-standing `Not available`
-answer - which used to leave the entity with nothing to show - cannot reach the entity
-at all. See [How it updates](#how-it-updates).
+The panel **pushes** its state: the integration holds the unit's own event stream open, so an arm or a disarm at the keypad shows up in seconds, the exit-delay countdown is visible while it runs, and the firmware's long-standing `Not available` answer - which used to leave the entity with nothing to show - cannot reach the entity at all. See [How it updates](#how-it-updates).
 
 ## Supported devices
 
@@ -33,48 +17,26 @@ at all. See [How it updates](#how-it-updates).
 | Honeywell Tuxedo Touch WIFI (TUXWIFIS, TUXWIFIW) | Verified against firmware `TUXW_V5.3.21.0_VA`. Other V5.x releases are expected to behave the same. |
 | Tuxedo Touch on ~V4.x firmware | Not covered: the integration is built against V5.x. It always logs in first. |
 
-The panel behind the Tuxedo (a VISTA-series control) is not addressed directly; the
-Tuxedo's own web API is the only thing spoken to.
+The panel behind the Tuxedo (a VISTA-series control) is not addressed directly; the Tuxedo's own web API is the only thing spoken to.
 
 ## Firmware differences
 
-Everything this integration does works on **stock Honeywell firmware**, and that is
-the only assumption it makes. Nothing here requires a modified panel.
+Everything this integration does works on **stock Honeywell firmware**, and that is the only assumption it makes. Nothing here requires a modified panel.
 
-The panel has no version, model or firmware endpoint of any kind — confirmed from the
-vendor's own `script/tuxapi.js`, where the whole API surface is enumerated. The firmware
-string is readable only on the unit's own screen. **So this integration cannot tell a
-stock panel from a patched vendor build, and therefore assumes the strictest case in
-every instance where behaviour differs.**
+The panel has no version, model or firmware endpoint of any kind — confirmed from the vendor's own `script/tuxapi.js`, where the whole API surface is enumerated. The firmware string is readable only on the unit's own screen. **So this integration cannot tell a stock panel from a patched vendor build, and therefore assumes the strictest case in every instance where behaviour differs.**
 
 | Behaviour | Stock firmware | Modified firmware |
 |---|---|---|
 | Failed web logins | Three disable **every** web account, permanently, with no timeout. Recovery needs someone at the touchscreen: account setup, Enable All, Apply. | Some builds allow five and clear themselves after five minutes. |
 | What this integration does | Spends **one** automatic login attempt per credential set and then waits for you — see [One login attempt, then it waits for you](#one-login-attempt-then-it-waits-for-you). | Identical. The safe behaviour is the same behaviour, so no detection is needed. |
 
-That table has one row because one row is all that differs between stock and a patched
-vendor build. It exists so the pattern is established: **if a capability needs a
-firmware this integration cannot detect, it is documented here as unavailable on stock
-rather than assumed present.** Any such capability has to be optional, detected before
-use, and absent without complaint — probing an unknown endpoint to find out what a
-panel does with it is not something this integration will do on someone else's alarm.
+That table has one row because one row is all that differs between stock and a patched vendor build. It exists so the pattern is established: **if a capability needs a firmware this integration cannot detect, it is documented here as unavailable on stock rather than assumed present.** Any such capability has to be optional, detected before use, and absent without complaint — probing an unknown endpoint to find out what a panel does with it is not something this integration will do on someone else's alarm.
 
 ### tuxweb, the replacement web server
 
-The one question the integration does ask is `GET /system_http_api/API_REV01/GetCapabilities`,
-once, when an entry is set up. Stock firmware answers it with its ordinary 404 for an
-unknown endpoint (measured, and permanent), and nothing else changes: the endpoint needs
-no session, no login is spent on the question, and a stock entry then behaves exactly
-as it did before the question existed. A panel running **tuxweb** — the replacement
-panel web server developed alongside this integration — answers 200 with a JSON body
-whose `capabilities` list is the only thing branched on; the `firmware` and `contract`
-fields in it are for people, and a capability string this integration does not know is
-ignored. That is the detection route this section used to promise. A panel that cannot
-be reached at all fails the question the way it would fail a poll: a setup retry, with
-nothing remembered from a connection that never happened.
+The one question the integration does ask is `GET /system_http_api/API_REV01/GetCapabilities`, once, when an entry is set up. Stock firmware answers it with its ordinary 404 for an unknown endpoint (measured, and permanent), and nothing else changes: the endpoint needs no session, no login is spent on the question, and a stock entry then behaves exactly as it did before the question existed. A panel running **tuxweb** — the replacement panel web server developed alongside this integration — answers 200 with a JSON body whose `capabilities` list is the only thing branched on; the `firmware` and `contract` fields in it are for people, and a capability string this integration does not know is ignored. That is the detection route this section used to promise. A panel that cannot be reached at all fails the question the way it would fail a poll: a setup retry, with nothing remembered from a connection that never happened.
 
-On tuxweb the same paths carry a simpler contract, and the client keeps a second path
-for it beside the stock one rather than papering over the difference:
+On tuxweb the same paths carry a simpler contract, and the client keeps a second path for it beside the stock one rather than papering over the difference:
 
 | | Stock firmware | tuxweb |
 |---|---|---|
@@ -84,38 +46,15 @@ for it beside the stock one rather than papering over the difference:
 | Status read | The ECP-fed cache, which can answer `Not available` | The live state model the stream is fed from, carrying the armed flag |
 | A refused credential | Counts towards the three-strike lockout above; the integration stops and asks you | A 401. Nothing is counted and nothing locks, so the integration asks you for the current token and records no lockout |
 
-Issuing or revoking a token takes effect at once on tuxweb from firmware v17, and at
-tuxweb's next start on earlier builds.
+Issuing or revoking a token takes effect at once on tuxweb from firmware v17, and at tuxweb's next start on earlier builds.
 
-The token goes in the **tuxweb token** field, optional on every form and blank on every
-stock panel. Which of the two contracts a panel speaks comes from asking it, not from
-whether a token was typed: a token given to a stock panel is stored and not used, and a
-tuxweb panel given none is asked for one on the re-authentication card rather than
-failing to connect. The diagnostics download says which contract an entry is on
-(`firmware`) and what the panel declared (`capabilities`); the token itself is redacted
-like the password.
+The token goes in the **tuxweb token** field, optional on every form and blank on every stock panel. Which of the two contracts a panel speaks comes from asking it, not from whether a token was typed: a token given to a stock panel is stored and not used, and a tuxweb panel given none is asked for one on the re-authentication card rather than failing to connect. The diagnostics download says which contract an entry is on (`firmware`) and what the panel declared (`capabilities`); the token itself is redacted like the password.
 
-**Stock is the default, and the answer is re-checked when it stops fitting.** The
-question is asked once at setup and the answer kept, with one exception: a refusal
-that is consistent with tuxweb no longer being there - a 401 on the token, the stream
-redirected to a login page, or a tuxweb path answering 404 - is asked about once more
-before it is believed, with the same GET and under the same rules (no session, no
-login, and a connection failure raised rather than read as an answer). A panel still
-declaring its capability list makes the refusal real, and it is reported exactly as
-above. A panel declaring none has gone back to stock under a running entry, and the
-entry talks to it as stock from its next request, with one warning in the log and no
-re-authentication card - the panel said nothing about the web credentials the entry
-also holds. One re-check per refusal and never a retry of the refused request, so a
-panel refusing a genuinely bad token cannot put the integration in a loop of
-questions; a stock entry is never re-asked, because a stock 401 is a session to renew;
-and a panel moving *to* tuxweb still takes a reload of the entry.
+**Stock is the default, and the answer is re-checked when it stops fitting.** The question is asked once at setup and the answer kept, with one exception: a refusal that is consistent with tuxweb no longer being there - a 401 on the token, the stream redirected to a login page, or a tuxweb path answering 404 - is asked about once more before it is believed, with the same GET and under the same rules (no session, no login, and a connection failure raised rather than read as an answer). A panel still declaring its capability list makes the refusal real, and it is reported exactly as above. A panel declaring none has gone back to stock under a running entry, and the entry talks to it as stock from its next request, with one warning in the log and no re-authentication card - the panel said nothing about the web credentials the entry also holds. One re-check per refusal and never a retry of the refused request, so a panel refusing a genuinely bad token cannot put the integration in a loop of questions; a stock entry is never re-asked, because a stock 401 is a session to renew; and a panel moving *to* tuxweb still takes a reload of the entry.
 
 ## Supported functions
 
-One `alarm_control_panel` entity per configured partition, named **Partition N** under
-the device **Honeywell Tuxedo Touch**. A fresh install gets the entity id
-`alarm_control_panel.honeywell_tuxedo_touch_partition_1`; an install from before the
-name carried the partition keeps whatever entity id it already had.
+One `alarm_control_panel` entity per configured partition, named **Partition N** under the device **Honeywell Tuxedo Touch**. A fresh install gets the entity id `alarm_control_panel.honeywell_tuxedo_touch_partition_1`; an install from before the name carried the partition keeps whatever entity id it already had.
 
 | Panel status (`tuxedo_status` attribute) | Entity state |
 |---|---|
@@ -129,17 +68,9 @@ name carried the partition keeps whatever entity id it already had.
 | `Not available` | `unavailable` - the panel's status cache was empty, and only the 30 s poll can ever see this; see [How it updates](#how-it-updates) |
 | Anything else | `unknown` |
 
-The table applies to whichever of the two sources in [How it updates](#how-it-updates)
-reported the state. `Ready To Arm` and the exit-delay countdown are the texts that have
-been observed arriving on the push stream; the armed spellings are the ones the 30 s poll
-returns, and the stream is assumed to spell them the same way. If it turns out not to,
-the stream still says whether the partition is armed, and the poll is let through to name
-the mode - the state stays right, at the poll's granularity.
+The table applies to whichever of the two sources in [How it updates](#how-it-updates) reported the state. `Ready To Arm` and the exit-delay countdown are the texts that have been observed arriving on the push stream; the armed spellings are the ones the 30 s poll returns, and the stream is assumed to spell them the same way. If it turns out not to, the stream still says whether the partition is armed, and the poll is let through to name the mode - the state stays right, at the poll's granularity.
 
-Commands are the alarm panel domain's own actions: `alarm_control_panel.alarm_arm_home`
-(Stay), `alarm_arm_away`, `alarm_arm_night` and `alarm_disarm`. Each takes an optional
-`code`; without one the keypad code stored at setup is used. There are no actions,
-triggers or conditions of this integration's own.
+Commands are the alarm panel domain's own actions: `alarm_control_panel.alarm_arm_home` (Stay), `alarm_arm_away`, `alarm_arm_night` and `alarm_disarm`. Each takes an optional `code`; without one the keypad code stored at setup is used. There are no actions, triggers or conditions of this integration's own.
 
 The entity carries four attributes:
 
@@ -152,117 +83,51 @@ The entity carries four attributes:
 
 ### The keypad display
 
-`sensor.honeywell_tuxedo_touch_keypad_display`, a diagnostic entity under the same
-device, shows the panel's own two-line keypad LCD as the event stream carries it. It is
-the one place the panel says which zone is faulted **by name**, and the `Check`, bypass,
-trouble and AC-loss text nothing else exposes. The state is the two lines joined with a
-single space, whitespace collapsed - `****DISARMED**** Ready to Arm`, say - and the
-attributes are `line_1` and `line_2` as the panel drew them and `raw`, the record as it
-arrived. A state longer than Home Assistant's 255-character limit is cut, with the full
-text still in the attributes.
+`sensor.honeywell_tuxedo_touch_keypad_display`, a diagnostic entity under the same device, shows the panel's own two-line keypad LCD as the event stream carries it. It is the one place the panel says which zone is faulted **by name**, and the `Check`, bypass, trouble and AC-loss text nothing else exposes. The state is the two lines joined with a single space, whitespace collapsed - `****DISARMED**** Ready to Arm`, say - and the attributes are `line_1` and `line_2` as the panel drew them and `raw`, the record as it arrived. A state longer than Home Assistant's 255-character limit is cut, with the full text still in the attributes.
 
 Two things to know, both measured on a live arm and disarm:
 
-- **During an exit delay the LCD repaints every ~2 s** (`May Exit Now  60`, then 58, 56
-  ...), so the sensor changes state at that rate for the length of the delay. That is
-  normal and bounded. If the recorder churn bothers you the answer is a recorder
-  `exclude` for this entity, not a slower sensor: a dropped repaint is a wrong display.
-- **The LCD's countdown and the alarm entity's are different numbers, by design.** The
-  LCD shows a 60-second "exit now" window while the status frame counts the whole exit
-  delay, so the two disagree throughout arming. `arming_seconds_remaining` is the
-  countdown; this sensor is the panel's words. Do not derive one from the other.
+- **During an exit delay the LCD repaints every ~2 s** (`May Exit Now  60`, then 58, 56 ...), so the sensor changes state at that rate for the length of the delay. That is normal and bounded. If the recorder churn bothers you the answer is a recorder `exclude` for this entity, not a slower sensor: a dropped repaint is a wrong display.
+- **The LCD's countdown and the alarm entity's are different numbers, by design.** The LCD shows a 60-second "exit now" window while the status frame counts the whole exit delay, so the two disagree throughout arming. `arming_seconds_remaining` is the countdown; this sensor is the panel's words. Do not derive one from the other.
 
-The sensor is `unavailable` whenever the stream is down - the text has no other source,
-so a line from before a drop is a line nothing is vouching for - and `unknown` from the
-moment the stream is back until the panel next draws. On stock firmware the panel sends
-its display only while someone has its own `/console.html` page open, so there the
-sensor mostly reads `unknown`; tuxweb holds that mode on.
+The sensor is `unavailable` whenever the stream is down - the text has no other source, so a line from before a drop is a line nothing is vouching for - and `unknown` from the moment the stream is back until the panel next draws. On stock firmware the panel sends its display only while someone has its own `/console.html` page open, so there the sensor mostly reads `unknown`; tuxweb holds that mode on.
 
 ### The ECP link
 
-`binary_sensor.honeywell_tuxedo_touch_ecp_link`, a diagnostic `problem` sensor under the
-same device, is `on` for as long as the Tuxedo says it has lost its ECP link to the VISTA
-panel behind it - the condition that takes the alarm entity `unavailable` (see
-[Troubleshooting](#troubleshooting)). An unavailable alarm entity is not something an
-automation can notify on; this is. It is `unavailable` while the stream is down, because
-the stream is the only thing that can see the link, and on a relay-fed entry also while
-the panel's own poll is failing.
+`binary_sensor.honeywell_tuxedo_touch_ecp_link`, a diagnostic `problem` sensor under the same device, is `on` for as long as the Tuxedo says it has lost its ECP link to the VISTA panel behind it - the condition that takes the alarm entity `unavailable` (see [Troubleshooting](#troubleshooting)). An unavailable alarm entity is not something an automation can notify on; this is. It is `unavailable` while the stream is down, because the stream is the only thing that can see the link, and on a relay-fed entry also while the panel's own poll is failing.
 
-**It exists only on tuxweb**, which declares the `panel_link_state` capability. The same
-marker does arrive on stock firmware, as a side effect of the vendor's producer, and the
-integration acts on it there too - but nothing on stock promises it, and a problem sensor
-reading `off` because the promise was never made would look exactly like one reading
-`off` because the link is fine. The diagnostics download reports `ecp_link_down` on every
-firmware.
+**It exists only on tuxweb**, which declares the `panel_link_state` capability. The same marker does arrive on stock firmware, as a side effect of the vendor's producer, and the integration acts on it there too - but nothing on stock promises it, and a problem sensor reading `off` because the promise was never made would look exactly like one reading `off` because the link is fine. The diagnostics download reports `ecp_link_down` on every firmware.
 
-The link-down marker is the `-1` status code the Tuxedo's own status producer writes
-when it cannot hear the panel. On tuxweb the sensor needs firmware v16 or later, which
-prints that code signed.
+The link-down marker is the `-1` status code the Tuxedo's own status producer writes when it cannot hear the panel. On tuxweb the sensor needs firmware v16 or later, which prints that code signed.
 
 ### The panel's own online state
 
-`binary_sensor.honeywell_tuxedo_touch_panel_offline`, a second diagnostic `problem`
-sensor, is `on` while the VISTA reports **itself** as not online - the panel answering
-the Tuxedo's status poll with its busy, downloading or offline state - and `off` once it
-reports online again. This is a different fact from the ECP link: that sensor says whether
-the Tuxedo can *hear* the panel, this one what the panel *says about itself*, and the
-firmware sets the two independently, so a panel can be talking and offline, or silent
-and, as far as anyone last knew, online. An automation that wants "the alarm is not fully
-in service" watches both. While it is `on`, the `panel_online_status` attribute carries
-the panel's own code (`2`..`4`, or `-1` when the link is down at the same time), and the
-alarm entity keeps following the status text, which is the panel's real prompt.
+`binary_sensor.honeywell_tuxedo_touch_panel_offline`, a second diagnostic `problem` sensor, is `on` while the VISTA reports **itself** as not online - the panel answering the Tuxedo's status poll with its busy, downloading or offline state - and `off` once it reports online again. This is a different fact from the ECP link: that sensor says whether the Tuxedo can *hear* the panel, this one what the panel *says about itself*, and the firmware sets the two independently, so a panel can be talking and offline, or silent and, as far as anyone last knew, online. An automation that wants "the alarm is not fully in service" watches both. While it is `on`, the `panel_online_status` attribute carries the panel's own code (`2`..`4`, or `-1` when the link is down at the same time), and the alarm entity keeps following the status text, which is the panel's real prompt.
 
-It exists on **both** firmwares: the record it reads is the vendor's own producer, put on
-the wire by stock and by tuxweb alike, so there is no promise to gate on. Like the link
-sensor it is `unavailable` while the stream is down. On tuxweb it needs firmware v16 or
-later, which relays the record.
+It exists on **both** firmwares: the record it reads is the vendor's own producer, put on the wire by stock and by tuxweb alike, so there is no promise to gate on. Like the link sensor it is `unavailable` while the stream is down. On tuxweb it needs firmware v16 or later, which relays the record.
 
 ## Use cases
 
-- Arm away when the last person leaves and disarm when the first arrives, with the
-  keypad code stored so automations need not carry it.
-- Arm home at bedtime from a dashboard tile or a voice assistant, and be told if the
-  panel refused because a zone was faulted.
-- Notify a phone when the panel goes into alarm, from a Tuxedo that has no keypad bus
-  interface (Envisalink or similar) attached.
-- Keep the Tuxedo's lighting, thermostat and lock features out of Home Assistant while
-  still owning the alarm from it - only security is implemented here.
-- Count the exit delay down on a dashboard, or hold a "leaving the house" scene until
-  `arming_seconds_remaining` reaches zero - the panel pushes it once a second.
+- Arm away when the last person leaves and disarm when the first arrives, with the keypad code stored so automations need not carry it.
+- Arm home at bedtime from a dashboard tile or a voice assistant, and be told if the panel refused because a zone was faulted.
+- Notify a phone when the panel goes into alarm, from a Tuxedo that has no keypad bus interface (Envisalink or similar) attached.
+- Keep the Tuxedo's lighting, thermostat and lock features out of Home Assistant while still owning the alarm from it - only security is implemented here.
+- Count the exit delay down on a dashboard, or hold a "leaving the house" scene until `arming_seconds_remaining` reaches zero - the panel pushes it once a second.
 
 ## Requirements
 
-- Home Assistant 2026.3 or newer. The integration's icon and logo ship in the repository
-  and are served by Home Assistant from that release on. That is the only floor - the
-  DHCP discovery described below needs nothing newer.
-- A Tuxedo Touch WIFI unit reachable on your LAN. Its **DHCP lease** is how Home
-  Assistant discovers the panel and learns which unit it is talking to, so leaving the
-  panel on DHCP - with a reservation if you want its address fixed - suits this
-  integration better than a static address set on the unit itself. Where Home Assistant
-  sees the lease it knows the panel's MAC and follows a changed address by itself, though
-  polling stops for the gap between the lease changing and Home Assistant seeing the new
-  one. An install routed or VLAN-separated from the panel sees no lease, is identified by
-  address, and has to be corrected under Settings -> Devices & Services -> Configure. See
-  "How the panel is identified" below.
-- Its **web login username and password** (Settings on the touchscreen -> Login settings).
-  This is different from the 4-digit keypad user code used to arm/disarm.
-- The 4-digit keypad user code, entered either at setup (used as the default arm/disarm
-  code) or each time from the Home Assistant UI/automations.
+- Home Assistant 2026.3 or newer. The integration's icon and logo ship in the repository and are served by Home Assistant from that release on. That is the only floor - the DHCP discovery described below needs nothing newer.
+- A Tuxedo Touch WIFI unit reachable on your LAN. Its **DHCP lease** is how Home Assistant discovers the panel and learns which unit it is talking to, so leaving the panel on DHCP - with a reservation if you want its address fixed - suits this integration better than a static address set on the unit itself. Where Home Assistant sees the lease it knows the panel's MAC and follows a changed address by itself, though polling stops for the gap between the lease changing and Home Assistant seeing the new one. An install routed or VLAN-separated from the panel sees no lease, is identified by address, and has to be corrected under Settings -> Devices & Services -> Configure. See "How the panel is identified" below.
+- Its **web login username and password** (Settings on the touchscreen -> Login settings). This is different from the 4-digit keypad user code used to arm/disarm.
+- The 4-digit keypad user code, entered either at setup (used as the default arm/disarm code) or each time from the Home Assistant UI/automations.
 
 ## Installation
 
-HACS: search for "Honeywell Tuxedo Touch", or add `heidrickla/ha-tuxedo-touch` as a
-custom repository of type Integration if it is not yet in the default list. Install and
-restart Home Assistant.
+HACS: search for "Honeywell Tuxedo Touch", or add `heidrickla/ha-tuxedo-touch` as a custom repository of type Integration if it is not yet in the default list. Install and restart Home Assistant.
 
-Manual: copy `custom_components/tuxedo_touch` into your Home Assistant
-`config/custom_components/` directory and restart.
+Manual: copy `custom_components/tuxedo_touch` into your Home Assistant `config/custom_components/` directory and restart.
 
-After the restart, watch Settings -> Devices & Services for a **discovered** "Honeywell
-Tuxedo Touch" card: the panel is found from its DHCP lease and only asks for the login
-(see [Discovery](#discovery-and-moving-addresses)). If it does not appear - Home
-Assistant is routed away from the panel, or the panel holds a static address and issues
-no lease - add it by hand with Add Integration -> "Honeywell Tuxedo Touch".
+After the restart, watch Settings -> Devices & Services for a **discovered** "Honeywell Tuxedo Touch" card: the panel is found from its DHCP lease and only asks for the login (see [Discovery](#discovery-and-moving-addresses)). If it does not appear - Home Assistant is routed away from the panel, or the panel holds a static address and issues no lease - add it by hand with Add Integration -> "Honeywell Tuxedo Touch".
 
 ### Installation parameters
 
@@ -277,234 +142,88 @@ no lease - add it by hand with Add Integration -> "Honeywell Tuxedo Touch".
 | Partition number | The panel partition this entry controls. Default 1. Add the integration once per partition for a multi-partition panel. |
 | tuxweb token | Optional, and empty on stock firmware. Only for a panel running the tuxweb replacement web server: the token issued on the panel with `tuxweb --issue-token`. Masked; never shown again once stored. See [tuxweb, the replacement web server](#tuxweb-the-replacement-web-server). |
 
-Setup performs a real login against the panel before the entry is created, so a wrong
-password, an unreachable address or a panel that answered oddly is caught on the form
-with a message that says which. This is true of the discovered panel's form too: the
-address comes from the lease, everything else is asked for and checked the same way.
-On a panel running tuxweb the check is one token-gated status read instead of a login,
-and a wrong or missing token is named as such on the form.
+Setup performs a real login against the panel before the entry is created, so a wrong password, an unreachable address or a panel that answered oddly is caught on the form with a message that says which. This is true of the discovered panel's form too: the address comes from the lease, everything else is asked for and checked the same way. On a panel running tuxweb the check is one token-gated status read instead of a login, and a wrong or missing token is named as such on the form.
 
-**On HTTPS**: leave it enabled unless you have specifically disabled "Secured Web Server
-Access" in the unit's settings. The unit's command endpoints redirect to HTTPS regardless
-of the scheme you request whenever that setting is on, so mixing an HTTP login with
-HTTPS-only commands would silently break arming and disarming. The integration detects
-the redirect and raises a repair notification that switches the entry over for you. See
-[docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md) for the full writeup.
+**On HTTPS**: leave it enabled unless you have specifically disabled "Secured Web Server Access" in the unit's settings. The unit's command endpoints redirect to HTTPS regardless of the scheme you request whenever that setting is on, so mixing an HTTP login with HTTPS-only commands would silently break arming and disarming. The integration detects the redirect and raises a repair notification that switches the entry over for you. See [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md) for the full writeup.
 
 ### Reconfiguring
 
-Settings -> Devices & Services -> Honeywell Tuxedo Touch -> Reconfigure changes the
-address, port, scheme, credentials, keypad code or partition. The password and keypad
-code fields come up empty; leaving them empty keeps the stored values. The entry keeps
-the panel identity it already has - a reconfigure moves an entry, it never turns it into
-a different panel - and its title follows the new address unless you renamed the entry.
-The only settings outside this form are the two push-source options below, and they are
-empty in the supported configuration.
+Settings -> Devices & Services -> Honeywell Tuxedo Touch -> Reconfigure changes the address, port, scheme, credentials, keypad code or partition. The password and keypad code fields come up empty; leaving them empty keeps the stored values. The entry keeps the panel identity it already has - a reconfigure moves an entry, it never turns it into a different panel - and its title follows the new address unless you renamed the entry. The only settings outside this form are the two push-source options below, and they are empty in the supported configuration.
 
-The panel answers one client at a time, so the form takes care not to compete with the
-polling it is reconfiguring. Changing only the keypad code or the partition contacts the
-panel not at all: nothing the login depends on has changed, and the entry is already
-proof that what it does depend on works. Changing the address, port, scheme, username or
-password does need a login, so the entry is stood down for the moment that check takes
-and set up again straight afterwards - on the new settings if they worked, on the old
-ones if they did not. That applies to an entry that is retrying as much as to one that
-is polling: the state you most often reconfigure from is a panel that has moved, and a
-retry on the clock logs into the panel just as a poll does. Without this, the check
-competes with the entry for the panel's only connection, and contention on this unit is
-a hang rather than a refusal: the form waits out its timeout and reports "Failed to
-connect" about a panel that is perfectly well.
+The panel answers one client at a time, so the form takes care not to compete with the polling it is reconfiguring. Changing only the keypad code or the partition contacts the panel not at all: nothing the login depends on has changed, and the entry is already proof that what it does depend on works. Changing the address, port, scheme, username or password does need a login, so the entry is stood down for the moment that check takes and set up again straight afterwards - on the new settings if they worked, on the old ones if they did not. That applies to an entry that is retrying as much as to one that is polling: the state you most often reconfigure from is a panel that has moved, and a retry on the clock logs into the panel just as a poll does. Without this, the check competes with the entry for the panel's only connection, and contention on this unit is a hang rather than a refusal: the form waits out its timeout and reports "Failed to connect" about a panel that is perfectly well.
 
-Standing the entry down stops it starting new work, and the check then takes over the
-connection it was using rather than opening a second one: every request this integration
-makes goes out on the same key in Home Assistant's connection pool, so a socket left
-idle by the poller is the socket the check picks up. That matters because the unit
-counts connections, not sessions - a second one is accepted and then answered with
-silence.
+Standing the entry down stops it starting new work, and the check then takes over the connection it was using rather than opening a second one: every request this integration makes goes out on the same key in Home Assistant's connection pool, so a socket left idle by the poller is the socket the check picks up. That matters because the unit counts connections, not sessions - a second one is accepted and then answered with silence.
 
-When the panel starts refusing the stored credentials, Home Assistant stops polling and
-asks for them again rather than re-running the login handshake against doomed
-credentials every thirty seconds.
+When the panel starts refusing the stored credentials, Home Assistant stops polling and asks for them again rather than re-running the login handshake against doomed credentials every thirty seconds.
 
 ### Configuration parameters
 
-Settings, then Devices & services, then Configure on the Tuxedo Touch entry. Both fields
-are empty by default and that is the supported configuration: the panel serves its own
-push stream and neither parameter applies. Saving the form reloads the entry, so a change
-takes effect immediately rather than at the next restart.
+Settings, then Devices & services, then Configure on the Tuxedo Touch entry. Both fields are empty by default and that is the supported configuration: the panel serves its own push stream and neither parameter applies. Saving the form reloads the entry, so a change takes effect immediately rather than at the next restart.
 
 | Parameter | Accepts | Default |
 |---|---|---|
 | `push_url` | Full URL of a relay that serves the push stream, including the path, for example `https://relay.example:8081/SimpleDebugger.interface/G.` | empty, meaning the panel |
 | `push_token` | A credential the relay expects. Sent both as an `Authorization: Bearer` header and as a `tuxweb_token` cookie, because a relay may gate on either | empty, meaning none is sent |
 
-Leave a field blank to clear it. A blank is stored as absent, not as an empty string, so
-clearing one really does return that setting to the panel.
+Leave a field blank to clear it. A blank is stored as absent, not as an empty string, so clearing one really does return that setting to the panel.
 
-**Only the stream moves.** Login and every command still go to the panel, and that is a
-constraint rather than a simplification. The panel answers `302` to https on the REST
-namespace when it is addressed over plain HTTP, whatever credentials are presented, so
-commands cannot be redirected; and it binds a session to the address that created it, so
-a consumer that logged in against the panel has to keep talking to the panel for
-everything else. A half-redirected setup presents as a random logout.
+**Only the stream moves.** Login and every command still go to the panel, and that is a constraint rather than a simplification. The panel answers `302` to https on the REST namespace when it is addressed over plain HTTP, whatever credentials are presented, so commands cannot be redirected; and it binds a session to the address that created it, so a consumer that logged in against the panel has to keep talking to the panel for everything else. A half-redirected setup presents as a random logout.
 
-**A relay receives the panel's session cookie**, and it has to: the stream is the panel's
-own endpoint, so whatever serves it is presented with the session that opened it. Combined
-with the point above, a relay is as trusted as the panel itself for state reporting - it
-decides what this integration believes the alarm is doing. Run one you control. Nothing
-else moves: the relay cannot arm or disarm anything, because commands never leave the
-panel, and a relay-fed entity goes unavailable when the panel's own poll stops answering
-rather than coasting on forwarded state.
+**A relay receives the panel's session cookie**, and it has to: the stream is the panel's own endpoint, so whatever serves it is presented with the session that opened it. Combined with the point above, a relay is as trusted as the panel itself for state reporting - it decides what this integration believes the alarm is doing. Run one you control. Nothing else moves: the relay cannot arm or disarm anything, because commands never leave the panel, and a relay-fed entity goes unavailable when the panel's own poll stops answering rather than coasting on forwarded state.
 
-**A relay's certificate is verified; the panel's is not.** The panel is exempt because it
-ships an expired 2009 self-signed certificate that no modern TLS stack will accept, and
-that exemption is the panel's alone. A relay is an address you typed and it receives the
-push token, so it gets ordinary verification. Terminate TLS with a certificate this Home
-Assistant trusts, or serve the stream over http.
+**A relay's certificate is verified; the panel's is not.** The panel is exempt because it ships an expired 2009 self-signed certificate that no modern TLS stack will accept, and that exemption is the panel's alone. A relay is an address you typed and it receives the push token, so it gets ordinary verification. Terminate TLS with a certificate this Home Assistant trusts, or serve the stream over http.
 
-Why a relay is worth having at all: firmware that gates the push path on a session needs
-one, and a relay can hold a single upstream subscription and fan it out. That matters to
-the panel rather than to throughput, because every registration makes it flush its reply
-queue, so one subscriber costs it less than three.
+Why a relay is worth having at all: firmware that gates the push path on a session needs one, and a relay can hold a single upstream subscription and fan it out. That matters to the panel rather than to throughput, because every registration makes it flush its reply queue, so one subscriber costs it less than three.
 
 ### Discovery and moving addresses
 
-The panel announces nothing on mDNS or SSDP, but it is a DHCP client and its lease is
-distinctive: the unit's network interface uses Resideo's `00:D0:2D` OUI and it puts `Tux`
-followed by the twelve hex digits of its own MAC in the lease hostname - for example
-`Tux00D02D000001`. The manifest matches on both together, so another vendor's device is
-never offered as a Tuxedo panel.
+The panel announces nothing on mDNS or SSDP, but it is a DHCP client and its lease is distinctive: the unit's network interface uses Resideo's `00:D0:2D` OUI and it puts `Tux` followed by the twelve hex digits of its own MAC in the lease hostname - for example `Tux00D02D000001`. The manifest matches on both together, so another vendor's device is never offered as a Tuxedo panel.
 
-**A panel you have not added** shows up under Settings -> Devices & Services as a
-discovered device. Opening it asks only for what a lease cannot say: the web login
-username and password, the keypad code and the partition, plus the port and the HTTPS
-toggle in case you turned "Secured Web Server Access" off. The integration logs in to the
-panel before creating the entry, exactly as the manual form does, and keys the entry on
-the MAC the lease carried.
+**A panel you have not added** shows up under Settings -> Devices & Services as a discovered device. Opening it asks only for what a lease cannot say: the web login username and password, the keypad code and the partition, plus the port and the HTTPS toggle in case you turned "Secured Web Server Access" off. The integration logs in to the panel before creating the entry, exactly as the manual form does, and keys the entry on the MAC the lease carried.
 
-**A second partition is added by hand.** Discovery offers a panel once. As soon as one
-entry carries the panel's MAC, later leases from it are treated as a move rather than a
-new device, so the discovered card does not come back for partition 2. Add it with
-Settings -> Devices & Services -> Add integration -> Honeywell Tuxedo Touch, giving the
-same address and the other partition number; the next lease Home Assistant sees for that
-address hands the new entry the panel's MAC, and from then on both entries move together.
+**A second partition is added by hand.** Discovery offers a panel once. As soon as one entry carries the panel's MAC, later leases from it are treated as a move rather than a new device, so the discovered card does not come back for partition 2. Add it with Settings -> Devices & Services -> Add integration -> Honeywell Tuxedo Touch, giving the same address and the other partition number; the next lease Home Assistant sees for that address hands the new entry the panel's MAC, and from then on both entries move together.
 
-**A panel you ignore stays ignored.** Dismissing the discovered card with Ignore keeps
-Home Assistant from raising it again, however often the panel renews its lease. Undo it
-with Settings -> Devices & Services -> the three-dot menu -> Show ignored integrations.
+**A panel you ignore stays ignored.** Dismissing the discovered card with Ignore keeps Home Assistant from raising it again, however often the panel renews its lease. Undo it with Settings -> Devices & Services -> the three-dot menu -> Show ignored integrations.
 
-**A panel that moves** is followed automatically. Home Assistant hands over the new lease,
-the stored address is corrected on every entry for that panel - one per partition - and
-the integration reloads. The entry's title follows the new address unless you renamed the
-entry. An entry you added by hand was keyed on its address; the first lease Home Assistant
-sees for that address gives it the panel's MAC instead, and from then on it moves with the
-panel too.
+**A panel that moves** is followed automatically. Home Assistant hands over the new lease, the stored address is corrected on every entry for that panel - one per partition - and the integration reloads. The entry's title follows the new address unless you renamed the entry. An entry you added by hand was keyed on its address; the first lease Home Assistant sees for that address gives it the panel's MAC instead, and from then on it moves with the panel too.
 
-All of this needs Home Assistant to see the lease, which means it is on the panel's own
-network segment. A routed or VLAN-separated install is identified by address and has to be
-corrected by hand - see "How the panel is identified" under Known limitations.
+All of this needs Home Assistant to see the lease, which means it is on the panel's own network segment. A routed or VLAN-separated install is identified by address and has to be corrected by hand - see "How the panel is identified" under Known limitations.
 
 ### Removing it
 
-Settings -> Devices & Services -> Honeywell Tuxedo Touch -> the entry's menu -> Delete.
-That removes the entry, its device, its entity and any repair notification it raised.
-Nothing is written to the panel at any point, so there is nothing to undo on the unit;
-the web login account you used stays as it was.
+Settings -> Devices & Services -> Honeywell Tuxedo Touch -> the entry's menu -> Delete. That removes the entry, its device, its entity and any repair notification it raised. Nothing is written to the panel at any point, so there is nothing to undo on the unit; the web login account you used stays as it was.
 
 ## How it updates
 
-**The panel pushes its state, and that is what the entity shows.** As soon as an entry
-is set up, the integration opens one long-lived request to the panel's event stream and
-holds it open for the life of the entry. The panel reports partition status on it as it
-happens - an arm, a disarm, and the exit-delay countdown a second at a time - so a
-change made at the keypad reaches Home Assistant in seconds rather than at the next
-poll. The `tuxedo_source` attribute says `stream` when the state came from there.
+**The panel pushes its state, and that is what the entity shows.** As soon as an entry is set up, the integration opens one long-lived request to the panel's event stream and holds it open for the life of the entry. The panel reports partition status on it as it happens - an arm, a disarm, and the exit-delay countdown a second at a time - so a change made at the keypad reaches Home Assistant in seconds rather than at the next poll. The `tuxedo_source` attribute says `stream` when the state came from there.
 
-The 30-second status read is still there, doing two smaller jobs: it is the first read
-at setup, which is what proves the address, the scheme and the credentials, and it is
-the fallback whenever the stream is not connected. While the stream is delivering, what
-the poll reads is ignored rather than written over the pushed status - with one
-exception, described below.
+The 30-second status read is still there, doing two smaller jobs: it is the first read at setup, which is what proves the address, the scheme and the credentials, and it is the fallback whenever the stream is not connected. While the stream is delivering, what the poll reads is ignored rather than written over the pushed status - with one exception, described below.
 
-**This closes the `Not available` story.** The panel's `GetSecurityStatus` endpoint
-reads a cache its firmware can fill only from a message on the alarm bus, and answers
-the literal `Not available` while that cache is empty; on a quiet house that could last
-hours, and it is what used to leave the entity with nothing to show. The event stream
-does not read that cache. A client on it cannot see `Not available` at all, so on
-firmware that has the stream the condition no longer reaches the entity. It is still
-handled for firmware that does not: a poll answering `Not available` is a failed read,
-not a state, on the first poll after a load as much as on the hundredth.
+**This closes the `Not available` story.** The panel's `GetSecurityStatus` endpoint reads a cache its firmware can fill only from a message on the alarm bus, and answers the literal `Not available` while that cache is empty; on a quiet house that could last hours, and it is what used to leave the entity with nothing to show. The event stream does not read that cache. A client on it cannot see `Not available` at all, so on firmware that has the stream the condition no longer reaches the entity. It is still handled for firmware that does not: a poll answering `Not available` is a failed read, not a state, on the first poll after a load as much as on the hundredth.
 
-The entity is available while **either** source is working, and unavailable only when
-both are down - so a poll answering `Not available` while the stream is up is not an
-outage of anything. The stream counts once it has something to show rather than the
-moment its socket opens: an entry that loads during a `Not available` spell stays
-`unavailable` for the second or two before the first pushed status, instead of going
-`unknown` with nothing behind it. When the stream drops it reconnects on its own, with a wait that
-doubles up to five minutes and resets the moment a connection comes up; the log gets one
-line when it goes and one when it returns. A panel whose firmware has no such endpoint
-answers 404, the stream stops asking, and the integration runs on the poll alone.
+The entity is available while **either** source is working, and unavailable only when both are down - so a poll answering `Not available` while the stream is up is not an outage of anything. The stream counts once it has something to show rather than the moment its socket opens: an entry that loads during a `Not available` spell stays `unavailable` for the second or two before the first pushed status, instead of going `unknown` with nothing behind it. When the stream drops it reconnects on its own, with a wait that doubles up to five minutes and resets the moment a connection comes up; the log gets one line when it goes and one when it returns. A panel whose firmware has no such endpoint answers 404, the stream stops asking, and the integration runs on the poll alone.
 
 ### Arming and disarming
 
-Arm and disarm answer HTTP 200 with an empty body: the panel says what it did on the
-event stream, seconds later, and not in the reply. So a command waits for the panel's
-own report, for up to eight seconds. If none arrives, the integration polls; if the poll
-cannot show the change either, the entity shows the state that was asked for and marks
-it `assumed` in `tuxedo_source`, because nothing confirmed it. The next real status from
-either source replaces it. A poll that was already in flight when the command went out
-is discarded rather than allowed to flip the entity back.
+Arm and disarm answer HTTP 200 with an empty body: the panel says what it did on the event stream, seconds later, and not in the reply. So a command waits for the panel's own report, for up to eight seconds. If none arrives, the integration polls; if the poll cannot show the change either, the entity shows the state that was asked for and marks it `assumed` in `tuxedo_source`, because nothing confirmed it. The next real status from either source replaces it. A poll that was already in flight when the command went out is discarded rather than allowed to flip the entity back.
 
-On a panel running tuxweb the reply itself is evidence: 200 is sent only once the panel
-has been seen to act, and a command it did not act on within eight seconds comes back
-as 504 and fails the call with that reason — nothing is assumed. The stream and the poll
-still come first, because they name the mode and the reply does not; when neither can
-speak, the state that was asked for is shown with `tuxedo_source` set to `command`
-rather than `assumed`, because the panel confirmed it.
+On a panel running tuxweb the reply itself is evidence: 200 is sent only once the panel has been seen to act, and a command it did not act on within eight seconds comes back as 504 and fails the call with that reason — nothing is assumed. The stream and the poll still come first, because they name the mode and the reply does not; when neither can speak, the state that was asked for is shown with `tuxedo_source` set to `command` rather than `assumed`, because the panel confirmed it.
 
 ### When the two sources disagree
 
-The stream says outright whether the partition is armed, but never in which mode - the
-mode comes from the display text. A display text this integration does not recognise
-therefore settles nothing, and that is the one case where the poll's own reading is let
-through to settle it. Everything in the table under
-[Supported functions](#supported-functions) is recognised on both sources; a firmware
-spelling a mode some other way would take this path rather than showing `unknown` for
-ever.
+The stream says outright whether the partition is armed, but never in which mode - the mode comes from the display text. A display text this integration does not recognise therefore settles nothing, and that is the one case where the poll's own reading is let through to settle it. Everything in the table under [Supported functions](#supported-functions) is recognised on both sources; a firmware spelling a mode some other way would take this path rather than showing `unknown` for ever.
 
-The entry loads through an outage of either kind. A panel that answers `Not available`
-has answered - address, port, scheme and credentials are all proven by that reply - so
-refusing to set the entry up would take the device, the entity and its history away for
-as long as it lasted.
+The entry loads through an outage of either kind. A panel that answers `Not available` has answered - address, port, scheme and credentials are all proven by that reply - so refusing to set the entry up would take the device, the entity and its history away for as long as it lasted.
 
-Requests go out on Home Assistant's own HTTP connection pool rather than a pool of this
-integration's own, and every client here - each entry's poller, and the checks the setup
-and reconfigure forms run - shares one pool key, so a check takes over the connection the
-poller left idle rather than opening a second one. Sharing the key is what makes the
-takeover possible; it does not by itself cap us at one connection, because two requests
-of ours that overlap in time are two connections. What keeps them from overlapping is the
-reconfigure form's stand-down: it unloads the entry, which stops the next poll, and waits
-for any poll already in flight to finish before the check dials the panel. That is the
-point rather than a detail: the unit serves one connection at a time and answers a second
-with silence, so anything of ours that opened its own would starve the poller instead of
-queueing behind it.
+Requests go out on Home Assistant's own HTTP connection pool rather than a pool of this integration's own, and every client here - each entry's poller, and the checks the setup and reconfigure forms run - shares one pool key, so a check takes over the connection the poller left idle rather than opening a second one. Sharing the key is what makes the takeover possible; it does not by itself cap us at one connection, because two requests of ours that overlap in time are two connections. What keeps them from overlapping is the reconfigure form's stand-down: it unloads the entry, which stops the next poll, and waits for any poll already in flight to finish before the check dials the panel. That is the point rather than a detail: the unit serves one connection at a time and answers a second with silence, so anything of ours that opened its own would starve the poller instead of queueing behind it.
 
-The pool keeps an idle connection for fifteen seconds. A thirty-second poll therefore
-opens a fresh one each time and pays for the panel's slow legacy TLS handshake once per
-poll, and for the second half of every interval nothing of ours is polling the panel.
+The pool keeps an idle connection for fifteen seconds. A thirty-second poll therefore opens a fresh one each time and pays for the panel's slow legacy TLS handshake once per poll, and for the second half of every interval nothing of ours is polling the panel.
 
-The event stream is a second connection and it is held open permanently, which sounds
-like exactly the contention described above and is not: the panel's stream endpoint is
-measurably not subject to that limit. Two clients have each held a stream while commands
-went out on a separate request, all three served at once, and six connect-disconnect
-cycles on one session reclaimed their slot every time. So the stream can be held while
-the poll, a setup check and the panel's own web UI all work. Unloading an entry cancels
-it and waits for the cancellation, so a returned unload still means nothing of ours is
-on the panel - which is what the reconfigure form relies on before it dials.
+The event stream is a second connection and it is held open permanently, which sounds like exactly the contention described above and is not: the panel's stream endpoint is measurably not subject to that limit. Two clients have each held a stream while commands went out on a separate request, all three served at once, and six connect-disconnect cycles on one session reclaimed their slot every time. So the stream can be held while the poll, a setup check and the panel's own web UI all work. Unloading an entry cancels it and waits for the cancellation, so a returned unload still means nothing of ours is on the panel - which is what the reconfigure form relies on before it dials.
 
 ## Repairs
 
-Three conditions cannot be cleared by retrying, so they arrive as repair notifications
-under Settings -> System -> Repairs rather than as log lines.
+Three conditions cannot be cleared by retrying, so they arrive as repair notifications under Settings -> System -> Repairs rather than as log lines.
 
 | Notification | What it does |
 |---|---|
@@ -512,46 +231,23 @@ under Settings -> System -> Repairs rather than as log lines.
 | **Two Tuxedo Touch entries reach one panel** | Two entries reach the same panel and partition - by different addresses, or by the same address on ports 80 and 443 - so only one of them can hold the panel's identity. The notification names both entries; remove whichever you do not want and the other adopts the panel's MAC on the panel's next DHCP lease. |
 | **Tuxedo Touch is refusing the stored credentials** | Credentials that used to work are being refused, most often because the web password was changed at the keypad. It stands beside the re-authentication card and carries what the card has no room for: that Home Assistant has stopped trying deliberately, and that guessing is itself the danger. See [One login attempt, then it waits for you](#one-login-attempt-then-it-waits-for-you). |
 
-They disappear on their own when the condition goes - including when you fix the panel's
-HTTPS setting from the touchscreen instead, or re-authenticate successfully - and when
-the entry is deleted.
+They disappear on their own when the condition goes - including when you fix the panel's HTTPS setting from the touchscreen instead, or re-authenticate successfully - and when the entry is deleted.
 
 ## One login attempt, then it waits for you
 
-**Home Assistant makes at most one automatic login attempt per set of credentials, and
-then stops until you give it different ones.** Not one per poll, not one per stream
-reconnect and not one per restart: one, for the life of those credentials.
+**Home Assistant makes at most one automatic login attempt per set of credentials, and then stops until you give it different ones.** Not one per poll, not one per stream reconnect and not one per restart: one, for the life of those credentials.
 
-The panel counts failed web logins and acts on the count. On unpatched firmware **three
-failed logins disable every web account it has** - permanently, with no timeout and no
-self-clear. The only way back is at the unit: Setup, then the account screen, re-enable
-web access, Enable All, Apply. Patched firmware allows five and clears itself after five
-minutes, and the panel publishes its version nowhere a client can read, so this
-integration behaves as though every panel is the unforgiving kind.
+The panel counts failed web logins and acts on the count. On unpatched firmware **three failed logins disable every web account it has** - permanently, with no timeout and no self-clear. The only way back is at the unit: Setup, then the account screen, re-enable web access, Enable All, Apply. Patched firmware allows five and clears itself after five minutes, and the panel publishes its version nowhere a client can read, so this integration behaves as though every panel is the unforgiving kind.
 
-A longer retry interval would not do instead. Anything that retries automatically
-reaches three eventually; only stopping avoids it. So when the panel refuses the stored
-credentials - a web password changed at the keypad, an account disabled - the poll stops,
-the event stream stops rather than backing off, the refusal is written on the config
-entry so a restart spends nothing either, and Home Assistant asks you.
+A longer retry interval would not do instead. Anything that retries automatically reaches three eventually; only stopping avoids it. So when the panel refuses the stored credentials - a web password changed at the keypad, an account disabled - the poll stops, the event stream stops rather than backing off, the refusal is written on the config entry so a restart spends nothing either, and Home Assistant asks you.
 
 At the keyboard that means:
 
-- **Submitting the credentials that are already stored is answered without asking the
-  panel.** They are the ones it has refused, so sending them again would cost an attempt
-  and learn nothing.
-- **Each different username or password you submit costs exactly one attempt.** Type the
-  one you believe is right rather than working through a list.
-- **Reconfigure works as a way back too**, on the same terms: it probes once when you
-  change something the login depends on, and a probe the panel accepts clears the entry's
-  refused state. Changing only the partition or the keypad code probes nothing and
-  changes nothing here.
-- If you restored the *same* password at the panel, neither form will re-test it - by
-  design, since it is the one the panel refused. Delete the entry and add it again, which
-  logs in once as any new entry does.
-- If the panel refuses credentials you are sure of, its web accounts are most likely
-  disabled already. Re-enable web access at the touchscreen. Waiting five minutes and
-  trying once more helps only on patched firmware, where the lockout clears itself.
+- **Submitting the credentials that are already stored is answered without asking the panel.** They are the ones it has refused, so sending them again would cost an attempt and learn nothing.
+- **Each different username or password you submit costs exactly one attempt.** Type the one you believe is right rather than working through a list.
+- **Reconfigure works as a way back too**, on the same terms: it probes once when you change something the login depends on, and a probe the panel accepts clears the entry's refused state. Changing only the partition or the keypad code probes nothing and changes nothing here.
+- If you restored the *same* password at the panel, neither form will re-test it - by design, since it is the one the panel refused. Delete the entry and add it again, which logs in once as any new entry does.
+- If the panel refuses credentials you are sure of, its web accounts are most likely disabled already. Re-enable web access at the touchscreen. Waiting five minutes and trying once more helps only on patched firmware, where the lockout clears itself.
 
 ## Examples
 
@@ -645,55 +341,16 @@ automation:
 
 ## Known limitations
 
-- Only security arm/disarm/status is implemented. The panel's API also exposes lighting,
-  thermostat, door lock, scene, and garage door control, which this integration does not
-  implement.
-- **The event stream carries the alarm state and nothing else.** Zone-level detail and
-  the event log are not obtainable from this panel over HTTP by any route: there is no
-  zone endpoint, the configuration files are not served, and the one command that would
-  report zones is accepted and answered by nothing. For zones, use an ECP-bus
-  integration (Envisalink, esphome-vistaECP) on the same panel.
-- **The status feed can still go quiet on firmware without the stream.** While the poll
-  is the only source and the panel answers `Not available`, it is reporting no status at
-  all, so the entity is `unavailable`: it cannot see changes made at the physical keypad,
-  and because Home Assistant skips unavailable entities in service calls, it cannot be
-  armed or disarmed from Home Assistant either until a real status arrives. The panel's
-  own touchscreen is unaffected throughout - the command path and the status-reporting
-  path fail independently on this firmware. On firmware that has the event stream this
-  cannot happen: that path does not read the cache the placeholder comes from.
-- Status is polled without a partition parameter (the firmware's `GetSecurityStatus`
-  doesn't take one), so on multi-partition panels the reported status is whatever the
-  Tuxedo module itself reports; arm/disarm do target the configured partition.
-- **The event stream follows the panel's current partition, and marks it nowhere.** The
-  firmware sends a status frame only when the partition that changed is the one the panel
-  is currently displaying, so every frame is about that partition and none of them carry
-  a partition number at all. On a single-partition system - what this has been built and
-  tested against - that is invisible and harmless. On a multi-partition one, changing the
-  displayed partition at the touchscreen or in the panel's web UI makes the stream start
-  reporting another partition's status to an entry configured for this one, with nothing
-  in the data to reveal it. The 30-second poll and every arm/disarm still use the
-  configured partition.
-- **The panel serves one web session at a time.** A browser tab left open on the unit's
-  web UI can make setup or polling fail to connect until it is closed.
-- **How the panel is identified.** It reports no identifier of its own: no serial, no
-  hostname and no MAC over its API (`Registration/AddDeviceMAC` enrolls a *client's* MAC,
-  not the unit's, and no documented endpoint returns the unit's network configuration).
-  The MAC therefore comes from the panel's DHCP lease, which Home Assistant watches
-  anyway, and the config entry is keyed on it. A panel discovered from its lease has it
-  immediately; a panel added by hand is keyed on its address until Home Assistant sees a
-  lease for that address, and adopts the MAC then. An install that never sees a lease -
-  routed, or on another VLAN, or a panel given a static address on the unit itself -
-  stays identified by address, where changing the panel's IP does read as a different
-  panel and has to be reconfigured by hand. Nothing here resolves a MAC by ARP any more:
-  the integration ships no synchronous dependency and does no lookup of its own.
-- Armed Instant is mapped to `armed_night`, the closest Home Assistant state to a Stay
-  variant with no entry delay.
-- **Discovery is DHCP only.** The unit answers nothing on mDNS or SSDP, so a panel that
-  issues no DHCP lease - one given a static address on its own touchscreen, or one Home
-  Assistant is routed away from - is never discovered and is added by hand. See
-  "Discovery and moving addresses".
-- Verified against firmware `TUXW_V5.3.21.0_VA`. Older firmware may behave differently
-  (see the docs) - not tested here.
+- Only security arm/disarm/status is implemented. The panel's API also exposes lighting, thermostat, door lock, scene, and garage door control, which this integration does not implement.
+- **The event stream carries the alarm state and nothing else.** Zone-level detail and the event log are not obtainable from this panel over HTTP by any route: there is no zone endpoint, the configuration files are not served, and the one command that would report zones is accepted and answered by nothing. For zones, use an ECP-bus integration (Envisalink, esphome-vistaECP) on the same panel.
+- **The status feed can still go quiet on firmware without the stream.** While the poll is the only source and the panel answers `Not available`, it is reporting no status at all, so the entity is `unavailable`: it cannot see changes made at the physical keypad, and because Home Assistant skips unavailable entities in service calls, it cannot be armed or disarmed from Home Assistant either until a real status arrives. The panel's own touchscreen is unaffected throughout - the command path and the status-reporting path fail independently on this firmware. On firmware that has the event stream this cannot happen: that path does not read the cache the placeholder comes from.
+- Status is polled without a partition parameter (the firmware's `GetSecurityStatus` doesn't take one), so on multi-partition panels the reported status is whatever the Tuxedo module itself reports; arm/disarm do target the configured partition.
+- **The event stream follows the panel's current partition, and marks it nowhere.** The firmware sends a status frame only when the partition that changed is the one the panel is currently displaying, so every frame is about that partition and none of them carry a partition number at all. On a single-partition system - what this has been built and tested against - that is invisible and harmless. On a multi-partition one, changing the displayed partition at the touchscreen or in the panel's web UI makes the stream start reporting another partition's status to an entry configured for this one, with nothing in the data to reveal it. The 30-second poll and every arm/disarm still use the configured partition.
+- **The panel serves one web session at a time.** A browser tab left open on the unit's web UI can make setup or polling fail to connect until it is closed.
+- **How the panel is identified.** It reports no identifier of its own: no serial, no hostname and no MAC over its API (`Registration/AddDeviceMAC` enrolls a *client's* MAC, not the unit's, and no documented endpoint returns the unit's network configuration). The MAC therefore comes from the panel's DHCP lease, which Home Assistant watches anyway, and the config entry is keyed on it. A panel discovered from its lease has it immediately; a panel added by hand is keyed on its address until Home Assistant sees a lease for that address, and adopts the MAC then. An install that never sees a lease - routed, or on another VLAN, or a panel given a static address on the unit itself - stays identified by address, where changing the panel's IP does read as a different panel and has to be reconfigured by hand. Nothing here resolves a MAC by ARP any more: the integration ships no synchronous dependency and does no lookup of its own.
+- Armed Instant is mapped to `armed_night`, the closest Home Assistant state to a Stay variant with no entry delay.
+- **Discovery is DHCP only.** The unit answers nothing on mDNS or SSDP, so a panel that issues no DHCP lease - one given a static address on its own touchscreen, or one Home Assistant is routed away from - is never discovered and is added by hand. See "Discovery and moving addresses".
+- Verified against firmware `TUXW_V5.3.21.0_VA`. Older firmware may behave differently (see the docs) - not tested here.
 
 ## Troubleshooting
 
@@ -722,19 +379,7 @@ logger:
     custom_components.tuxedo_touch: debug
 ```
 
-Download diagnostics from the entry's menu for a report with the host, MAC, credentials
-and code redacted. It carries the panel's raw status strings, which source spelled them,
-and the stream's own account of itself: whether it is connected, whether the firmware
-answered 404 and has no stream at all, whether it stopped because the panel refused the
-credentials, the connection id the panel handed out, how many clients it thinks it has,
-how many frames have arrived, and how far a failing stream has backed off - beside the
-fallback poll's interval and last result. It also carries `ecp_link_down`, which is the
-one case where every other field reads healthy and the entity is unavailable anyway,
-`panel_offline` and `panel_offline_code` (whether the panel last reported itself not
-online, and the code it gave), and `keypad_display`, the console record the keypad
-display sensor is showing as it arrived. The two sources fail differently, so which one
-was speaking is the first thing to read, and the two terminal flags are what separate a
-stream that is reconnecting from one that has stopped on purpose.
+Download diagnostics from the entry's menu for a report with the host, MAC, credentials and code redacted. It carries the panel's raw status strings, which source spelled them, and the stream's own account of itself: whether it is connected, whether the firmware answered 404 and has no stream at all, whether it stopped because the panel refused the credentials, the connection id the panel handed out, how many clients it thinks it has, how many frames have arrived, and how far a failing stream has backed off - beside the fallback poll's interval and last result. It also carries `ecp_link_down`, which is the one case where every other field reads healthy and the entity is unavailable anyway, `panel_offline` and `panel_offline_code` (whether the panel last reported itself not online, and the code it gave), and `keypad_display`, the console record the keypad display sensor is showing as it arrived. The two sources fail differently, so which one was speaking is the first thing to read, and the two terminal flags are what separate a stream that is reconnecting from one that has stopped on purpose.
 
 ## Development
 
@@ -746,47 +391,14 @@ python -m mypy custom_components/tuxedo_touch
 python tools/validate_local.py    # the offline stand-in for hassfest and HACS
 ```
 
-`tests/ha` needs `pytest-homeassistant-custom-component`, which brings Home Assistant
-with it, and skips where it is absent - so a run without it covers the client only, and
-the coverage figure from such a run measures the skip rather than the code. What the
-harness needs first is the Python version: 2026.x is written for 3.14 and will not
-install under 3.12.
+`tests/ha` needs `pytest-homeassistant-custom-component`, which brings Home Assistant with it, and skips where it is absent - so a run without it covers the client only, and the coverage figure from such a run measures the skip rather than the code. What the harness needs first is the Python version: 2026.x is written for 3.14 and will not install under 3.12.
 
-A Linux environment with all of that already stands, and
-[`docs/TEST-ENVIRONMENT.md`](docs/TEST-ENVIRONMENT.md) records where it is and how to
-rebuild it. Last full run there: **280 passed, 99% coverage** on CPython 3.14.7. Use it
-rather than the Windows stand-ins below, which are documented because they were built,
-not because they are the recommended path.
+A Linux environment with all of that already stands, and [`docs/TEST-ENVIRONMENT.md`](docs/TEST-ENVIRONMENT.md) records where it is and how to rebuild it. Last full run there: **280 passed, 99% coverage** on CPython 3.14.7. Use it rather than the Windows stand-ins below, which are documented because they were built, not because they are the recommended path.
 
-It needs a POSIX platform too, and on Windows that costs three stand-ins. Measured on
-2026-09-05 with `pytest-homeassistant-custom-component` 0.13.357, Home Assistant 2026.8.3
-and CPython 3.14: `homeassistant.runner` imports `fcntl` and `resource`, neither of
-which exists on Windows, and the proactor event loop builds its self-pipe from an AF_INET
-`socket.socketpair()`, which the harness's socket guard refuses. Stub `fcntl` and
-`resource` modules plus a `sitecustomize.py` rebinding `socket.socketpair` to the real
-socket class, all on `PYTHONPATH`, carry the whole suite through - 207 tests, 99%
-coverage, mypy strict clean. The replacement `socketpair` has to accept the connection
-itself, from `_accept()` and the saved class: `socket.accept()` builds its return value
-from the name `socket` inside the socket module, which is the very name the guard
-replaced, so calling it puts the guard back in the path one line after stepping around
-it. Put the virtualenv at a short path as well - `pip` unpacking Home Assistant's
-`components/overkiz` tree fails with `Errno 2` against Windows' 260-character path limit
-from a deep one. That scaffolding belongs outside the repository, and Linux needs none
-of it. Several tests stand a fake panel up on 127.0.0.1 and talk to it over a
-real socket, which the test harness blocks by default; those ask for the `socket_enabled`
-fixture, and the harness's own guard still allows nothing but 127.0.0.1. The GitHub Tests
-workflow is still the gate: it runs the whole suite,
-holds coverage of the integration at 95%, and runs mypy in strict mode and the validator
-on every push. A mypy run without Home Assistant installed reports its classes as `Any`;
-that is the missing package, not the code.
+It needs a POSIX platform too, and on Windows that costs three stand-ins. Measured on 2026-09-05 with `pytest-homeassistant-custom-component` 0.13.357, Home Assistant 2026.8.3 and CPython 3.14: `homeassistant.runner` imports `fcntl` and `resource`, neither of which exists on Windows, and the proactor event loop builds its self-pipe from an AF_INET `socket.socketpair()`, which the harness's socket guard refuses. Stub `fcntl` and `resource` modules plus a `sitecustomize.py` rebinding `socket.socketpair` to the real socket class, all on `PYTHONPATH`, carry the whole suite through - 207 tests, 99% coverage, mypy strict clean. The replacement `socketpair` has to accept the connection itself, from `_accept()` and the saved class: `socket.accept()` builds its return value from the name `socket` inside the socket module, which is the very name the guard replaced, so calling it puts the guard back in the path one line after stepping around it. Put the virtualenv at a short path as well - `pip` unpacking Home Assistant's `components/overkiz` tree fails with `Errno 2` against Windows' 260-character path limit from a deep one. That scaffolding belongs outside the repository, and Linux needs none of it. Several tests stand a fake panel up on 127.0.0.1 and talk to it over a real socket, which the test harness blocks by default; those ask for the `socket_enabled` fixture, and the harness's own guard still allows nothing but 127.0.0.1. The GitHub Tests workflow is still the gate: it runs the whole suite, holds coverage of the integration at 95%, and runs mypy in strict mode and the validator on every push. A mypy run without Home Assistant installed reports its classes as `Any`; that is the missing package, not the code.
 
 Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Quality scale
 
-Built to Home Assistant's Integration Quality Scale, tracked rule by rule in
-[`quality_scale.yaml`](custom_components/tuxedo_touch/quality_scale.yaml) with a reason
-on every exemption and on every rule still marked `todo`. `tools/validate_local.py`
-checks the file against the pinned rule list, so a rule that is simply missing fails
-rather than reading as complete. The scale is a core-integration concept; a custom
-integration builds to the rules and is not scored.
+Built to Home Assistant's Integration Quality Scale, tracked rule by rule in [`quality_scale.yaml`](custom_components/tuxedo_touch/quality_scale.yaml) with a reason on every exemption and on every rule still marked `todo`. `tools/validate_local.py` checks the file against the pinned rule list, so a rule that is simply missing fails rather than reading as complete. The scale is a core-integration concept; a custom integration builds to the rules and is not scored.
