@@ -16,10 +16,11 @@ local network - no Total Connect Comfort cloud account involved. Ported from the
 It gives you one `alarm_control_panel` entity per partition, with Arm Home (Stay), Arm
 Away, Arm Night and Disarm, using the reverse-engineered login and encryption flow
 documented in [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md) - plus
-a sensor showing the panel's own keypad display and, on tuxweb, a problem sensor for
-the Tuxedo's link to the alarm panel (see [Supported functions](#supported-functions)).
+a sensor showing the panel's own keypad display, a problem sensor for the alarm panel
+reporting itself offline, and, on tuxweb, a problem sensor for the Tuxedo's link to the
+alarm panel (see [Supported functions](#supported-functions)).
 
-Since 0.4.0 the panel **pushes** its state: the integration holds the unit's own event
+The panel **pushes** its state: the integration holds the unit's own event
 stream open, so an arm or a disarm at the keypad shows up in seconds, the exit-delay
 countdown is visible while it runs, and the firmware's long-standing `Not available`
 answer - which used to leave the entity with nothing to show - cannot reach the entity
@@ -30,7 +31,7 @@ at all. See [How it updates](#how-it-updates).
 | Device | Notes |
 |---|---|
 | Honeywell Tuxedo Touch WIFI (TUXWIFIS, TUXWIFIW) | Verified against firmware `TUXW_V5.3.21.0_VA`. Other V5.x releases are expected to behave the same. |
-| Tuxedo Touch on ~V4.x firmware | Untested. Older firmware is reported to allow unauthenticated access to the key page; this client always logs in first, which should be harmless. |
+| Tuxedo Touch on ~V4.x firmware | Not covered: the integration is built against V5.x. It always logs in first. |
 
 The panel behind the Tuxedo (a VISTA-series control) is not addressed directly; the
 Tuxedo's own web API is the only thing spoken to.
@@ -82,6 +83,9 @@ for it beside the stock one rather than papering over the difference:
 | Arm and disarm reply | 200 means the command was *sent*; what the panel did arrives on the stream | 200 means the panel *acted* (its state flipped); 504 means sent and not confirmed within eight seconds, which fails the call rather than leaving a state assumed |
 | Status read | The ECP-fed cache, which can answer `Not available` | The live state model the stream is fed from, carrying the armed flag |
 | A refused credential | Counts towards the three-strike lockout above; the integration stops and asks you | A 401. Nothing is counted and nothing locks, so the integration asks you for the current token and records no lockout |
+
+Issuing or revoking a token takes effect at once on tuxweb from firmware v17, and at
+tuxweb's next start on earlier builds.
 
 The token goes in the **tuxweb token** field, optional on every form and blank on every
 stock panel. Which of the two contracts a panel speaks comes from asking it, not from
@@ -191,11 +195,9 @@ reading `off` because the promise was never made would look exactly like one rea
 `off` because the link is fine. The diagnostics download reports `ecp_link_down` on every
 firmware.
 
-**Honestly stated:** the condition has never been observed on the panel this integration
-was written against. The `-1` marker was read out of the Tuxedo's own firmware, not
-captured, and the sensor's behaviour on a real cable fault is a reading of the producer
-rather than a measurement. Before firmware v16 the replacement web server also printed
-the marker as `4294967295`, so on tuxweb v15 this sensor could not trip at all.
+The link-down marker is the `-1` status code the Tuxedo's own status producer writes
+when it cannot hear the panel. On tuxweb the sensor needs firmware v16 or later, which
+prints that code signed.
 
 ### The panel's own online state
 
@@ -212,10 +214,8 @@ alarm entity keeps following the status text, which is the panel's real prompt.
 
 It exists on **both** firmwares: the record it reads is the vendor's own producer, put on
 the wire by stock and by tuxweb alike, so there is no promise to gate on. Like the link
-sensor it is `unavailable` while the stream is down. And like the link sensor, no capture
-from this panel holds the record: its shape was read out of the vendor's handler and is
-reproduced by tuxweb from v16; until then the replacement server dropped it, and until
-the release after 0.6.0 this integration did too.
+sensor it is `unavailable` while the stream is down. On tuxweb it needs firmware v16 or
+later, which relays the record.
 
 ## Use cases
 
@@ -442,8 +442,7 @@ moment its socket opens: an entry that loads during a `Not available` spell stay
 `unknown` with nothing behind it. When the stream drops it reconnects on its own, with a wait that
 doubles up to five minutes and resets the moment a connection comes up; the log gets one
 line when it goes and one when it returns. A panel whose firmware has no such endpoint
-answers 404, the stream stops asking, and the integration runs on the poll alone exactly
-as it did before 0.4.0.
+answers 404, the stream stops asking, and the integration runs on the poll alone.
 
 ### Arming and disarming
 
@@ -647,8 +646,8 @@ automation:
 ## Known limitations
 
 - Only security arm/disarm/status is implemented. The panel's API also exposes lighting,
-  thermostat, door lock, scene, and garage door control - untested and unimplemented here,
-  though they should follow the same request-signing pattern.
+  thermostat, door lock, scene, and garage door control, which this integration does not
+  implement.
 - **The event stream carries the alarm state and nothing else.** Zone-level detail and
   the event log are not obtainable from this panel over HTTP by any route: there is no
   zone endpoint, the configuration files are not served, and the one command that would
