@@ -2,6 +2,12 @@
 
 Notable changes to this integration, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [0.7.1] - 2026-10-01
+
+### Changed
+
+- `cryptography` is no longer listed in the manifest. Home Assistant depends on it and ships the version it pins, and hassfest now refuses a custom integration that lists a dependency of Home Assistant itself.
+
 ## [0.7.0] - 2026-09-13
 
 ### Fixed

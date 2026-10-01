@@ -52,11 +52,11 @@ rules:
   dependency-transparency:
     status: done
     comment: |
-      One requirement is left: cryptography, open source and on PyPI. It is
-      declared unpinned on purpose - Home Assistant core pins it and
-      constrains every install to that pin, so any other version here would
-      refuse to install on the next core release. The panel's own client is
-      in this repository.
+      No requirements are declared. The one third-party package imported,
+      cryptography, is a dependency of Home Assistant itself, so every install
+      already has the version core pins, and hassfest refuses a custom
+      integration that lists one. The panel's own client is in this
+      repository.
   docs-actions:
     status: exempt
     comment: This integration registers no actions of its own.
@@ -446,9 +446,9 @@ rules:
       ARP lookup in the executor. The DHCP matcher filed under `discovery`
       replaced it: Home Assistant's own lease watcher hands the MAC over, and
       an install it sees no lease for keeps the address identity the code
-      already supported. The one requirement left is cryptography, which does
-      AES and PKCS7 on bytes already in memory and performs no I/O, so there
-      is no event loop to block.
+      already supported. cryptography, taken from Home Assistant's own
+      dependencies, does AES and PKCS7 on bytes already in memory and
+      performs no I/O, so there is no event loop to block.
   inject-websession:
     status: done
     comment: |
