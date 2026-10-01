@@ -32,10 +32,10 @@ jobs:
 
       # 0.13.357 pins Home Assistant 2026.8.3, the release on the HA VM. It
       # brings pytest, pytest-cov, the asyncio and aiohttp plugins and PyYAML
-      # with it; pinning those again makes pip's resolution impossible. The
-      # integration's one remaining requirement, cryptography, comes in with
-      # Home Assistant. Everything goes in a venv so the runner's own packages
-      # cannot change what a run means.
+      # with it; pinning those again makes pip's resolution impossible.
+      # cryptography, the one third-party package the integration imports,
+      # comes in with Home Assistant. Everything goes in a venv so the
+      # runner's own packages cannot change what a run means.
       - name: Install
         run: |
           python -m venv .venv

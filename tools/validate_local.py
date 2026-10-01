@@ -230,8 +230,28 @@ def main() -> int:
         "quality_scale in manifest.json: the badge is core-only, a custom "
         "integration builds to the rules and does not claim a tier",
     )
+    # hassfest refuses a custom integration that lists a dependency of Home
+    # Assistant itself: the installed core's own requirements are that list.
+    try:
+        from importlib import metadata
+
+        core_deps: set[str] | None = {
+            re.split(r"[<>=!~;\[ ]", dep, maxsplit=1)[0].lower()
+            for dep in metadata.requires("homeassistant") or []
+        }
+    except metadata.PackageNotFoundError:
+        core_deps = None
+        notes.append(
+            "Home Assistant not installed: requirements not compared with its own"
+        )
     for req in manifest.get("requirements", []):
         check(" " not in req, f"requirement {req!r} contains a space")
+        name = re.split(r"[<>=!~;\[ ]", req, maxsplit=1)[0].lower()
+        check(
+            core_deps is None or name not in core_deps,
+            f"requirement {req!r} is a dependency of Home Assistant itself; "
+            "hassfest refuses it in a custom integration's manifest",
+        )
 
     # Every place a version is written must agree with the manifest, or Home
     # Assistant reports one number and HACS another.
