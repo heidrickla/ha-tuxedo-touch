@@ -18,16 +18,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 15
 
       # Pinned: an unpinned linter makes CI non-reproducible, and this exact
       # failure has already been paid for once on the sleepiq repo.
       - name: Install ruff (PINNED)
+        timeout-minutes: 15
         run: |
           python3 -m pip install --quiet --upgrade pip
           python3 -m pip install --quiet "ruff==0.15.21"
           python3 -m ruff --version
 
       - name: Ruff
+        timeout-minutes: 15
         run: |
           python3 -m ruff check .
           python3 -m ruff format --check .
@@ -36,6 +39,7 @@ jobs:
       # 3.10.12 and this integration uses PEP 695 `type X = ...`, which that
       # interpreter cannot parse. Ruff already parses every file at py313.
       - name: JSON is valid
+        timeout-minutes: 15
         run: |
           for f in custom_components/tuxedo_touch/*.json hacs.json; do
             python3 -c "import json,sys; json.load(open(sys.argv[1],encoding='utf-8'))" "$f" || exit 1
@@ -43,6 +47,7 @@ jobs:
           echo "all JSON valid"
 
       - name: Manifest sanity
+        timeout-minutes: 15
         run: |
           python3 - <<'PY'
           import json
@@ -59,10 +64,12 @@ jobs:
       # 3.10, so it runs under the same interpreter the Home Assistant job
       # uses.
       - uses: actions/setup-python@v5
+        timeout-minutes: 15
         with:
           python-version: "3.14"
 
       - name: Quality scale and offline validator
+        timeout-minutes: 15
         run: |
           python -m pip install --quiet "PyYAML==6.0.2"
           python tools/validate_local.py
@@ -76,15 +83,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 15
 
       # The runner image ships 3.10; Home Assistant 2026.x needs 3.14.
       - uses: actions/setup-python@v5
+        timeout-minutes: 15
         with:
           python-version: "3.14"
 
       # 0.13.357 pins Home Assistant 2026.8.3 and brings pytest and pytest-cov
       # with it, along with cryptography, which the integration imports.
       - name: Install
+        timeout-minutes: 15
         run: |
           python -m pip install --quiet --upgrade pip
           python -m pip install --quiet "mypy==1.18.2" \
@@ -93,16 +103,29 @@ jobs:
       # A check() script rather than pytest functions, so running it directly
       # is the honest invocation. Everything else in tests/ is pytest.
       - name: Pure tests
+        timeout-minutes: 15
         run: python tests/test_api.py
 
       - name: Tests and coverage
+        timeout-minutes: 15
         run: >
-          python -m pytest tests -q
+          python -m pytest --durations=15 --junitxml=reports/junit-1.xml tests -q
           --cov=custom_components/tuxedo_touch --cov-report=term-missing
           --cov-fail-under=95
 
       - name: mypy strict
+        timeout-minutes: 15
         run: python -m mypy custom_components/tuxedo_touch
+
+      # each test's time and result, kept whatever the outcome: the forge shows no job log
+      - name: test results
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3.2.1
+        with:
+          name: test-results-${{ github.job }}
+          path: reports/
+          retention-days: 14
 
   # No continue-on-error: a red hassfest run is the answer, not noise.
   # hacs/action reads the repository through the GitHub API, so it cannot
@@ -113,4 +136,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 15
       - uses: home-assistant/actions/hassfest@master
+        timeout-minutes: 15
