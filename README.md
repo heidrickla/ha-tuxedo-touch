@@ -350,7 +350,7 @@ automation:
 - **How the panel is identified.** It reports no identifier of its own: no serial, no hostname and no MAC over its API (`Registration/AddDeviceMAC` enrolls a *client's* MAC, not the unit's, and no documented endpoint returns the unit's network configuration). The MAC therefore comes from the panel's DHCP lease, which Home Assistant watches anyway, and the config entry is keyed on it. A panel discovered from its lease has it immediately; a panel added by hand is keyed on its address until Home Assistant sees a lease for that address, and adopts the MAC then. An install that never sees a lease - routed, or on another VLAN, or a panel given a static address on the unit itself - stays identified by address, where changing the panel's IP does read as a different panel and has to be reconfigured by hand. Nothing here resolves a MAC by ARP any more: the integration ships no synchronous dependency and does no lookup of its own.
 - Armed Instant is mapped to `armed_night`, the closest Home Assistant state to a Stay variant with no entry delay.
 - **Discovery is DHCP only.** The unit answers nothing on mDNS or SSDP, so a panel that issues no DHCP lease - one given a static address on its own touchscreen, or one Home Assistant is routed away from - is never discovered and is added by hand. See "Discovery and moving addresses".
-- Verified against firmware `TUXW_V5.3.21.0_VA`. Older firmware may behave differently (see the docs) - not tested here.
+- Built against firmware `TUXW_V5.3.21.0_VA`. The docs list what differs on older firmware.
 
 ## Troubleshooting
 

@@ -2,6 +2,12 @@
 
 Notable changes to this integration, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [0.7.2] - 2026-10-19
+
+### Changed
+
+- The firmware evidence behind the push-stream decoder (instruction listings, addresses, function names and format strings) moved from code comments to `docs/push-stream-evidence.md`. The code keeps a plain description of each frame layout. No behaviour change.
+
 ## [0.7.1] - 2026-10-01
 
 ### Changed

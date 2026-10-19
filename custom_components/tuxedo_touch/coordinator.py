@@ -240,8 +240,9 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         carries no partition and needs none: the producer emits a frame only
         when the partition that changed IS the panel's currently selected
         partition, so every frame that arrives is about the current partition
-        already. TuxedoPushStream's docstring holds the disassembly and the
-        multi-partition caveat that goes with it. Until 0.4.2 field 2 was read
+        already. docs/push-stream-evidence.md holds the firmware evidence, and
+        TuxedoPushStream's docstring the multi-partition caveat that goes with
+        it. Until 0.4.2 field 2 was read
         as a partition and compared against this entry's, which is precisely
         what made a dead ECP link invisible.
         """
@@ -255,8 +256,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 offline=offline, code=status.panel_status_code if offline else None
             )
         if status.link_down:
-            # Field 2 is -1: PanelIsTalking() answered 0 inside the producer,
-            # so the Tuxedo has lost the ECP bus to the VISTA behind it. The
+            # Field 2 is -1: the Tuxedo has lost the ECP bus to the VISTA
+            # behind it. The
             # frame still arrives, still carries a display text and still
             # carries an armed flag, and every bit of that is the last thing
             # the Tuxedo drew before it went blind. None of it is written

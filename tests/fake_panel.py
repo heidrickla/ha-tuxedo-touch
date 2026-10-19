@@ -80,8 +80,8 @@ def status_frame(
     """One partition status part, in the panel's own byte layout.
 
     `status_code` is field 2, the panel status code - NOT the partition. The
-    producer writes -1 there when PanelIsTalking() answers 0, i.e. the ECP
-    link from the Tuxedo to the VISTA is down, and sends the frame anyway.
+    panel writes -1 there when the ECP link from the Tuxedo to the VISTA is
+    down, and sends the frame anyway.
     """
     flag = 0xFF if armed else 0xFE
     payload = (
@@ -99,18 +99,17 @@ def offline_frames(
 ) -> list[bytes]:
     """The parts one panel-offline status (command 22) puts on the stream.
 
-    The same producer as status_frame's 21 - CReceiverThread::
-    sltSendChangedPartitionStatus - on the other branch of its
-    GetOnlineStatus() == 1 test: the VISTA reported itself not online, so
-    the type is 22. Barracuda's handler for it (0xd9c4) formats
+    Sent in place of status_frame's 21 when the VISTA reports itself not
+    online. Barracuda formats it as
     `session:22:<flag><css><text>:<code>` - no hex field, the code LAST -
     and follows it with TWO -1 copies of the text where a 21 gets three.
     `status_code` is the VISTA's online byte, 2..4 by construction, or -1
     when the ECP link is down at the same time.
 
     NOT A CAPTURE. No recording from this panel holds a 22, because it has
-    never been offline while anything was listening; this is the shape read
-    out of the vendor's handler and reproduced by tuxweb from v16.
+    never been offline while anything was listening; this is the shape from
+    the firmware (docs/push-stream-evidence.md), reproduced by tuxweb from
+    v16.
     """
     flag = 0xFF if armed else 0xFE
     body = bytes([flag]) + f"{colour}{text}".encode("latin-1")
@@ -127,11 +126,10 @@ def console_frames(line_1: str, line_2: str) -> list[bytes]:
     same shape while it holds console mode on; the id-20 record has since
     been seen on the live stream across an arm and a disarm
     (docs/feature-spec-keypad-link-changedby.md, item 3), the -1 copies are
-    still the handler's reading. `bprintf("%d%s%d%s%s", session, ":", 20,
-    ":2", text)`: the session is 0 for a broadcast, which is the only kind
-    sent, and the `2` after the second colon is the constant `":2"` at
-    0x852f4, never a colour digit. Then the same text three more times as
-    command id -1.
+    still the handler's reading. The session is 0 for a broadcast, which is
+    the only kind sent, and the `2` after the second colon belongs to the
+    constant `":2"` separator, never a colour digit. Then the same text three
+    more times as command id -1.
 
     The id-20 record is lossy: its first ":" past index 0 is replaced by "-".
     The three -1 copies carry the text raw. No flag byte on any of the four,

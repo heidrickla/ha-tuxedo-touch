@@ -272,8 +272,8 @@ rules:
       type/code table (docs/feature-spec-keypad-link-changedby.md section
       4), its creation on both firmwares, availability and diagnostics; the
       decoder side of the 22 - the code in the last field, the copies with
-      no verdict - is in tests/test_push_frames.py, which states that those
-      shapes are disassembled, not captured.
+      no verdict - is in tests/test_push_frames.py; those shapes come from the
+      firmware, not a capture (docs/push-stream-evidence.md).
 
   # Gold
   devices:

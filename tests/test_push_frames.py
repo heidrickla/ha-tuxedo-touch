@@ -82,10 +82,8 @@ def test_an_unsolicited_update_carries_no_status_code_or_colour():
 def test_a_dead_ecp_link_is_carried_as_status_code_minus_one():
     """The defect 0.4.2 fixes, at the layer that decodes it.
 
-    CReceiverThread::sltSendChangedPartitionStatus calls PanelIsTalking() and,
-    when it answers 0, stores -1 into this field and sends the frame anyway
-    (`mvneq r3, #0` then `streq r3, [sp, #8]` at 0x144a84, with the
-    osal_MqSend at 0x144aa0 reached on both paths). A -1 here is the Tuxedo
+    The panel stores -1 into this field when the ECP link is down and sends
+    the frame anyway (docs/push-stream-evidence.md). A -1 here is the Tuxedo
     saying it has lost the ECP link to the VISTA, so the text beside it is
     stale by construction.
     """
@@ -107,7 +105,7 @@ def test_an_ordinary_status_code_is_not_a_dead_link():
     An authenticated GET /eventhandler.html taken at the same moment as a
     frame answered `curStatus = "21:a1Ready To Arm:1"`, whose trailing value
     that page names panelStatusCode. A talking panel puts a non-negative
-    number in this field; only PanelIsTalking() answering 0 produces -1.
+    number in this field; only a dead ECP link produces -1.
     """
     status = push.decode_status_frame(
         b"0:21:1:fe:\xfe1Ready To Arm:2".decode("latin-1")
@@ -120,10 +118,9 @@ def test_an_ordinary_status_code_is_not_a_dead_link():
 
 # The panel-offline record, command 22. NO CAPTURE HOLDS ONE: this panel has
 # never been offline while anything was recording, so these payloads are the
-# shape read out of Barracuda's handler at 0xd9c4 (`%d%s%d%s%s%s%d` with the
-# reply's +0x08 as the last conversion) and reproduced byte for byte by tuxweb
-# v16, not observed traffic. The same producer as the 21 - the other branch of
-# its GetOnlineStatus() == 1 test - with the code moved to the LAST field.
+# shape from the firmware (docs/push-stream-evidence.md), reproduced byte for
+# byte by tuxweb v16, not observed traffic. The same fields as the 21, with
+# the code moved to the LAST field.
 OFFLINE_TALKING = b"0:22:\xfe1Ready To Arm:3".decode("latin-1")
 OFFLINE_AND_LINK_DOWN = b"0:22:\xfe1Ready To Arm:-1".decode("latin-1")
 
@@ -370,7 +367,7 @@ def test_a_frame_without_a_flag_byte_carries_no_status(label, raw):
 
 # The keypad LCD, as the vendor's type-20 handler spells it and tuxweb repeats
 # it: `0:20:2<line 1>|<line 2>`, then the same text three more times as
-# command id -1. The id-20 shape was read out of the disassembly and has since
+# command id -1. The id-20 shape came from the firmware and has since
 # been seen on the live stream - the two lines below are from a capture across
 # an arm STAY and a disarm (docs/feature-spec-keypad-link-changedby.md, item
 # 3) - while the three id -1 copies are still the handler's reading. What is

@@ -34,7 +34,8 @@ decoded byte-exact", with the reference reader in `tuxedo_push.py`; the
 endpoint list it belongs to is `TUXEDO-FINDINGS.md` section "The complete
 local API surface"; the cache mechanism it bypasses is `TUXEDO-FIRMWARE.md`
 section 6. See also ../../../docs/tuxedo_touch_api_notes.md, "The push
-stream".
+stream", and ../../../docs/push-stream-evidence.md for the firmware evidence
+behind each layout.
 """
 
 from __future__ import annotations
@@ -90,18 +91,13 @@ FLAG_ARMED = 0xFF
 CMD_HOME_PARTITION = 18
 CMD_PARTITION_STATUS = 21
 # SERV_PANEL_OFFLINE_MSG_BROADCAST: the same partition status, sent in place
-# of a 21 by the same producer whenever the VISTA reports itself not online.
-# The one function, CReceiverThread::sltSendChangedPartitionStatus at
-# 0x144880 in /tuxedo, writes both: the state byte and the text are the same,
-# the TYPE is 22 while GetOnlineStatus() != 1 - the VISTA's own online byte,
-# 1..4, 1 online and the rest its busy / downloading / offline family - and
-# field +0x08 is PanelIsTalking() ? GetOnlineStatus() : -1. So two facts ride
-# a frame: the type says whether the VISTA calls itself online, the code says
-# whether the Tuxedo can hear it, and -1 can arrive on either type. Barracuda
-# formats the 22 differently (see decode_status_frame), and tuxweb from v16
-# emits the same bytes. Until 0.6.0 this id was dropped at _handle_frame, so
-# a panel reporting itself offline was invisible, and the -1 a 22 can carry
-# never reached the link latch.
+# of a 21 whenever the VISTA reports itself not online. The state byte and the
+# text are the same. The code is the VISTA's online byte (1 online, 2 to 4 its
+# busy, downloading and offline family) while the Tuxedo can hear it, and -1
+# when it cannot. So the type says whether the VISTA calls itself online, the
+# code says whether the Tuxedo can hear it, and -1 can arrive on either type.
+# Barracuda formats the 22 differently (see decode_status_frame), and tuxweb
+# from v16 emits the same bytes.
 CMD_PANEL_OFFLINE = 22
 CMD_INITIAL_DATA = 504
 CMD_UNSOLICITED = -1
@@ -121,9 +117,8 @@ STATUS_CMDS = frozenset({CMD_PARTITION_STATUS, CMD_PANEL_OFFLINE, CMD_UNSOLICITE
 #     | +----- 20
 #     +------- the reply session; 0 is a broadcast, and only those are sent
 #
-# bprintf("%d%s%d%s%s", session, ":", 20, ":2", text) at 0x85304: the `2` is
-# the second separator's own second character (the constant ":2" at 0x852f4)
-# and never a colour digit, so a decoder may key on it. Each LCD change is
+# The `2` belongs to the constant ":2" separator and is never a colour digit,
+# so a decoder may key on it. Each LCD change is
 # FOUR records - this one, then three id -1 copies of the same text - and
 # the id-20 record is the lossy one: its first ":" past index 0 has been
 # replaced by "-", while the copies carry the raw text. The id-20 record is
@@ -136,20 +131,10 @@ CONSOLE_SEPARATOR = "2"
 CONSOLE_LINE_SEPARATOR = "|"
 
 # What field 2 of a command-21 payload carries when the Tuxedo has lost the
-# ECP link to the VISTA panel behind it. Read out of the producer,
-# CReceiverThread::sltSendChangedPartitionStatus at 0x144880 in /tuxedo:
-#
-#     0x144a7c  bl     PanelIsTalking()
-#     0x144a80  cmp    r0, #0
-#     0x144a84  mvneq  r3, #0          ; link down -> r3 = -1
-#     0x144a88  streq  r3, [sp, #8]    ; -1 stored into the message field
-#     0x144a8c  bne    0x144ae8        ; otherwise the real status code
-#     0x144aa0  bl     osal_MqSend(int, char*, int)   ; SENT EITHER WAY
-#
-# The frame is still sent, still carries a display text and still carries a
-# state flag - all of them the last thing the Tuxedo drew before it went
-# blind. So this is the one value on the stream that means "believe nothing
-# else in this frame".
+# ECP link to the VISTA panel behind it. The frame is still sent, still
+# carries a display text and still carries a state flag - all of them the
+# last thing the Tuxedo drew before it went blind. So this is the one value
+# on the stream that means "believe nothing else in this frame".
 PANEL_STATUS_LINK_DOWN = -1
 
 # A stream that has sent this much without a complete frame in it is not
@@ -266,11 +251,10 @@ def decode_status_frame(payload: str) -> PushStatus | None:
         |  +-------------------- command id 22: the VISTA reports itself not online
         +----------------------- 0
 
-    Barracuda's handler for it (0xd9c4) formats `%d%s%d%s%s%s%d` with the
-    reply's +0x08 as the last conversion and follows it with TWO -1 copies
-    where a 21 gets three; tuxweb v16 reproduces both. No capture holds one:
-    this shape is read from the disassembly, and this panel has never been
-    offline while anything was recording. Taking the code from the last field
+    Barracuda puts the code in the last field and follows the record with TWO
+    -1 copies where a 21 gets three; tuxweb v16 reproduces both. No capture
+    holds one, so the shape comes from the firmware
+    (docs/push-stream-evidence.md). Taking the code from the last field
     for a 22 is safe against a colon inside the text; taking it from field 2
     there would read the text.
 
@@ -461,16 +445,8 @@ class TuxedoPushStream:
     nothing here occupies the event loop between frames, and cancelling the
     task is the whole of stopping it.
 
-    THE STREAM CARRIES NO PARTITION FIELD, and does not need one. The head of
-    the producer, CReceiverThread::sltSendChangedPartitionStatus at 0x144880:
-
-        0x144884  mov  r3, #0x15            ; 21, the command id
-        0x1448a0  bl   GetCurrentPartition()
-        0x1448a4  cmp  r0, r4               ; r4 = the partition that changed
-        0x1448a8  beq  0x1448b4             ; equal -> build and send
-        0x1448ac  add  sp, sp, #0x26c       ; NOT equal -> return, send nothing
-
-    A frame is emitted only when the partition that changed IS the panel's
+    THE STREAM CARRIES NO PARTITION FIELD, and does not need one. A frame is
+    emitted only when the partition that changed IS the panel's
     currently selected partition, so every frame that arrives is about the
     current partition by construction - the producer has already applied the
     filter. Nothing here re-applies it: a receiver-side partition guard can

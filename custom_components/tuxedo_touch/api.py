@@ -1055,31 +1055,9 @@ class TuxedoTouchClient:
         async_send_command waits for. Measured request-to-frame latency:
         1.5 s arming, 1.8 s disarming, against COMMAND_CONFIRM_TIMEOUT of 8 s.
 
-        Not available, despite appearances: the panel's own accept/decline
-        signalling. sltSendUserCodeAcceptedMsg exists and posts to the queue
-        that feeds the push stream, but a full arm/disarm cycle driven through
-        THIS endpoint emitted no accept frame at all.
-
-        The signal is emitted by CUiReceiverThread::run on message type 11 or
-        13 (accept) and 9 (decline); a flag byte inside the message picks the
-        web variant over the local one, so it is not owned by any one surface.
-        Nothing posts those message types for the REST route. **Which surface,
-        if any, does post them is UNKNOWN - do not assume the virtual keypad
-        would.** That is a live test nobody has run, not an inference, and the
-        sender of 9/11/13 has not been identified: every call site builds the
-        message in memory, so no message type is statically resolvable.
-
-        One adjacent fact, scoped carefully because it is about reception
-        rather than emission: the local keypad's own handlers for this signal,
-        CKeyPadWin::sltHandleUserCodeAccepted and ...Declined, are absent from
-        that class's qt_static_metacall dispatch table while 20 sibling slots
-        are present, so they are unreachable through signals at all. That is
-        evidence against the keypad being the missing trigger. It is not proof,
-        because emitting the message and handling it are different ends.
-
-        The general lesson, since it has now cost three wrong turns here: a
-        symbol proves capability, only the wire proves a route, and a jump
-        table proves which message id rather than what triggers it.
+        The panel's own accept/decline frames are not used: a full arm/disarm
+        cycle driven through this endpoint emitted none
+        (docs/push-stream-evidence.md, "User code accept and decline").
 
         All of the above is stock. On tuxweb the same reply IS worth acting
         on: it is sent only once the state byte has flipped, and a command

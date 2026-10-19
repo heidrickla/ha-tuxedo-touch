@@ -432,9 +432,7 @@ async def test_a_status_code_that_is_not_the_partition_is_still_applied(
 
     Nothing on the receiver needs to filter: the producer only emits a frame
     when the partition that changed IS the panel's currently selected one
-    (GetCurrentPartition is compared at the head of
-    CReceiverThread::sltSendChangedPartitionStatus and the function returns
-    without sending when it differs), so every frame that arrives is about the
+    (docs/push-stream-evidence.md), so every frame that arrives is about the
     current partition by construction.
     """
     coordinator = await _setup(hass, panel_entry)
@@ -482,7 +480,7 @@ async def test_a_dead_ecp_link_makes_the_entity_unavailable_not_stale(
 ):
     """The failure this release exists for.
 
-    When PanelIsTalking() answers 0 the producer writes -1 into field 2 and
+    When the ECP link is down the panel writes -1 into field 2 and
     sends the frame anyway, so the stream stays connected and the frames keep
     coming while the Tuxedo can no longer see the VISTA. The text those frames
     carry is the last thing the Tuxedo drew, not the alarm's state.
