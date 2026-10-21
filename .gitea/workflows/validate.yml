@@ -20,36 +20,42 @@ jobs:
       - uses: actions/checkout@v4
         timeout-minutes: 15
 
+      # The validator needs Python 3.11+ for tomllib; this is the interpreter
+      # the Home Assistant job uses.
+      - uses: actions/setup-python@v5
+        timeout-minutes: 15
+        with:
+          python-version: "3.14"
+
+      # A venv of the job's own: the image's Python is externally managed, and
+      # the runner's toolcache Python carries other repos' packages.
       # Pinned: an unpinned linter makes CI non-reproducible, and this exact
       # failure has already been paid for once on the sleepiq repo.
-      - name: Install ruff (PINNED)
+      - name: Install ruff and PyYAML (PINNED)
         timeout-minutes: 15
         run: |
-          python3 -m pip install --quiet --upgrade pip
-          python3 -m pip install --quiet "ruff==0.15.21"
-          python3 -m ruff --version
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --quiet "ruff==0.15.21" "PyYAML==6.0.2"
+          "$RUNNER_TEMP/venv/bin/python" -m ruff --version
 
       - name: Ruff
         timeout-minutes: 15
         run: |
-          python3 -m ruff check .
-          python3 -m ruff format --check .
+          "$RUNNER_TEMP/venv/bin/python" -m ruff check .
+          "$RUNNER_TEMP/venv/bin/python" -m ruff format --check .
 
-      # No ast.parse step here on purpose. The runner image ships Python
-      # 3.10.12 and this integration uses PEP 695 `type X = ...`, which that
-      # interpreter cannot parse. Ruff already parses every file at py313.
       - name: JSON is valid
         timeout-minutes: 15
         run: |
           for f in custom_components/tuxedo_touch/*.json hacs.json; do
-            python3 -c "import json,sys; json.load(open(sys.argv[1],encoding='utf-8'))" "$f" || exit 1
+            "$RUNNER_TEMP/venv/bin/python" -c "import json,sys; json.load(open(sys.argv[1],encoding='utf-8'))" "$f" || exit 1
           done
           echo "all JSON valid"
 
       - name: Manifest sanity
         timeout-minutes: 15
         run: |
-          python3 - <<'PY'
+          "$RUNNER_TEMP/venv/bin/python" - <<'PY'
           import json
           m = json.load(open("custom_components/tuxedo_touch/manifest.json", encoding="utf-8"))
           missing = [k for k in ("domain","name","version","documentation","codeowners") if not m.get(k)]
@@ -60,19 +66,10 @@ jobs:
           print("manifest ok:", m["domain"], m["version"])
           PY
 
-      # The validator needs Python 3.11+ for tomllib; the runner image ships
-      # 3.10, so it runs under the same interpreter the Home Assistant job
-      # uses.
-      - uses: actions/setup-python@v5
-        timeout-minutes: 15
-        with:
-          python-version: "3.14"
-
       - name: Quality scale and offline validator
         timeout-minutes: 15
         run: |
-          python -m pip install --quiet "PyYAML==6.0.2"
-          python tools/validate_local.py
+          "$RUNNER_TEMP/venv/bin/python" tools/validate_local.py
 
   # Installs Home Assistant, so it is manual only and never occupies the shared
   # runner on an ordinary push. This is the job that runs tests/ha/. The GitHub
