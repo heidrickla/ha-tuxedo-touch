@@ -70,7 +70,7 @@ One `alarm_control_panel` entity per configured partition, named **Partition N**
 
 The table applies to whichever of the two sources in [How it updates](#how-it-updates) reported the state. `Ready To Arm` and the exit-delay countdown are the texts that have been observed arriving on the push stream; the armed spellings are the ones the 30 s poll returns, and the stream is assumed to spell them the same way. If it turns out not to, the stream still says whether the partition is armed, and the poll is let through to name the mode - the state stays right, at the poll's granularity.
 
-Commands are the alarm panel domain's own actions: `alarm_control_panel.alarm_arm_home` (Stay), `alarm_arm_away`, `alarm_arm_night` and `alarm_disarm`. Each takes an optional `code`; without one the keypad code stored at setup is used. There are no actions, triggers or conditions of this integration's own.
+Commands are the alarm panel domain's own actions: `alarm_control_panel.alarm_arm_home` (Stay), `alarm_arm_away`, `alarm_arm_night` and `alarm_disarm`. Each takes an optional `code` of digits only; without one the keypad code stored at setup is used. A code holding anything but digits is refused before a request is built. There are no actions, triggers or conditions of this integration's own.
 
 The entity carries four attributes:
 
@@ -123,7 +123,7 @@ It exists on **both** firmwares: the record it reads is the vendor's own produce
 
 ## Installation
 
-HACS: search for "Honeywell Tuxedo Touch", or add `heidrickla/ha-tuxedo-touch` as a custom repository of type Integration if it is not yet in the default list. Install and restart Home Assistant.
+HACS: search for "Honeywell Tuxedo Touch", or add `heidrickla/ha-tuxedo-touch` as a custom repository of type Integration when it is not in the default list. Install and restart Home Assistant.
 
 Manual: copy `custom_components/tuxedo_touch` into your Home Assistant `config/custom_components/` directory and restart.
 
@@ -171,7 +171,7 @@ Clear `push_url` to take the stream from the panel again; that clears the token 
 
 **A relay receives the push token and nothing of the panel's**: no session cookie, no tuxweb token, and opening the relay stream spends no panel login. A relay is still as trusted as the panel itself for state reporting - it decides what this integration believes the alarm is doing. Run one you control. Nothing else moves: the relay cannot arm or disarm anything, because commands never leave the panel, and a relay-fed entity goes unavailable when the panel's own poll stops answering rather than coasting on forwarded state.
 
-**A relay's certificate is verified; the panel's is not.** The panel is exempt because it ships an expired 2009 self-signed certificate that no modern TLS stack will accept, and that exemption is the panel's alone. A relay is an address you typed and it receives the push token, so it gets ordinary verification, and its URL must be https. Terminate TLS with a certificate this Home Assistant trusts.
+**A relay's certificate is verified; the panel's is not.** The panel is exempt because it ships an expired 2009 self-signed certificate that no modern TLS stack will accept, and that exemption is the panel's alone. A relay is an address you typed and it receives the push token, so it gets ordinary verification, and its URL must be https. Terminate TLS with a certificate this Home Assistant trusts. An entry holding a relay URL that is not https keeps the stream closed and runs on the status poll until the URL is changed.
 
 Why a relay is worth having at all: firmware that gates the push path on a session needs one, and a relay can hold a single upstream subscription and fan it out. That matters to the panel rather than to throughput, because every registration makes it flush its reply queue, so one subscriber costs it less than three.
 
@@ -239,7 +239,7 @@ They disappear on their own when the condition goes - including when you fix the
 
 The panel counts failed web logins and acts on the count. On unpatched firmware **three failed logins disable every web account it has** - permanently, with no timeout and no self-clear. The only way back is at the unit: Setup, then the account screen, re-enable web access, Enable All, Apply. Patched firmware allows five and clears itself after five minutes, and the panel publishes its version nowhere a client can read, so this integration behaves as though every panel is the unforgiving kind.
 
-A longer retry interval would not do instead. Anything that retries automatically reaches three eventually; only stopping avoids it. So when the panel refuses the stored credentials - a web password changed at the keypad, an account disabled - the poll stops, the event stream stops rather than backing off, the refusal is written on the config entry so a restart spends nothing either, and Home Assistant asks you.
+A longer retry interval would not do instead. Anything that retries automatically reaches three eventually; only stopping avoids it. So when the panel refuses the stored credentials - a web password changed at the keypad, an account disabled - on a poll, an arm, a disarm or the event stream, the poll stops, the event stream stops rather than backing off, the refusal is written on the config entry at once so a restart or reload spends nothing either, and Home Assistant asks you.
 
 At the keyboard that means:
 
