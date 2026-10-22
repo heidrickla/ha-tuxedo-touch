@@ -187,19 +187,20 @@
     "step": {
       "init": {
         "title": "Push stream source",
-        "description": "Leave both boxes empty unless you are running a push-stream relay. Empty means the panel serves its own stream, which is the normal setup.\n\nOnly the stream moves. Logging in and sending commands always go to the panel, because the panel requires TLS for commands and ties a session to the address that created it.",
+        "description": "Leave both boxes empty unless you are running a push-stream relay. Empty means the panel serves its own stream, which is the normal setup.\n\nOnly the stream moves. Logging in and sending commands always go to the panel, because the panel requires TLS for commands and ties a session to the address that created it. A relay is sent the push token and nothing of the panel's: no session cookie, no tuxweb token.",
         "data": {
           "push_url": "Push stream URL",
           "push_token": "Push stream token"
         },
         "data_description": {
-          "push_url": "Full URL of the relay's stream endpoint, for example http://10.0.0.5:8081/SimpleDebugger.interface/G. — used exactly as given, with no path appended.",
-          "push_token": "Credential the relay requires, if any. Sent as both a bearer token and a cookie, so either style of relay accepts it. This is not your panel password."
+          "push_url": "Full https address of the relay's stream endpoint, path included, used exactly as given. No user name or password in it.",
+          "push_token": "Credential the relay requires, sent as both a bearer token and a cookie so either style of relay accepts it. Required with a relay. Leave blank to keep the stored token. This is not your panel password."
         }
       }
     },
     "error": {
-      "invalid_push_url": "The push stream URL must start with http:// or https://. Give the relay's full stream endpoint, for example http://10.0.0.5:8081/SimpleDebugger.interface/G."
+      "invalid_push_url": "The push stream URL must be an https address with a host and no user name or password in it: the relay is sent the push token, which plain http would carry in clear text.",
+      "push_token_required": "A relay needs a push token. The relay is never sent the panel's own credentials in its place."
     }
   }
 }

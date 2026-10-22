@@ -9,6 +9,8 @@ clear rather than persist as empty strings, the unrelated options key must
 survive, and only the stream may move.
 """
 
+from unittest.mock import patch
+
 from homeassistant.config_entries import ConfigEntryState, OptionsFlowWithReload
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -21,10 +23,11 @@ from custom_components.tuxedo_touch.const import (
     OPT_PUSH_TOKEN,
     OPT_PUSH_URL,
 )
+from tests.fake_panel import wait_until
 
 from .test_config_flow import ENTRY_DATA, HOST, PORT
 
-RELAY = "http://10.0.0.5:8081/SimpleDebugger.interface/G."
+RELAY = "https://relay.example:8081/SimpleDebugger.interface/G."
 
 
 def _entry(options: dict | None = None) -> MockConfigEntry:
@@ -37,8 +40,24 @@ def _entry(options: dict | None = None) -> MockConfigEntry:
     )
 
 
+def _suggested(result) -> dict:
+    return {
+        key.schema: key.description["suggested_value"]
+        for key in result["data_schema"].schema
+        if getattr(key, "description", None) and "suggested_value" in key.description
+    }
+
+
+def _defaults(result) -> dict:
+    return {
+        key.schema: key.default()
+        for key in result["data_schema"].schema
+        if callable(getattr(key, "default", None))
+    }
+
+
 async def test_form_opens_with_the_current_values(hass: HomeAssistant) -> None:
-    entry = _entry({OPT_PUSH_URL: RELAY})
+    entry = _entry({OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: "stored-token"})
     entry.add_to_hass(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.FORM
@@ -53,7 +72,10 @@ async def test_form_opens_with_the_current_values(hass: HomeAssistant) -> None:
         if getattr(key, "description", None) and "suggested_value" in key.description
     }
     assert suggested[OPT_PUSH_URL] == RELAY
-    assert suggested[OPT_PUSH_TOKEN] == ""
+    # The token is a secret: neither suggested nor a default, where the
+    # password field could reveal it.
+    assert OPT_PUSH_TOKEN not in suggested
+    assert "stored-token" not in _defaults(result).values()
 
 
 async def test_setting_a_relay_stores_both_fields(hass: HomeAssistant) -> None:
@@ -103,7 +125,7 @@ async def test_an_unrelated_option_survives(hass: HomeAssistant) -> None:
     entry.add_to_hass(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: ""}
+        result["flow_id"], user_input={OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: "tok"}
     )
     assert result["data"][OPT_CREDENTIALS_REJECTED] is True
     assert result["data"][OPT_PUSH_URL] == RELAY
@@ -113,10 +135,11 @@ async def test_the_entry_loads_and_streams_from_the_relay(
     hass: HomeAssistant, panel_entry: MockConfigEntry, fake_panel
 ) -> None:
     """End to end through the integration: login on the panel, stream from the
-    configured URL, with the token attached.
+    configured URL, with the push token attached and nothing of the panel's.
 
     The fake panel stands in for the relay here — what is being proven is that
-    the override is honoured and the token is sent, not that a relay exists.
+    the override is honoured and what the relay is sent, not that a relay
+    exists. The fake serves no TLS, so the https rule is patched open.
     """
     panel_entry.add_to_hass(hass)
     hass.config_entries.async_update_entry(
@@ -128,17 +151,20 @@ async def test_the_entry_loads_and_streams_from_the_relay(
             OPT_PUSH_TOKEN: "s3cr3t",
         },
     )
-    await hass.config_entries.async_setup(panel_entry.entry_id)
-    await hass.async_block_till_done()
-    assert panel_entry.state is ConfigEntryState.LOADED
+    with patch("custom_components.tuxedo_touch.push.is_https_url", return_value=True):
+        await hass.config_entries.async_setup(panel_entry.entry_id)
+        await hass.async_block_till_done()
+        assert panel_entry.state is ConfigEntryState.LOADED
+        await wait_until(lambda: fake_panel.stream_requests > 0)
 
-    # The stream request carried the token both ways. Asserted
-    # unconditionally: a test that skips when the fixture lacks a field is a
-    # test that cannot fail.
+    # The stream request carried the token both ways and not the panel's
+    # session cookie. Asserted unconditionally: a test that skips when the
+    # fixture lacks a field is a test that cannot fail.
     seen = fake_panel.last_push_headers
     assert seen, "no stream request reached the configured URL"
     assert seen.get("Authorization") == "Bearer s3cr3t"
-    assert "tuxweb_token=s3cr3t" in seen.get("Cookie", "")
+    assert seen.get("Cookie") == "tuxweb_token=s3cr3t"
+    assert fake_panel.cookie not in seen.get("Cookie", "")
 
 
 async def test_a_url_without_a_scheme_is_refused(hass: HomeAssistant) -> None:
@@ -153,7 +179,7 @@ async def test_a_url_without_a_scheme_is_refused(hass: HomeAssistant) -> None:
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        user_input={OPT_PUSH_URL: "10.0.0.5:8081/x", OPT_PUSH_TOKEN: ""},
+        user_input={OPT_PUSH_URL: "10.0.0.5:8081/x", OPT_PUSH_TOKEN: "s3cr3t"},
     )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {OPT_PUSH_URL: "invalid_push_url"}
@@ -171,25 +197,74 @@ async def test_a_refused_form_comes_back_holding_what_was_typed(
         result["flow_id"],
         user_input={OPT_PUSH_URL: "10.0.0.5:8081/x", OPT_PUSH_TOKEN: "s3cr3t"},
     )
-    suggested = {
-        key.schema: key.description["suggested_value"]
-        for key in result["data_schema"].schema
-        if getattr(key, "description", None) and "suggested_value" in key.description
-    }
+    suggested = _suggested(result)
     assert suggested[OPT_PUSH_URL] == "10.0.0.5:8081/x"
+    # What was typed into the token box is not echoed either.
+    assert OPT_PUSH_TOKEN not in suggested
 
 
-async def test_both_schemes_are_accepted(hass: HomeAssistant) -> None:
-    """The positive control: the check rejects a missing scheme, not everything."""
-    for url in ("http://10.0.0.5:8081/x", "HTTPS://relay.example/x"):
+async def test_only_an_https_relay_is_accepted(hass: HomeAssistant) -> None:
+    """The relay is sent the push token, which plain http carries in clear text.
+
+    The accepted URL is the positive control: the check refuses http and
+    credentials in the URL, not everything.
+    """
+    for url, accepted in (
+        ("HTTPS://relay.example/x", True),
+        ("http://relay.example:8081/x", False),
+        ("https://user:pw@relay.example/x", False),
+        ("https:///x", False),
+    ):
         entry = _entry()
         entry.add_to_hass(hass)
         result = await hass.config_entries.options.async_init(entry.entry_id)
         result = await hass.config_entries.options.async_configure(
-            result["flow_id"], user_input={OPT_PUSH_URL: url, OPT_PUSH_TOKEN: ""}
+            result["flow_id"], user_input={OPT_PUSH_URL: url, OPT_PUSH_TOKEN: "tok"}
         )
-        assert result["type"] is FlowResultType.CREATE_ENTRY, url
-        assert result["data"][OPT_PUSH_URL] == url
+        if accepted:
+            assert result["type"] is FlowResultType.CREATE_ENTRY, url
+            assert result["data"][OPT_PUSH_URL] == url
+        else:
+            assert result["type"] is FlowResultType.FORM, url
+            assert result["errors"] == {OPT_PUSH_URL: "invalid_push_url"}, url
+            assert entry.options == {}
+
+
+async def test_a_relay_without_a_token_is_refused(hass: HomeAssistant) -> None:
+    """A relay is never opened on the panel's credentials in place of a token."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: ""}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {OPT_PUSH_TOKEN: "push_token_required"}
+    assert entry.options == {}
+
+
+async def test_a_blank_token_keeps_the_stored_one(hass: HomeAssistant) -> None:
+    """The box is never filled in, so blank has to mean keep."""
+    entry = _entry({OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: "stored-token"})
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: ""}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][OPT_PUSH_TOKEN] == "stored-token"
+
+
+async def test_clearing_the_url_clears_the_token(hass: HomeAssistant) -> None:
+    entry = _entry({OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: "stored-token"})
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={OPT_PUSH_URL: "", OPT_PUSH_TOKEN: "typed"}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert OPT_PUSH_URL not in result["data"]
+    assert OPT_PUSH_TOKEN not in result["data"]
 
 
 async def test_a_relay_stream_does_not_vouch_for_the_panel(
@@ -276,7 +351,7 @@ async def test_saving_the_form_takes_effect_without_a_restart(
     assert panel_entry.state is ConfigEntryState.LOADED
     assert panel_entry.runtime_data.push._push_url is None, "precondition: on the panel"
 
-    relay = f"http://127.0.0.1:{fake_panel.port}/SimpleDebugger.interface/G."
+    relay = f"https://127.0.0.1:{fake_panel.port}/SimpleDebugger.interface/G."
     result = await hass.config_entries.options.async_init(panel_entry.entry_id)
     await hass.config_entries.options.async_configure(
         result["flow_id"],

@@ -6,6 +6,8 @@ Notable changes to this integration, newest first. The format follows [Keep a Ch
 
 ### Changed
 
+- A push relay is sent the push token and nothing of the panel's: no session cookie and no tuxweb token, and opening it spends no panel login. A relay URL must be https with no user name or password in it, and a relay needs a push token. An entry holding a relay URL that is not https keeps the stream closed and runs on the status poll until the URL is changed.
+- The options form never shows the stored push token. Blank keeps it; clearing the relay URL clears both.
 - Arm and disarm take digits only as the alarm code and refuse anything else before a request is built.
 - A web login the panel refuses on an arm, a disarm or the push stream is written to the entry at once, as a refused poll is, so a restart or reload before the next poll spends no further login.
 

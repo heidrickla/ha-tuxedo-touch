@@ -914,9 +914,13 @@ async def test_a_tuxweb_stream_answering_404_asks_once_and_then_stops_asking(
     assert tuxweb.login_attempts == 0
 
 
-async def test_a_relay_in_front_of_tuxweb_gets_the_relay_token_alone(tuxweb, session):
-    """No panel cookie exists to ride alongside the relay's token, so the
-    cookie form carries the token by itself rather than the word None."""
+async def test_a_relay_in_front_of_tuxweb_gets_the_relay_token_alone(
+    tuxweb, session, monkeypatch
+):
+    """The relay is sent its own token and not the panel's bearer token, and
+    the cookie form carries the token by itself rather than the word None.
+    The fake serves no TLS, so the https rule is patched open."""
+    monkeypatch.setattr(push, "is_https_url", lambda url: True)
     client = _client(tuxweb, session)
     await client.async_probe_capabilities()
     relay = f"http://127.0.0.1:{tuxweb.port}/SimpleDebugger.interface/G."

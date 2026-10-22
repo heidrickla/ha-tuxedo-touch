@@ -74,20 +74,6 @@ def test_blank_values_are_treated_as_unset() -> None:
     assert _stream(url="", token="")._push_token is None
 
 
-def test_token_is_sent_both_ways() -> None:
-    """A shim may gate on a bearer header or on a cookie; sending the one it
-    ignores costs nothing, and guessing wrong costs a silent 401."""
-    src = inspect.getsource(push.TuxedoPushStream._async_stream_once)
-    assert 'headers["Authorization"] = f"Bearer {self._push_token}"' in src
-    assert "tuxweb_token=" in src
-    # And the panel session cookie is still sent, because the shim may validate
-    # the real session instead of a token. Asserted on its own: an earlier
-    # draft wrote `'"Cookie": cookie' in src or "Cookie" in src`, and the
-    # second half of that is satisfied by the token line the assert above
-    # already requires, so the clause could not fail.
-    assert '"Cookie": cookie' in src
-
-
 def test_only_the_stream_moves() -> None:
     """The override must not appear anywhere near login or the REST call."""
     api = load("api")
@@ -137,9 +123,19 @@ class _RecordingClient:
 
     def __init__(self, status: int) -> None:
         self.session = _RecordingSession(status)
+        self.logins = 0
 
     async def async_session_cookie(self) -> str:
+        # Handing out a cookie is a login when the client holds no session.
+        self.logins += 1
         return "PHPSESSID=abc"
+
+    def stream_headers(self) -> dict[str, str]:
+        return {"Authorization": "Bearer panel-tuxweb-token"}
+
+
+class _RecordingTuxwebClient(_RecordingClient):
+    tuxweb = True
 
 
 def _run_once(client, url=None, token=None):
@@ -292,3 +288,68 @@ def test_a_relay_401_is_not_read_as_a_panel_session_expiry() -> None:
     assert err is not None
     assert not isinstance(err, push.PushSessionExpired)
     assert "relay refused" in str(err)
+
+
+RELAY = "https://relay.example:8081/SimpleDebugger.interface/G."
+
+
+def test_a_relay_is_sent_the_push_token_both_ways_and_nothing_of_the_panels() -> None:
+    """A relay may gate on a bearer header or on a cookie, so the token goes
+    both ways. The panel's session cookie does not go at all, and no login is
+    spent getting one."""
+    client = _RecordingClient(500)
+    _run_once(client, url=RELAY, token="tok")
+    assert client.session.calls[0]["headers"] == {
+        "Authorization": "Bearer tok",
+        "Cookie": "tuxweb_token=tok",
+    }
+    assert client.logins == 0
+
+
+def test_a_relay_is_never_sent_the_panels_tuxweb_token() -> None:
+    client = _RecordingTuxwebClient(500)
+    _run_once(client, url=RELAY, token="tok")
+    headers = client.session.calls[0]["headers"]
+    assert "panel-tuxweb-token" not in str(headers)
+    assert headers["Authorization"] == "Bearer tok"
+
+
+def test_a_relay_without_a_token_is_sent_no_credential_at_all() -> None:
+    client = _RecordingClient(500)
+    _run_once(client, url=RELAY)
+    assert client.session.calls[0]["headers"] == {}
+    assert client.logins == 0
+
+
+def test_the_panel_stream_carries_the_session_cookie_and_no_push_token() -> None:
+    """The control: the panel's own stream still opens on its session."""
+    client = _RecordingClient(500)
+    _run_once(client, token="tok")
+    assert client.session.calls[0]["headers"] == {"Cookie": "PHPSESSID=abc"}
+    assert client.logins == 1
+
+
+def test_a_relay_url_that_is_not_https_is_never_requested(caplog) -> None:
+    """The push token would cross the network in clear text, so nothing is sent."""
+    for url in ("http://relay.example:8081/x", "https://user:pw@relay.example/x"):
+        client = _RecordingClient(500)
+        stream = push.TuxedoPushStream(
+            client, lambda _s: None, lambda _c: None, push_url=url, push_token="tok"
+        )
+        with caplog.at_level("WARNING"):
+            asyncio.run(asyncio.wait_for(stream.async_run(), timeout=5))
+        assert client.session.calls == [], url
+        assert client.logins == 0
+        assert stream.stopped is True
+    assert any("not an https URL" in r.getMessage() for r in caplog.records)
+
+
+def test_is_https_url() -> None:
+    assert push.is_https_url("https://relay.example/x")
+    assert push.is_https_url("HTTPS://relay.example:8081/x")
+    assert not push.is_https_url("http://relay.example/x")
+    assert not push.is_https_url("https://user@relay.example/x")
+    assert not push.is_https_url("https://user:pw@relay.example/x")
+    assert not push.is_https_url("https:///x")
+    assert not push.is_https_url("relay.example/x")
+    assert not push.is_https_url("https://[::1/x")

@@ -52,6 +52,7 @@ from .const import (
     issue_id,
 )
 from .identity import build_unique_id
+from .push import is_https_url
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,7 +63,8 @@ _PASSWORD = selector.TextSelector(
 # The web password, the keypad code and the tuxweb token are all secrets:
 # masked in the form, never given a default and never sent back as a
 # suggested value. A default reaches the frontend, where the field can reveal
-# it, and is also applied when the user clears the field.
+# it, and is also applied when the user clears the field. The options form's
+# push token follows the same rule.
 SECRETS = (CONF_PASSWORD, CONF_CODE, CONF_TUXWEB_TOKEN)
 
 # Everything the login handshake depends on - and the token, which on tuxweb
@@ -764,13 +766,24 @@ class TuxedoTouchOptionsFlow(OptionsFlowWithReload):
                 if v and v.strip()
             }
             url = options.get(OPT_PUSH_URL)
-            if url is not None and not url.lower().startswith(("http://", "https://")):
-                # Caught here because it cannot be caught later. A URL the
-                # client cannot parse fails inside the stream's reconnect
-                # loop, which logs at debug and retries for ever, so a typed
-                # host with no scheme would present as a stream that simply
-                # never starts -- with a saved form and a green tick behind it.
-                errors[OPT_PUSH_URL] = "invalid_push_url"
+            if url is None:
+                # No relay: the panel serves its own stream and a token has
+                # nowhere to go, so clearing the URL clears both.
+                options.pop(OPT_PUSH_TOKEN, None)
+            else:
+                # https only, with no credentials in the URL: the relay is
+                # sent the push token, and an http relay would carry it in
+                # clear text. Caught here because the stream can only refuse
+                # to start.
+                if not is_https_url(url):
+                    errors[OPT_PUSH_URL] = "invalid_push_url"
+                # The token box is never filled in, so blank keeps the stored
+                # token. A relay is never opened without one.
+                if OPT_PUSH_TOKEN not in options:
+                    if stored := self.config_entry.options.get(OPT_PUSH_TOKEN):
+                        options[OPT_PUSH_TOKEN] = stored
+                    else:
+                        errors[OPT_PUSH_TOKEN] = "push_token_required"
             if not errors:
                 # Anything else already in options -- the credentials-rejected
                 # flag -- is preserved: this form does not own it.
@@ -782,9 +795,9 @@ class TuxedoTouchOptionsFlow(OptionsFlowWithReload):
                 merged.update(options)
                 return self.async_create_entry(data=merged)
 
-        # On a rejected submission the boxes come back holding what was typed,
-        # not what is stored: retyping a long URL to fix a missing scheme is
-        # how a person gives up on a form.
+        # On a rejected submission the URL comes back as typed: retyping a long
+        # URL to fix a missing scheme is how a person gives up on a form. The
+        # token is a secret and is never sent back, stored or typed.
         current: Mapping[str, Any] = (
             dict(user_input) if user_input is not None else self.config_entry.options
         )
@@ -801,10 +814,7 @@ class TuxedoTouchOptionsFlow(OptionsFlowWithReload):
                         ),
                     }
                 ),
-                {
-                    OPT_PUSH_URL: current.get(OPT_PUSH_URL, ""),
-                    OPT_PUSH_TOKEN: current.get(OPT_PUSH_TOKEN, ""),
-                },
+                {OPT_PUSH_URL: current.get(OPT_PUSH_URL, "")},
             ),
             errors=errors,
         )

@@ -47,6 +47,7 @@ import ssl
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -497,11 +498,11 @@ class TuxedoPushStream:
         # the stream has stopped rather than backed off. Only a reauth and the
         # reload it brings starts a stream again.
         self.auth_failed = False
-        # The third terminal state, and the one that says a bug rather than a
-        # panel: the loop failed repeatedly for a reason this module does not
-        # name. Reported in diagnostics beside the other two, so a downloaded
-        # report stops claiming a reconnect is pending for a task that has
-        # stopped.
+        # The third terminal state: the loop failed repeatedly for a reason
+        # this module does not name, or a configured relay URL is not https.
+        # `last_error` says which. Reported in diagnostics beside the other
+        # two, so a downloaded report stops claiming a reconnect is pending
+        # for a task that has stopped.
         self.stopped = False
         # A configured relay has failed repeatedly and has been reported once.
         # Not terminal: it keeps retrying, because a relay coming back is
@@ -536,6 +537,20 @@ class TuxedoPushStream:
 
     async def async_run(self) -> None:
         """Keep the stream open for as long as this task is not cancelled."""
+        if self._push_url is not None and not is_https_url(self._push_url):
+            # The push token would cross the network in clear text. Stopped
+            # rather than sent; the options form refuses such a URL, so this
+            # is an entry saved before it did.
+            self.stopped = True
+            self.last_error = "the push relay URL is not a plain https URL"
+            _LOGGER.warning(
+                "The configured push relay URL is not an https URL with a host "
+                "and no user name or password in it, so the push stream is not "
+                "opened and the status poll carries the alarm state. "
+                "Give the relay an https URL in the integration's options, or "
+                "clear both fields to take the stream from the panel"
+            )
+            return
         self.reconnect_wait = PUSH_BACKOFF_INITIAL
         expiry_retried = False
         unexpected_failures = 0
@@ -690,13 +705,18 @@ class TuxedoPushStream:
 
     async def _async_stream_once(self) -> None:
         """One connection, from login to the moment the panel stops talking."""
-        if self._client.tuxweb:
+        headers: dict[str, str]
+        if self._push_url is not None:
+            # A relay is not the panel, so it is sent the push token and
+            # nothing of the panel's: no session cookie and no tuxweb token.
+            # Opening it spends no login either.
+            headers = self._relay_headers()
+        elif self._client.tuxweb:
             # No login and no cookie: the bearer token is the whole of the
             # auth, and asking the client for a session would be a login
             # against a panel that serves no login page. The frames behind
             # the request are byte-identical to stock, so nothing past the
             # headers knows the difference.
-            cookie = None
             headers = self._client.stream_headers()
         else:
             cookie = await self._client.async_session_cookie()
@@ -717,16 +737,6 @@ class TuxedoPushStream:
             sock_connect=PUSH_CONNECT_TIMEOUT,
             sock_read=PUSH_READ_TIMEOUT,
         )
-        if self._push_token:
-            # Sent both ways because a shim may gate on either, and sending one
-            # it ignores costs nothing. The relay's token replaces the panel's
-            # own auth on this request: a relay is not the panel, and it is
-            # this token that it gates on. The panel's session cookie still
-            # rides alongside on stock, because a shim may validate the real
-            # session instead; on tuxweb there is no cookie to carry.
-            headers["Authorization"] = f"Bearer {self._push_token}"
-            token_cookie = f"tuxweb_token={self._push_token}"
-            headers["Cookie"] = f"{cookie}; {token_cookie}" if cookie else token_cookie
         # The client's SSL argument is a DELIBERATELY BROKEN context - no
         # certificate verification, no hostname check - and it is justified by
         # exactly one thing: the panel's own expired 2009 self-signed
@@ -830,6 +840,15 @@ class TuxedoPushStream:
                 if held and self.frames > frames_before:
                     self.reconnect_wait = PUSH_BACKOFF_INITIAL
 
+    def _relay_headers(self) -> dict[str, str]:
+        """The push token, both ways, because a relay may gate on either."""
+        if not self._push_token:
+            return {}
+        return {
+            "Authorization": f"Bearer {self._push_token}",
+            "Cookie": f"tuxweb_token={self._push_token}",
+        }
+
     def _set_connected(self, connected: bool) -> None:
         if connected:
             # A connection clears the run of failures, so the relay warning
@@ -876,6 +895,21 @@ class TuxedoPushStream:
                 _LOGGER.debug("Push frame carries no partition status: %r", frame)
             return
         self._on_status(status)
+
+
+def is_https_url(url: str) -> bool:
+    """Whether a relay URL is https with a host and no credentials in it."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return False
+    return (
+        parts.scheme.lower() == "https"
+        and bool(host)
+        and parts.username is None
+        and parts.password is None
+    )
 
 
 def _boundary_of(content_type: str | None) -> str:

@@ -162,16 +162,16 @@ Settings, then Devices & services, then Configure on the Tuxedo Touch entry. Bot
 
 | Parameter | Accepts | Default |
 |---|---|---|
-| `push_url` | Full URL of a relay that serves the push stream, including the path, for example `https://relay.example:8081/SimpleDebugger.interface/G.` | empty, meaning the panel |
-| `push_token` | A credential the relay expects. Sent both as an `Authorization: Bearer` header and as a `tuxweb_token` cookie, because a relay may gate on either | empty, meaning none is sent |
+| `push_url` | Full https URL of a relay that serves the push stream, including the path, for example `https://relay.example:8081/SimpleDebugger.interface/G.`. No user name or password in it | empty, meaning the panel |
+| `push_token` | A credential the relay expects, required with `push_url`. Sent both as an `Authorization: Bearer` header and as a `tuxweb_token` cookie, because a relay may gate on either. The form never shows the stored token; blank keeps it | empty |
 
-Leave a field blank to clear it. A blank is stored as absent, not as an empty string, so clearing one really does return that setting to the panel.
+Clear `push_url` to take the stream from the panel again; that clears the token too. A blank is stored as absent, not as an empty string.
 
 **Only the stream moves.** Login and every command still go to the panel, and that is a constraint rather than a simplification. The panel answers `302` to https on the REST namespace when it is addressed over plain HTTP, whatever credentials are presented, so commands cannot be redirected; and it binds a session to the address that created it, so a consumer that logged in against the panel has to keep talking to the panel for everything else. A half-redirected setup presents as a random logout.
 
-**A relay receives the panel's session cookie**, and it has to: the stream is the panel's own endpoint, so whatever serves it is presented with the session that opened it. Combined with the point above, a relay is as trusted as the panel itself for state reporting - it decides what this integration believes the alarm is doing. Run one you control. Nothing else moves: the relay cannot arm or disarm anything, because commands never leave the panel, and a relay-fed entity goes unavailable when the panel's own poll stops answering rather than coasting on forwarded state.
+**A relay receives the push token and nothing of the panel's**: no session cookie, no tuxweb token, and opening the relay stream spends no panel login. A relay is still as trusted as the panel itself for state reporting - it decides what this integration believes the alarm is doing. Run one you control. Nothing else moves: the relay cannot arm or disarm anything, because commands never leave the panel, and a relay-fed entity goes unavailable when the panel's own poll stops answering rather than coasting on forwarded state.
 
-**A relay's certificate is verified; the panel's is not.** The panel is exempt because it ships an expired 2009 self-signed certificate that no modern TLS stack will accept, and that exemption is the panel's alone. A relay is an address you typed and it receives the push token, so it gets ordinary verification. Terminate TLS with a certificate this Home Assistant trusts, or serve the stream over http.
+**A relay's certificate is verified; the panel's is not.** The panel is exempt because it ships an expired 2009 self-signed certificate that no modern TLS stack will accept, and that exemption is the panel's alone. A relay is an address you typed and it receives the push token, so it gets ordinary verification, and its URL must be https. Terminate TLS with a certificate this Home Assistant trusts.
 
 Why a relay is worth having at all: firmware that gates the push path on a session needs one, and a relay can hold a single upstream subscription and fan it out. That matters to the panel rather than to throughput, because every registration makes it flush its reply queue, so one subscriber costs it less than three.
 
