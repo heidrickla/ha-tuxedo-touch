@@ -17,12 +17,12 @@ jobs:
     name: Lint and structure
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         timeout-minutes: 15
 
       # The validator needs Python 3.11+ for tomllib; this is the interpreter
       # the Home Assistant job uses.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         timeout-minutes: 15
         with:
           python-version: "3.14"
@@ -79,11 +79,11 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         timeout-minutes: 15
 
       # Home Assistant 2026.x needs 3.14.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         timeout-minutes: 15
         with:
           python-version: "3.14"
@@ -132,7 +132,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         timeout-minutes: 15
-      - uses: home-assistant/actions/hassfest@master
+      - uses: home-assistant/actions/hassfest@cd6f3635a740c84d8a14f6121a90068b8ece6bf6 # master
         timeout-minutes: 15
