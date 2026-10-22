@@ -587,3 +587,16 @@ async def test_plain_http_clients_share_a_pool_key_too():
 
     assert first._ssl_ctx is None and second._ssl_ctx is None
     assert first_session.calls[0][2]["ssl"] is second_session.calls[0][2]["ssl"] is True
+
+
+@pytest.mark.parametrize(
+    "code", ["1234&pID=2", "1234&arming=AWAY", "12=34", "", "12 34", "\u00b9234"]
+)
+async def test_an_alarm_code_that_is_not_digits_is_refused_before_any_request(code):
+    """The stock body is a hand-built form string, so a code is digits or nothing."""
+    made, session = client(login_answers())
+    with pytest.raises(api.TuxedoTouchInvalidCode):
+        await made.arm("AWAY", code, 1)
+    with pytest.raises(api.TuxedoTouchInvalidCode):
+        await made.disarm(code, 1)
+    assert session.calls == []

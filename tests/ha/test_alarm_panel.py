@@ -307,6 +307,31 @@ async def test_a_login_refused_on_a_command_is_written_down_before_a_restart(
 
 
 @pytest.mark.parametrize(
+    "code", ["1234&pID=2", "1234&arming=AWAY&operation=set", "12=34", "\u00b9234"]
+)
+async def test_a_code_that_is_not_digits_is_refused_and_nothing_is_sent(
+    hass, config_entry, code
+):
+    """The stock command body is a form string, so "&" in a code adds fields."""
+    await _setup(hass, config_entry)
+    with (
+        patch(ARM, AsyncMock(return_value={})) as arm,
+        patch(DISARM, AsyncMock(return_value={})) as disarm,
+    ):
+        for service in ("alarm_arm_away", "alarm_disarm"):
+            with pytest.raises(ServiceValidationError) as raised:
+                await hass.services.async_call(
+                    ALARM_DOMAIN,
+                    service,
+                    {ATTR_ENTITY_ID: PANEL, "code": code},
+                    blocking=True,
+                )
+            assert raised.value.translation_key == "invalid_code"
+    arm.assert_not_called()
+    disarm.assert_not_called()
+
+
+@pytest.mark.parametrize(
     ("status", "armed"),
     [
         # The stream says so outright, whatever the display text says.

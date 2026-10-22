@@ -131,6 +131,9 @@
     "no_code": {
       "message": "No alarm code provided and none configured for this panel."
     },
+    "invalid_code": {
+      "message": "The alarm code must be digits only. Nothing was sent to the panel."
+    },
     "command_failed": {
       "message": "Tuxedo Touch command failed: {error}"
     },

@@ -58,6 +58,10 @@ _LOGGER = logging.getLogger(__name__)
 
 READIT_RE = re.compile(r'id=["\']readit["\'][^>]*value=["\']([0-9a-fA-F]+)["\']')
 
+# An alarm code is ASCII digits. The stock command body is a form string built
+# by hand, so a code carrying "&" or "=" would add fields to it.
+ALARM_CODE_RE = re.compile(r"[0-9]+")
+
 # The panel is a slow embedded device, but anything beyond this budget
 # indicates a hang, not a slow success. aiohttp raises TimeoutError (not a
 # ClientError) when this expires - see the except clauses below.
@@ -181,6 +185,10 @@ class TuxedoTouchSessionError(TuxedoTouchError):
 
 class TuxedoTouchConnectionError(TuxedoTouchError):
     """Could not reach the panel at all."""
+
+
+class TuxedoTouchInvalidCode(TuxedoTouchError):
+    """The alarm code is not digits only. Raised before any request is built."""
 
 
 class TuxedoTouchHttpsRequiredError(TuxedoTouchError):
@@ -1064,6 +1072,7 @@ class TuxedoTouchClient:
         the panel did not act on comes back as TuxedoTouchCommandNotConfirmed
         instead. That is what `confirms_commands` reports to the coordinator.
         """
+        _require_alarm_code(code)
         if self.tuxweb:
             return await self._tuxweb_call(
                 "/AdvancedSecurity/ArmWithCode",
@@ -1080,6 +1089,7 @@ class TuxedoTouchClient:
         )
 
     async def disarm(self, code: str, partition: int = 1) -> dict[str, Any]:
+        _require_alarm_code(code)
         if self.tuxweb:
             return await self._tuxweb_call(
                 "/AdvancedSecurity/DisarmWithCode",
@@ -1089,6 +1099,11 @@ class TuxedoTouchClient:
         return await self._call(
             "/AdvancedSecurity/DisarmWithCode", params, allow_empty=True
         )
+
+
+def _require_alarm_code(code: str) -> None:
+    if not ALARM_CODE_RE.fullmatch(code):
+        raise TuxedoTouchInvalidCode("The alarm code must be digits only")
 
 
 def _capabilities_of(payload: Any) -> frozenset[str] | None:

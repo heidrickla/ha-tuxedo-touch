@@ -16,7 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .api import TuxedoStatus, TuxedoTouchError
+from .api import ALARM_CODE_RE, TuxedoStatus, TuxedoTouchError
 from .const import COUNTDOWN_RE, DOMAIN, STATUS_STATES
 from .coordinator import TuxedoTouchConfigEntry, TuxedoTouchCoordinator
 from .entity import TuxedoTouchEntity
@@ -158,6 +158,10 @@ class TuxedoAlarmPanel(TuxedoTouchEntity, AlarmControlPanelEntity):
         if not resolved:
             raise ServiceValidationError(
                 translation_domain=DOMAIN, translation_key="no_code"
+            )
+        if not ALARM_CODE_RE.fullmatch(resolved):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key="invalid_code"
             )
         return resolved
 
