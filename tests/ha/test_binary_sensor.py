@@ -194,16 +194,18 @@ async def test_a_relay_stream_needs_the_poll_answering_too(
     is somebody else's, the panel's poll has to be answering as well before
     the link is counted as watched - a relay that stays up while the panel
     dies behind it would otherwise hold this entity on whatever it last
-    forwarded. The panel-fed control is the test below."""
+    forwarded. The panel-fed control is the test below. The fake serves no
+    TLS, so the relay's https rule is patched open."""
     relay = f"http://127.0.0.1:{fake_tuxweb.port}/SimpleDebugger.interface/G."
     tuxweb_entry.add_to_hass(hass)
     hass.config_entries.async_update_entry(
         tuxweb_entry, options={OPT_PUSH_URL: relay, OPT_PUSH_TOKEN: TUXWEB_TOKEN}
     )
-    await hass.config_entries.async_setup(tuxweb_entry.entry_id)
-    await hass.async_block_till_done()
-    coordinator = tuxweb_entry.runtime_data
-    await wait_until(lambda: coordinator.push.connected)
+    with patch("custom_components.tuxedo_touch.push.is_https_url", return_value=True):
+        await hass.config_entries.async_setup(tuxweb_entry.entry_id)
+        await hass.async_block_till_done()
+        coordinator = tuxweb_entry.runtime_data
+        await wait_until(lambda: coordinator.push.connected)
     assert coordinator.push.from_relay is True
     assert _state(hass).state == "off"
 
