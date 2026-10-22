@@ -6,13 +6,21 @@ import pytest
 from homeassistant.components.alarm_control_panel import DOMAIN as ALARM_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import issue_registry as ir
 
 from custom_components.tuxedo_touch.alarm_control_panel import (
     TuxedoAlarmPanel,
     reports_armed,
 )
 from custom_components.tuxedo_touch.api import TuxedoStatus, TuxedoTouchError
-from custom_components.tuxedo_touch.const import STATUS_STATES, status_means_armed
+from custom_components.tuxedo_touch.const import (
+    DOMAIN,
+    ISSUE_CREDENTIALS_REJECTED,
+    OPT_CREDENTIALS_REJECTED,
+    STATUS_STATES,
+    issue_id,
+    status_means_armed,
+)
 from custom_components.tuxedo_touch.coordinator import TuxedoTouchCoordinator
 from tests.fake_panel import wait_until
 
@@ -262,6 +270,39 @@ async def test_a_command_on_refused_credentials_costs_the_panel_nothing(
         assert raised.value.translation_domain == "tuxedo_touch"
         assert raised.value.translation_key == "command_failed"
 
+    assert fake_panel.login_attempts == 2
+
+
+async def test_a_login_refused_on_a_command_is_written_down_before_a_restart(
+    hass, fake_panel, panel_entry
+):
+    """The command is the call whose login the panel refuses here, not the poll.
+
+    The client's budget stops a second POST from the same client, but a reload
+    or a restart builds a new client with a fresh one. Only the flag on the
+    entry stops that client, so the command path writes it as the poll does.
+    """
+    panel_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(panel_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = panel_entry.runtime_data
+    await wait_until(lambda: coordinator.push.connected)
+    assert fake_panel.login_attempts == 1
+
+    fake_panel.password = "changed at the keypad"
+    coordinator.client.invalidate_session()
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            ALARM_DOMAIN, "alarm_arm_away", {ATTR_ENTITY_ID: PANEL}, blocking=True
+        )
+    assert fake_panel.login_attempts == 2
+    assert panel_entry.options[OPT_CREDENTIALS_REJECTED] is True
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, issue_id(ISSUE_CREDENTIALS_REJECTED, panel_entry.entry_id)
+    )
+
+    await hass.config_entries.async_reload(panel_entry.entry_id)
+    await hass.async_block_till_done()
     assert fake_panel.login_attempts == 2
 
 

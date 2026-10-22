@@ -445,3 +445,35 @@ async def test_bad_credentials_do_not_hammer_the_panel(panel, session, monkeypat
     # It never reached the stream endpoint at all: the refusal is at the login.
     assert panel.stream_requests == 0
     assert stream.connected is False
+
+
+async def test_a_refused_login_on_the_stream_is_reported_to_the_entry(
+    panel, session, monkeypatch
+):
+    """The stream can be the call whose login the panel refuses.
+
+    The coordinator writes that refusal to the entry, and only the callback
+    tells it; without it a restart before the next poll builds a client with a
+    fresh budget and spends another login on the refused credentials.
+    """
+    monkeypatch.setattr(push, "PUSH_BACKOFF_INITIAL", 0.01)
+    client = api.TuxedoTouchClient(
+        session=session,
+        host="127.0.0.1",
+        port=panel.port,
+        use_https=False,
+        username=panel.username,
+        password="wrong",
+    )
+    told = []
+    stream = push.TuxedoPushStream(
+        client,
+        lambda status: None,
+        lambda up: None,
+        on_credentials_rejected=lambda: told.append(True),
+    )
+    await asyncio.wait_for(stream.async_run(), timeout=5)
+
+    assert told == [True]
+    assert stream.auth_failed is True
+    assert panel.login_attempts == 1

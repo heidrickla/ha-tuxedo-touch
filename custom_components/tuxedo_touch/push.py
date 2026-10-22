@@ -473,6 +473,7 @@ class TuxedoPushStream:
         on_status: Callable[[PushStatus], None],
         on_connection_change: Callable[[bool], None],
         on_display: Callable[[KeypadDisplay], None] | None = None,
+        on_credentials_rejected: Callable[[], None] | None = None,
         push_url: str | None = None,
         push_token: str | None = None,
     ) -> None:
@@ -483,6 +484,9 @@ class TuxedoPushStream:
         # the floor, which is what every caller before the keypad sensor
         # existed did without knowing it.
         self._on_display = on_display
+        # Told when the stream stops on a refused web login, so the refusal is
+        # written to the entry before anything can restart with a fresh budget.
+        self._on_credentials_rejected = on_credentials_rejected
         # Where the stream comes from, if not the panel. Defaults to None so an
         # existing entry behaves exactly as before.
         self._push_url = push_url or None
@@ -603,6 +607,8 @@ class TuxedoPushStream:
                         err,
                     )
                     return
+                if self._on_credentials_rejected is not None:
+                    self._on_credentials_rejected()
                 _LOGGER.warning(
                     "The panel rejected the web login credentials, so its push "
                     "stream has stopped and Home Assistant will not try them "

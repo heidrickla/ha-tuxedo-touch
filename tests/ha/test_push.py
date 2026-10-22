@@ -17,6 +17,7 @@ from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.tuxedo_touch.api import TuxedoTouchError
+from custom_components.tuxedo_touch.const import OPT_CREDENTIALS_REJECTED
 from tests.fake_panel import COUNTDOWN_FRAME, status_frame, wait_until
 
 PANEL = "alarm_control_panel.honeywell_tuxedo_touch_partition_1"
@@ -606,6 +607,29 @@ async def test_a_refused_login_ends_the_stream_task_rather_than_slowing_it(
     await asyncio.sleep(0.2)
     assert fake_panel.login_attempts == 2
     assert fake_panel.stream_requests == requests
+
+
+async def test_a_login_refused_on_the_stream_is_written_down_before_a_restart(
+    hass, fake_panel, panel_entry
+):
+    """The stream's refusal reaches the entry, so a reload spends no login.
+
+    Without the flag the reload's new client has a fresh budget and its first
+    poll POSTs the refused credentials again.
+    """
+    coordinator = await _setup(hass, panel_entry)
+    fake_panel.password = "changed at the keypad"
+    fake_panel.expire_session()
+    coordinator.push.reconnect_wait = 0.01
+    fake_panel.drop_stream()
+    await wait_until(lambda: coordinator.push.auth_failed)
+    await hass.async_block_till_done()
+    assert fake_panel.login_attempts == 2
+    assert panel_entry.options[OPT_CREDENTIALS_REJECTED] is True
+
+    await hass.config_entries.async_reload(panel_entry.entry_id)
+    await hass.async_block_till_done()
+    assert fake_panel.login_attempts == 2
 
 
 async def test_a_key_page_hiccup_does_not_stop_the_stream_for_good(

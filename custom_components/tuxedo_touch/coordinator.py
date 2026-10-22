@@ -169,6 +169,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             self._async_push_status,
             self._async_push_connection_changed,
             on_display=self._async_push_display,
+            on_credentials_rejected=self._async_credentials_rejected,
             push_url=entry.options.get(OPT_PUSH_URL),
             push_token=entry.options.get(OPT_PUSH_TOKEN),
         )
@@ -611,6 +612,14 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             self._command_waiters.append(waiter)
         try:
             await command
+        except TuxedoTouchAuthError as err:
+            self._drop_waiter(waiter)
+            # A command can be the call whose login the panel refuses. Written
+            # down here as the poll does, or a restart before the next poll
+            # would spend another login on the refused credentials.
+            if not isinstance(err, TuxedoTouchTokenRejected):
+                self._async_credentials_rejected()
+            raise
         except BaseException:
             self._drop_waiter(waiter)
             raise
@@ -694,6 +703,11 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 source=SOURCE_COMMAND if confirmed_by_reply else SOURCE_ASSUMED,
             )
         )
+
+    @callback
+    def _async_credentials_rejected(self) -> None:
+        """The panel refused the web login on a command or on the stream."""
+        async_note_credentials_rejected(self.hass, self._entry)
 
     @callback
     def async_note_command_landed(self) -> None:

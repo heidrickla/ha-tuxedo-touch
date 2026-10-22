@@ -975,3 +975,22 @@ def test_the_capability_strings_are_spelled_as_tuxweb_spells_them():
     assert const.CAP_STATUS_REFRESH in TUXWEB_CAPABILITIES
     assert const.CAP_PANEL_LINK_STATE in TUXWEB_CAPABILITIES
     assert const.CAPABILITIES_PATH == "/GetCapabilities"
+
+
+async def test_a_refused_token_on_the_stream_writes_no_login_refusal(tuxweb, session):
+    """The control for the stock stream's report: tuxweb counts no failures."""
+    tuxweb.token = "c" * 64
+    client = _client(tuxweb, session)
+    await client.async_probe_capabilities()
+    told = []
+    stream = push.TuxedoPushStream(
+        client,
+        lambda s: None,
+        lambda up: None,
+        on_credentials_rejected=lambda: told.append(True),
+    )
+
+    await asyncio.wait_for(stream.async_run(), timeout=5)
+
+    assert stream.auth_failed is True
+    assert told == []

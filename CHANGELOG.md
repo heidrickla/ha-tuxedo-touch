@@ -2,6 +2,12 @@
 
 Notable changes to this integration, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [Unreleased]
+
+### Changed
+
+- A web login the panel refuses on an arm, a disarm or the push stream is written to the entry at once, as a refused poll is, so a restart or reload before the next poll spends no further login.
+
 ## [0.7.2] - 2026-10-19
 
 ### Changed
