@@ -8,6 +8,16 @@ It gives you one `alarm_control_panel` entity per partition, with Arm Home (Stay
 
 The panel **pushes** its state: the integration holds the unit's own event stream open, so an arm or a disarm at the keypad shows up in seconds, the exit-delay countdown is visible while it runs, and the firmware's long-standing `Not available` answer - which used to leave the entity with nothing to show - cannot reach the entity at all. See [How it updates](#how-it-updates).
 
+## Screenshots
+
+![The Connect to Tuxedo Touch setup screen with the Advanced section collapsed](docs/images/setup.png)
+
+Setup asks for the panel's address and web login; port, HTTPS, keypad code, partition and tuxweb token wait in Advanced.
+
+![The Tuxedo Touch device page with the partition and diagnostic sensors](docs/images/device.png)
+
+The device page, captured against the test suite's fake panel.
+
 ## Supported devices
 
 | Device | Notes |
