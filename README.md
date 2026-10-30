@@ -6,7 +6,7 @@ Local (no cloud) Home Assistant custom integration for the Honeywell Tuxedo Touc
 
 It gives you one `alarm_control_panel` entity per partition, with Arm Home (Stay), Arm Away, Arm Night and Disarm, using the reverse-engineered login and encryption flow documented in [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md) - plus a sensor showing the panel's own keypad display, a problem sensor for the alarm panel reporting itself offline, and, on tuxweb, a problem sensor for the Tuxedo's link to the alarm panel (see [Supported functions](#supported-functions)).
 
-The panel **pushes** its state: the integration holds the unit's own event stream open, so an arm or a disarm at the keypad shows up in seconds, the exit-delay countdown is visible while it runs, and the firmware's long-standing `Not available` answer - which used to leave the entity with nothing to show - cannot reach the entity at all. See [How it updates](#how-it-updates).
+The panel **pushes** its state: the integration holds the unit's own event stream open, so an arm or a disarm at the keypad shows up in seconds, the exit-delay countdown is visible while it runs, and the firmware's `Not available` answer from its status cache does not reach the entity while the stream is connected. See [How it updates](#how-it-updates).
 
 ## Screenshots
 
@@ -42,7 +42,7 @@ That table has one row because one row is all that differs between stock and a p
 
 ### tuxweb, the replacement web server
 
-The one question the integration does ask is `GET /system_http_api/API_REV01/GetCapabilities`, once, when an entry is set up. Stock firmware answers it with its ordinary 404 for an unknown endpoint (measured, and permanent), and nothing else changes: the endpoint needs no session, no login is spent on the question, and a stock entry then behaves exactly as it did before the question existed. A panel running **tuxweb** — the replacement panel web server developed alongside this integration — answers 200 with a JSON body whose `capabilities` list is the only thing branched on; the `firmware` and `contract` fields in it are for people, and a capability string this integration does not know is ignored. That is the detection route this section used to promise. A panel that cannot be reached at all fails the question the way it would fail a poll: a setup retry, with nothing remembered from a connection that never happened.
+The one question the integration does ask is `GET /system_http_api/API_REV01/GetCapabilities`, once, when an entry is set up. Stock firmware answers it with its ordinary 404 for an unknown endpoint (measured, and permanent), and nothing else changes: the endpoint needs no session, no login is spent on the question, and the entry runs on the stock contract. A panel running **tuxweb** — the replacement panel web server developed alongside this integration — answers 200 with a JSON body whose `capabilities` list is the only thing branched on; the `firmware` and `contract` fields in it are for people, and a capability string this integration does not know is ignored. A panel that cannot be reached at all fails the question the way it would fail a poll: a setup retry, with nothing remembered from a connection that never happened.
 
 On tuxweb the same paths carry a simpler contract, and the client keeps a second path for it beside the stock one rather than papering over the difference:
 
@@ -62,7 +62,7 @@ The token goes in the **tuxweb token** field, optional on every form and blank o
 
 ## Supported functions
 
-One `alarm_control_panel` entity per configured partition, named **Partition N** under the device **Honeywell Tuxedo Touch**. A fresh install gets the entity id `alarm_control_panel.honeywell_tuxedo_touch_partition_1`; an install from before the name carried the partition keeps whatever entity id it already had.
+One `alarm_control_panel` entity per configured partition, named **Partition N** under the device **Honeywell Tuxedo Touch**. A new entity gets the entity id `alarm_control_panel.honeywell_tuxedo_touch_partition_1`; an entity already in the registry keeps the entity id it has.
 
 | Panel status (`tuxedo_status` attribute) | Entity state |
 |---|---|
@@ -217,9 +217,9 @@ Settings -> Devices & Services -> Honeywell Tuxedo Touch -> the entry's menu -> 
 
 **The panel pushes its state, and that is what the entity shows.** As soon as an entry is set up, the integration opens one long-lived request to the panel's event stream and holds it open for the life of the entry. The panel reports partition status on it as it happens - an arm, a disarm, and the exit-delay countdown a second at a time - so a change made at the keypad reaches Home Assistant in seconds rather than at the next poll. The `tuxedo_source` attribute says `stream` when the state came from there.
 
-The 30-second status read is still there, doing two smaller jobs: it is the first read at setup, which is what proves the address, the scheme and the credentials, and it is the fallback whenever the stream is not connected. While the stream is delivering, what the poll reads is ignored rather than written over the pushed status - with one exception, described below.
+The 30-second status read does two smaller jobs: it is the first read at setup, which is what proves the address, the scheme and the credentials, and it is the fallback whenever the stream is not connected. While the stream is delivering, what the poll reads is ignored rather than written over the pushed status - with one exception, described below.
 
-**This closes the `Not available` story.** The panel's `GetSecurityStatus` endpoint reads a cache its firmware can fill only from a message on the alarm bus, and answers the literal `Not available` while that cache is empty; on a quiet house that could last hours, and it is what used to leave the entity with nothing to show. The event stream does not read that cache. A client on it cannot see `Not available` at all, so on firmware that has the stream the condition no longer reaches the entity. It is still handled for firmware that does not: a poll answering `Not available` is a failed read, not a state, on the first poll after a load as much as on the hundredth.
+The panel's `GetSecurityStatus` endpoint reads a cache its firmware can fill only from a message on the alarm bus, and answers the literal `Not available` while that cache is empty; on a quiet house that can last hours. The event stream does not read that cache, so on firmware that has the stream the condition does not reach the entity. On firmware without the stream, a poll answering `Not available` is a failed read, not a state, on the first poll after a load as much as on the hundredth.
 
 The entity is available while **either** source is working, and unavailable only when both are down - so a poll answering `Not available` while the stream is up is not an outage of anything. The stream counts once it has something to show rather than the moment its socket opens: an entry that loads during a `Not available` spell stays `unavailable` for the second or two before the first pushed status, instead of going `unknown` with nothing behind it. When the stream drops it reconnects on its own, with a wait that doubles up to five minutes and resets the moment a connection comes up; the log gets one line when it goes and one when it returns. A panel whose firmware has no such endpoint answers 404, the stream stops asking, and the integration runs on the poll alone.
 
