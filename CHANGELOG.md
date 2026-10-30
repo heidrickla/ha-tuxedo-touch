@@ -2,6 +2,14 @@
 
 Notable changes to this integration, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [0.8.0] - 2026-10-30
+
+### Changed
+
+- The setup screen asks only for the panel's address and its web login; a discovered panel asks only for the login. The port, HTTPS, the keypad code, the partition and the tuxweb token sit in a collapsed Advanced section with their defaults, and a failed check opens it with what was typed kept. Entries are stored as before, so existing ones are unchanged.
+- The README opens the repository in HACS and starts the setup with My Home Assistant buttons, and lists the setup screen as it now is.
+- `translations/en.json` is the only translation file shipped; `strings.json` is gone.
+
 ## [0.7.3] - 2026-10-22
 
 ### Changed

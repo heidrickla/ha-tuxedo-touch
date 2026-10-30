@@ -3,7 +3,7 @@
 hassfest and the HACS action run on GitHub; this approximates the parts of
 them that can be checked with no network at all, plus the cross-file
 consistency that nothing else checks: entity translation keys against
-strings.json, exceptions raised against exceptions declared, setup and poll
+translations/en.json, exceptions raised against exceptions declared, setup and poll
 exceptions carrying translation keys, the quality scale against the pinned
 rule list. Run it before a push so the push is not the first verification.
 
@@ -197,7 +197,8 @@ def quoted_placeholders(node: Any, path: str = "") -> list[str]:
 def main() -> int:
     manifest = read_json(COMP, "manifest.json")
     const_src = read(COMP, "const.py")
-    strings = read_json(COMP, "strings.json")
+    # en.json is the only translation file shipped and the one hassfest reads.
+    strings = read_json(COMP, "translations", "en.json")
 
     # ---------------------------------------------------------- manifest
     for key in REQUIRED_MANIFEST:
@@ -314,15 +315,21 @@ def main() -> int:
         )
 
     # ---------------------------------------------------------- translations
-    en = read_json(COMP, "translations", "en.json")
     check(
-        strings == en,
-        "strings.json and translations/en.json differ - copy strings.json over",
+        not os.path.exists(os.path.join(COMP, "strings.json")),
+        "strings.json ships beside translations/en.json - en.json is the only "
+        "translation file a custom integration ships",
+    )
+    # A custom integration's en.json is shipped as written, so a reference
+    # would reach the user as literal text.
+    check(
+        "[%key:" not in read(COMP, "translations", "en.json"),
+        "translations/en.json holds a [%key:...] reference - write the text out",
     )
     quoted = quoted_placeholders(strings)
     check(
         not quoted,
-        f"strings.json quotes placeholders at {quoted} - drop the single quotes",
+        f"en.json quotes placeholders at {quoted} - drop the single quotes",
     )
 
     # ---------------------------------------------------------- actions
@@ -335,7 +342,7 @@ def main() -> int:
     )
     check(
         "services" not in strings,
-        "strings.json describes services but none are registered",
+        "en.json describes services but none are registered",
     )
     check(
         not constants(const_src, "SERVICE_"),
@@ -442,7 +449,7 @@ def main() -> int:
     )
     check(
         declared_exc <= raised,
-        f"strings.json declares unused exceptions {sorted(declared_exc - raised)}",
+        f"en.json declares unused exceptions {sorted(declared_exc - raised)}",
     )
     # Setup and poll failures are shown on the integration card, so they must
     # be translated too - an f-string there is the shape of the silent miss.
@@ -456,7 +463,7 @@ def main() -> int:
     declared_issues = set(strings.get("issues", {}))
     check(
         issue_consts == declared_issues,
-        f"const.py issues {sorted(issue_consts)} != strings.json issues "
+        f"const.py issues {sorted(issue_consts)} != en.json issues "
         f"{sorted(declared_issues)}",
     )
     # An issue the user can act on needs a fix flow, and a fix flow needs the

@@ -6,7 +6,7 @@ Reverse-engineering notes behind `custom_components/tuxedo_touch`. Verified agai
 
 There are (at least) two generations of behavior in the wild, and community threads (Hubitat forum, Home Assistant forum) mix reports from both without saying which:
 
-- **Older firmware (~V4.x)**: the `/tuxedoapi.html` page that hands out the AES key/IV is reachable **unauthenticated** on the LAN. This is the assumption baked into [homebridge-honeywell-tuxedo-touch](https://github.com/lockpicker/homebridge-honeywell-tuxedo-touch) and [homebridge-honeywell-vam](https://github.com/sparsematrix/homebridge-honeywell-vam) (an even older no-crypto GET-based variant).
+- **Older firmware (~V4.x)**: the `/tuxedoapi.html` key page is fetched without a session login. This is the flow used by [homebridge-honeywell-tuxedo-touch](https://github.com/lockpicker/homebridge-honeywell-tuxedo-touch) and [homebridge-honeywell-vam](https://github.com/sparsematrix/homebridge-honeywell-vam) (an even older no-crypto GET-based variant).
 - **Newer firmware (V5.3.21.0+, confirmed here)**: **every** local page, including `/tuxedoapi.html` and the raw `/system_http_api/API_REV01/...` endpoints, redirects to a login page unless you present a valid session cookie. This is true regardless of the "Authentication for Web Server Local Access" checkbox in the unit's settings - unchecking that setting and rebooting did **not** change this behavior in testing. That setting appears to control something else (likely remote/WAN access), not local LAN access.
 
 The `Registration/AddDeviceMAC` + `Registration/Register` MAC-enrollment flow described in Honeywell's own API reference doc is a separate, more heavyweight mechanism that was never gotten working reliably by the Hubitat community. This integration uses the session-login flow instead, which is what the device's own web UI uses and which was confirmed to work end-to-end, including live arm/disarm against real hardware.
@@ -18,7 +18,7 @@ The unit has a **"Secured Web Server Access (HTTPS)"** toggle in its settings. W
 - The **login page and `/tuxedoapi.html`** tolerate plain HTTP requests directly (no redirect to HTTPS observed for these specific pages).
 - The **actual command endpoints** (`/system_http_api/API_REV01/GetSecurityStatus`, `.../AdvancedSecurity/ArmWithCode`, etc.) **302-redirect to HTTPS** even when requested over plain HTTP. This means a client that logs in over HTTP and then tries to send commands over HTTP will authenticate fine and then mysteriously fail every actual API call with a 302. This integration defaults to HTTPS end-to-end to avoid the split entirely; if you disable "Secured Web Server Access" on the unit, plain HTTP for everything may work too, but that combination hasn't been tested.
 
-HTTPS uses a **self-signed demo certificate from ~2009** (`SharkSSL`, `CN=server demo 1024 bits`, 1024-bit RSA, MD5 signature, expired since 2019) and requires **legacy/unsafe TLS renegotiation**. Modern TLS stacks reject this by default:
+The unit's HTTPS server (`SharkSSL`) needs **legacy TLS renegotiation**, which modern TLS stacks refuse by default:
 
 - curl on Windows (Schannel backend) fails outright with `SEC_E_INVALID_TOKEN`.
 - OpenSSL 3.x's CLI fails with `unsafe legacy renegotiation disabled` unless explicitly overridden via config.
@@ -37,7 +37,7 @@ This is what `TuxedoTouchClient.login()` in `api.py` implements. All values belo
    - `log1 = HMAC-SHA512(message = username.toLowerCase() + password, key = challenge)`
    - Both encoded as lowercase hex.
    - **The challenge is used as the literal UTF-8 text of the hex string, not as hex-decoded bytes.** This same "hex-string-as-literal-text" quirk shows up again in the API authtoken signing below.
-   - The raw `j_username`/`j_password` `<input>` elements in the real login page HTML live *outside* the `<form>` element that actually gets submitted. Only `log`, `log1`, and `identity` (=`RandomID`) are POSTed - the plaintext password never goes over the wire, even before TLS is considered.
+   - The raw `j_username`/`j_password` `<input>` elements in the real login page HTML live *outside* the `<form>` element that actually gets submitted. Only `log`, `log1`, and `identity` (=`RandomID`) are POSTed.
 3. **POST** to the same URL, body `log=<log>&log1=<log1>&identity=<RandomID>` as `application/x-www-form-urlencoded`, with the `_zFL` cookie from step 1 attached.
 4. On success (HTTP 200/302), the response sets **two** `Set-Cookie` headers: a new session cookie with an unpredictable name (e.g. `z9ZAqJtI_1387622758=<hex>` - don't hardcode the name, parse it), and an **expiring** `_zFL` cookie clearing the correlation cookie. Skip any cookie whose name starts with `_zFL` when picking the session cookie.
 5. Attach that session cookie to every subsequent request - both the `/tuxedoapi.html` key fetch and the actual API calls. In testing, the session stayed valid across several minutes and multiple commands without needing to re-login.
@@ -170,7 +170,7 @@ Measured live against the unit, and it is much smaller than the vendor's own API
 - **The key blob is served on both** `/tuxedoapi.html` and `/authenticated/index.html?url=tuxedoapi.html`, with the session cookie, on this firmware.
 - **`Random` is 31 hex characters, reproducibly** - not 32, and not an opaque fixed-width field. **`RandomID` increments on every fetch of the login page**, so its meaning is not established; it is echoed back as `identity` in the login POST and nothing here depends on its shape.
 - **The session cookie's name encodes the panel's boot time** (`z9ZAqJtI_<timestamp>`, observed February 2014 on a unit whose clock starts in the past). For `/handlerequest.html`, the `sessionid` that page expects is **the first 8 hex characters of the cookie value read as a SIGNED 32-bit integer** - computed unsigned it is a value the panel does not recognise. This integration does not use that endpoint; it is recorded because it is the trap anything reaching for the second API will hit.
-- **The same web application is served on ports 80, 443 and 6280.** All three are gated by the same session cookie, so the plaintext ports are a confidentiality problem (the alarm user code travels in a query string on the second API), not an access one.
+- **The same web application is served on ports 80, 443 and 6280**, all three gated by the same session cookie.
 
 ## Known device quirks
 
@@ -235,7 +235,7 @@ Earlier revisions of this document called them "untested here". They have since 
 ## References
 
 - `iot-protocol-tools` (private, not in this repository) - the reverse-engineering record this document cites rather than duplicates. `TUXEDO-HA-ENRICHMENT.md` section "The push frame format, decoded byte-exact" and its reference reader `tuxedo_push.py` for the stream; `TUXEDO-FINDINGS.md` section "The complete local API surface" for the endpoint enumeration taken from the panel's own client; `TUXEDO-FIRMWARE.md` section 6 for the status cache in the binary, with every claim tagged CONFIRMED, LIKELY or UNKNOWN.
-- [homebridge-honeywell-tuxedo-touch](https://github.com/lockpicker/homebridge-honeywell-tuxedo-touch) - working reference for the unauthenticated-`/tuxedoapi.html` (older firmware) flow; where the "HMAC key = literal hex text" quirk and the `MACID:Browser,Path:API_REV01<endpoint>` signed-header format were first confirmed.
+- [homebridge-honeywell-tuxedo-touch](https://github.com/lockpicker/homebridge-honeywell-tuxedo-touch) - working reference for the older-firmware `/tuxedoapi.html` flow; where the "HMAC key = literal hex text" quirk and the `MACID:Browser,Path:API_REV01<endpoint>` signed-header format were first confirmed.
 - [homebridge-honeywell-vam](https://github.com/sparsematrix/homebridge-honeywell-vam) - even older, no-crypto plain-GET variant for VAM-era units.
 - [Dilbert66/esphome-vistaECP](https://github.com/Dilbert66/esphome-vistaECP) - an entirely different, more robust approach: bypass the Tuxedo Touch's web stack altogether and talk to the Vista panel's keypad (ECP) bus directly via ESP8266/ESP32. Worth considering if this web API keeps being fragile across firmware updates.
 - [heidrickla/Hubitat](https://github.com/heidrickla/Hubitat/tree/main/Drivers/HoneywellTuxedoTouchAPI) - the original Groovy/Hubitat driver this Home Assistant integration was ported from.

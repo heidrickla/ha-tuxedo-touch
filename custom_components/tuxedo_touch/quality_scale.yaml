@@ -32,7 +32,9 @@ rules:
   config-flow-test-coverage:
     status: done
     comment: |
-      tests/ha/test_config_flow.py covers the user step, the four error
+      tests/ha/test_config_flow.py covers the user step, its first screen
+      holding only the address and the login with the rest in a collapsed
+      Advanced section that an error opens, the four error
       mappings and recovery from an error to a created entry, the duplicate
       abort, a second partition, reconfigure (address and partition changes,
       recovery from an error, the collision guard, blank secrets keeping the
@@ -48,7 +50,10 @@ rules:
       workflow on every push.
   config-flow:
     status: done
-    comment: Every field has a data_description; the secrets use a password selector.
+    comment: |
+      Every field has a data_description; the secrets use a password selector.
+      The setup forms ask only for the address and the web login; the fields
+      with a default or that may stay empty sit in a collapsed Advanced section.
   dependency-transparency:
     status: done
     comment: |
@@ -377,7 +382,7 @@ rules:
       The alarm panel's name is the translation key `partition` with the
       partition number as a placeholder; the keypad display and the ECP
       link are `keypad_display` and `ecp_link` under their platforms.
-      tools/validate_local.py holds every platform's keys and strings.json
+      tools/validate_local.py holds every platform's keys and en.json
       to each other.
   exception-translations:
     status: done
@@ -387,7 +392,7 @@ rules:
       HTTPS redirect and for the panel answering "Not available" instead of
       a status) all carry translation keys; tools/validate_local.py
       refuses an f-string in either place, and refuses an exception key that
-      strings.json does not declare or declares unused.
+      en.json does not declare or declares unused.
   icon-translations:
     status: done
     comment: |

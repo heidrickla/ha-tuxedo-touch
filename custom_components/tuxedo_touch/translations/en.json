@@ -4,48 +4,68 @@
     "step": {
       "dhcp_confirm": {
         "title": "Set up the discovered Tuxedo Touch",
-        "description": "A Tuxedo Touch panel at {host} took a DHCP lease with MAC address {mac}. Enter the panel's web login credentials (not your 4-digit keypad user code, unless your installer set them to match) to add it. The address comes from the lease, so it is not asked for; the panel is identified by its MAC address from here on and a later lease change is followed automatically.",
+        "description": "A Tuxedo Touch panel was found at {host} (MAC address {mac}). Enter its web login to add it. The web login is set on the touchscreen under Settings, then Login settings; it is not the 4-digit keypad code. The panel is identified by its MAC address, and a changed address is followed automatically.",
         "data": {
-          "port": "Port",
-          "use_https": "Use HTTPS",
           "username": "Web login username",
-          "password": "Web login password",
-          "code": "Keypad user code",
-          "partition": "Partition number",
-          "tuxweb_token": "tuxweb token"
+          "password": "Web login password"
         },
         "data_description": {
-          "use_https": "Required if 'Secured Web Server Access' is enabled on the unit (the common/default state).",
           "username": "The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code.",
-          "password": "The unit's web login password.",
-          "code": "Optional. Used as the default arm/disarm code so automations can arm without prompting.",
-          "partition": "The panel partition this entry controls. Discovery offers a panel once; a second partition is added with 'Add integration' and picks up the panel's MAC address from the next lease.",
-          "port": "The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without.",
-          "tuxweb_token": "Only for a panel running the tuxweb replacement web server: the token issued on the panel with 'tuxweb --issue-token'. Leave it empty on stock firmware. The integration asks the panel which it is; a stock panel ignores the token and a tuxweb panel needs it."
+          "password": "The unit's web login password."
+        },
+        "sections": {
+          "advanced": {
+            "name": "Advanced",
+            "description": "The defaults fit a stock panel. Change these for a panel with Secured Web Server Access turned off, to store a keypad code for automations, for a second partition, or for a panel running tuxweb.",
+            "data": {
+              "port": "Port",
+              "use_https": "Use HTTPS",
+              "code": "Keypad user code",
+              "partition": "Partition number",
+              "tuxweb_token": "tuxweb token"
+            },
+            "data_description": {
+              "port": "The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without.",
+              "use_https": "Required if 'Secured Web Server Access' is enabled on the unit (the common/default state).",
+              "code": "Optional. Used as the default arm/disarm code so automations can arm without prompting.",
+              "partition": "The panel partition this entry controls. Discovery offers a panel once; a second partition is added with 'Add integration' and picks up the panel's MAC address from the next lease.",
+              "tuxweb_token": "Only for a panel running the tuxweb replacement web server: the token issued on the panel with 'tuxweb --issue-token'. Leave it empty on stock firmware. The integration asks the panel which it is; a stock panel ignores the token and a tuxweb panel needs it."
+            }
+          }
         }
       },
       "user": {
         "title": "Connect to Tuxedo Touch",
-        "description": "Enter the panel's web login credentials (not your 4-digit keypad user code, unless your installer set them to match).",
+        "description": "Enter the panel's address and its web login. The web login is set on the touchscreen under Settings, then Login settings; it is not the 4-digit keypad code.",
         "data": {
           "host": "IP address",
-          "port": "Port",
-          "use_https": "Use HTTPS",
           "username": "Web login username",
-          "password": "Web login password",
-          "code": "Keypad user code",
-          "partition": "Partition number",
-          "tuxweb_token": "tuxweb token"
+          "password": "Web login password"
         },
         "data_description": {
           "host": "IP address or hostname of the Tuxedo Touch unit on your LAN. A panel added by hand is identified by this address until Home Assistant sees its DHCP lease, so give it a static IP or DHCP reservation.",
-          "use_https": "Required if 'Secured Web Server Access' is enabled on the unit (the common/default state).",
           "username": "The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code.",
-          "password": "The unit's web login password.",
-          "code": "Optional. Used as the default arm/disarm code so automations can arm without prompting.",
-          "partition": "The panel partition this entry controls.",
-          "port": "The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without.",
-          "tuxweb_token": "Only for a panel running the tuxweb replacement web server: the token issued on the panel with 'tuxweb --issue-token'. Leave it empty on stock firmware. The integration asks the panel which it is; a stock panel ignores the token and a tuxweb panel needs it."
+          "password": "The unit's web login password."
+        },
+        "sections": {
+          "advanced": {
+            "name": "Advanced",
+            "description": "The defaults fit a stock panel. Change these for a panel with Secured Web Server Access turned off, to store a keypad code for automations, for a second partition, or for a panel running tuxweb.",
+            "data": {
+              "port": "Port",
+              "use_https": "Use HTTPS",
+              "code": "Keypad user code",
+              "partition": "Partition number",
+              "tuxweb_token": "tuxweb token"
+            },
+            "data_description": {
+              "port": "The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without.",
+              "use_https": "Required if 'Secured Web Server Access' is enabled on the unit (the common/default state).",
+              "code": "Optional. Used as the default arm/disarm code so automations can arm without prompting.",
+              "partition": "The panel partition this entry controls.",
+              "tuxweb_token": "Only for a panel running the tuxweb replacement web server: the token issued on the panel with 'tuxweb --issue-token'. Leave it empty on stock firmware. The integration asks the panel which it is; a stock panel ignores the token and a tuxweb panel needs it."
+            }
+          }
         }
       },
       "reauth_confirm": {

@@ -22,6 +22,7 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
@@ -36,6 +37,7 @@ from .api import (
     TuxedoTouchTokenRejected,
 )
 from .const import (
+    CONF_ADVANCED,
     CONF_MAC,
     CONF_PARTITION,
     CONF_TUXWEB_TOKEN,
@@ -85,25 +87,56 @@ PROBED = (
 # all of these is the set the panel has already refused.
 CREDENTIALS = (CONF_USERNAME, CONF_PASSWORD, CONF_TUXWEB_TOKEN)
 
-# The token is optional on every form and blank on every stock panel: it is
-# the one field a panel running tuxweb needs and stock firmware has no use
-# for, and which of the two a panel is comes from asking it, not from the
-# form. A blank token on a form that has one stored keeps the stored one,
-# the way the other secrets do.
-STEP_USER_SCHEMA = vol.Schema(
+# What a new user can leave alone on the setup forms: each field has a default
+# or may stay empty. The token is blank on every stock panel; which firmware a
+# panel runs comes from asking it, not from the form.
+STEP_ADVANCED_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_HOST): str,
         vol.Required(CONF_PORT, default=DEFAULT_PORT_HTTPS): int,
         vol.Required(CONF_USE_HTTPS, default=DEFAULT_USE_HTTPS): bool,
-        vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): _PASSWORD,
         vol.Optional(CONF_CODE): _PASSWORD,
         vol.Optional(CONF_PARTITION, default=DEFAULT_PARTITION): int,
         vol.Optional(CONF_TUXWEB_TOKEN): _PASSWORD,
     }
 )
+ADVANCED_FIELDS = tuple(str(key) for key in STEP_ADVANCED_SCHEMA.schema)
 
-# Same fields, but every secret may be left blank to keep the stored value.
+
+def _setup_schema(*, with_host: bool, errors: Mapping[str, str]) -> vol.Schema:
+    """A setup form: the address and the web login, the rest in Advanced.
+
+    The discovery form leaves the address out, since the lease supplies it.
+    An error opens the section: the port, HTTPS or the token can be the cause.
+    """
+    fields: dict[vol.Marker, Any] = {}
+    if with_host:
+        fields[vol.Required(CONF_HOST)] = str
+    fields[vol.Required(CONF_USERNAME)] = str
+    fields[vol.Required(CONF_PASSWORD)] = _PASSWORD
+    fields[vol.Required(CONF_ADVANCED, default={})] = section(
+        STEP_ADVANCED_SCHEMA, {"collapsed": not errors}
+    )
+    return vol.Schema(fields)
+
+
+def _from_setup_form(user_input: Mapping[str, Any]) -> dict[str, Any]:
+    """A setup form's input as the entry stores it: flat, section defaults filled."""
+    data = {k: v for k, v in user_input.items() if k != CONF_ADVANCED}
+    data.update(STEP_ADVANCED_SCHEMA(dict(user_input.get(CONF_ADVANCED) or {})))
+    return data
+
+
+def _setup_suggestions(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Flat data back in a setup form's shape, without the secrets."""
+    kept = _without_secrets(data)
+    return {
+        **{k: v for k, v in kept.items() if k not in ADVANCED_FIELDS},
+        CONF_ADVANCED: {k: v for k, v in kept.items() if k in ADVANCED_FIELDS},
+    }
+
+
+# The reconfigure form keeps every field on one screen, and every secret may be
+# left blank to keep the stored value.
 STEP_RECONFIGURE_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): str,
@@ -121,23 +154,6 @@ STEP_REAUTH_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): _PASSWORD,
-        vol.Optional(CONF_TUXWEB_TOKEN): _PASSWORD,
-    }
-)
-
-# The discovery confirm step: the lease supplies the address, so the address is
-# the one field this form does not ask for. The port and the HTTPS toggle stay
-# on it because a lease says nothing about the unit's web server, and a panel
-# with "Secured Web Server Access" turned off answers on 80 - without these two
-# fields such a panel could be discovered and then never set up.
-STEP_DHCP_CONFIRM_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_PORT, default=DEFAULT_PORT_HTTPS): int,
-        vol.Required(CONF_USE_HTTPS, default=DEFAULT_USE_HTTPS): bool,
-        vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): _PASSWORD,
-        vol.Optional(CONF_CODE): _PASSWORD,
-        vol.Optional(CONF_PARTITION, default=DEFAULT_PARTITION): int,
         vol.Optional(CONF_TUXWEB_TOKEN): _PASSWORD,
     }
 )
@@ -321,36 +337,35 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
+        data: dict[str, Any] = {}
         if user_input is not None:
+            data = _from_setup_form(user_input)
             # Unique ids are a mixed namespace (MAC-based for a panel that was
             # discovered, address-based for one typed in here), so string
             # equality alone misses a same-panel re-add. Matching on the stored
             # connection data closes that hole before any network traffic.
             self._async_abort_entries_match(
                 {
-                    CONF_HOST: user_input[CONF_HOST],
-                    CONF_PORT: user_input[CONF_PORT],
-                    CONF_PARTITION: user_input[CONF_PARTITION],
+                    CONF_HOST: data[CONF_HOST],
+                    CONF_PORT: data[CONF_PORT],
+                    CONF_PARTITION: data[CONF_PARTITION],
                 }
             )
-            errors = await self._async_validate(user_input)
+            errors = await self._async_validate(data)
             if not errors:
-                data = _without_blank_optionals(user_input)
                 # A panel typed in by hand carries no MAC: the panel reports
                 # none over its API and only a DHCP lease has one. The entry
                 # gains it the first time Home Assistant sees a lease for the
                 # address it holds - see async_step_dhcp.
                 await self.async_set_unique_id(
                     build_unique_id(
-                        None,
-                        user_input[CONF_HOST],
-                        user_input[CONF_PORT],
-                        user_input[CONF_PARTITION],
+                        None, data[CONF_HOST], data[CONF_PORT], data[CONF_PARTITION]
                     )
                 )
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=_title_for(user_input[CONF_HOST]), data=data
+                    title=_title_for(data[CONF_HOST]),
+                    data=_without_blank_optionals(data),
                 )
 
         # After an error the non-secret fields come back filled in; the
@@ -358,7 +373,7 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(
-                STEP_USER_SCHEMA, _without_secrets(user_input or {})
+                _setup_schema(with_host=True, errors=errors), _setup_suggestions(data)
             ),
             errors=errors,
         )
@@ -483,25 +498,31 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_dhcp_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Ask for what a DHCP lease cannot supply, then create the entry."""
+        """Ask for what a DHCP lease cannot supply, then create the entry.
+
+        A lease says nothing about the unit's web server, so the port and the
+        HTTPS toggle stay in Advanced for a panel answering on 80.
+        """
         errors: dict[str, str] = {}
+        data: dict[str, Any] = {}
         host = self._discovered_host
         mac = self._discovered_mac
         if user_input is not None:
-            data = {**user_input, CONF_HOST: host, CONF_MAC: mac}
+            data = {**_from_setup_form(user_input), CONF_HOST: host, CONF_MAC: mac}
             errors = await self._async_validate(data)
             if not errors:
-                data = _without_blank_optionals(data)
                 await self.async_set_unique_id(
                     build_unique_id(mac, host, data[CONF_PORT], data[CONF_PARTITION])
                 )
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(title=_title_for(host), data=data)
+                return self.async_create_entry(
+                    title=_title_for(host), data=_without_blank_optionals(data)
+                )
 
         return self.async_show_form(
             step_id="dhcp_confirm",
             data_schema=self.add_suggested_values_to_schema(
-                STEP_DHCP_CONFIRM_SCHEMA, _without_secrets(user_input or {})
+                _setup_schema(with_host=False, errors=errors), _setup_suggestions(data)
             ),
             description_placeholders={"host": host, "mac": mac},
             errors=errors,

@@ -48,6 +48,8 @@ from custom_components.tuxedo_touch.diagnostics import (
 )
 from tests.fake_panel import TUXWEB_CAPABILITIES, TUXWEB_TOKEN, wait_until
 
+from .conftest import setup_form
+
 PANEL = "alarm_control_panel.honeywell_tuxedo_touch_partition_1"
 STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"
 SETUP = "custom_components.tuxedo_touch.async_setup_entry"
@@ -469,7 +471,9 @@ async def test_the_user_step_sets_up_a_tuxweb_panel_on_its_token(hass, fake_tuxw
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
-            data=_user_input(fake_tuxweb, **{CONF_TUXWEB_TOKEN: TUXWEB_TOKEN}),
+            data=setup_form(
+                _user_input(fake_tuxweb, **{CONF_TUXWEB_TOKEN: TUXWEB_TOKEN})
+            ),
         )
         await hass.async_block_till_done()
 
@@ -485,7 +489,9 @@ async def test_the_user_step_names_a_wrong_token(hass, fake_tuxweb):
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_USER},
-        data=_user_input(fake_tuxweb, **{CONF_TUXWEB_TOKEN: "not the token"}),
+        data=setup_form(
+            _user_input(fake_tuxweb, **{CONF_TUXWEB_TOKEN: "not the token"})
+        ),
     )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_token"}
@@ -495,7 +501,9 @@ async def test_the_user_step_names_a_wrong_token(hass, fake_tuxweb):
 async def test_the_user_step_names_a_missing_token_on_tuxweb(hass, fake_tuxweb):
     """Not "cannot connect": the panel answered, and what it needs is named."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}, data=_user_input(fake_tuxweb)
+        DOMAIN,
+        context={"source": SOURCE_USER},
+        data=setup_form(_user_input(fake_tuxweb)),
     )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "tuxweb_token_required"}
@@ -510,7 +518,9 @@ async def test_the_user_step_on_stock_ignores_a_token_and_logs_in(hass, fake_pan
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
-            data=_user_input(fake_panel, **{CONF_TUXWEB_TOKEN: TUXWEB_TOKEN}),
+            data=setup_form(
+                _user_input(fake_panel, **{CONF_TUXWEB_TOKEN: TUXWEB_TOKEN})
+            ),
         )
         await hass.async_block_till_done()
 
@@ -527,7 +537,7 @@ async def test_a_blank_token_is_not_stored(hass, fake_panel):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
-            data=_user_input(fake_panel, **{CONF_TUXWEB_TOKEN: ""}),
+            data=setup_form(_user_input(fake_panel, **{CONF_TUXWEB_TOKEN: ""})),
         )
         await hass.async_block_till_done()
 

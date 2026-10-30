@@ -3,7 +3,7 @@
 These need Home Assistant, which needs Python 3.14 and a POSIX host: the
 pytest plugin imports homeassistant.runner, which imports fcntl, so on
 Windows collection fails before a test runs. They run in the GitHub Tests
-workflow and on the Linux build VM (docs/TEST-ENVIRONMENT.md). The conftest
+workflow and on Linux (README, Development). The conftest
 lives in its own directory so its autouse fixture does not attach itself to
 the pure-logic suite one level up, which loads api.py by path and needs no
 Home Assistant.
@@ -27,6 +27,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.tuxedo_touch.api import TuxedoStatus, TuxedoTouchError
 from custom_components.tuxedo_touch.const import (
+    CONF_ADVANCED,
     CONF_MAC,
     CONF_PARTITION,
     CONF_TUXWEB_TOKEN,
@@ -48,6 +49,16 @@ ENTRY_DATA = {
     CONF_CODE: "1234",
     CONF_PARTITION: 1,
 }
+
+
+def setup_form(data):
+    """Flat entry data as a setup form takes it: the address and the web login
+    on top, everything else in the collapsed Advanced section."""
+    top = (CONF_HOST, CONF_USERNAME, CONF_PASSWORD)
+    return {
+        **{k: v for k, v in data.items() if k in top},
+        CONF_ADVANCED: {k: v for k, v in data.items() if k not in top},
+    }
 
 
 STATUS = "custom_components.tuxedo_touch.api.TuxedoTouchClient.get_status"

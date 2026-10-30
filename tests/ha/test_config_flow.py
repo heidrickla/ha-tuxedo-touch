@@ -33,8 +33,10 @@ from custom_components.tuxedo_touch.api import (
     TuxedoTouchError,
 )
 from custom_components.tuxedo_touch.const import (
+    CONF_ADVANCED,
     CONF_MAC,
     CONF_PARTITION,
+    CONF_TUXWEB_TOKEN,
     CONF_USE_HTTPS,
     DOMAIN,
     ISSUE_CREDENTIALS_REJECTED,
@@ -43,7 +45,7 @@ from custom_components.tuxedo_touch.const import (
     issue_id,
 )
 
-from .conftest import ENTRY_DATA, HOST, MAC, PORT
+from .conftest import ENTRY_DATA, HOST, MAC, PORT, setup_form
 
 LOGIN = "custom_components.tuxedo_touch.api.TuxedoTouchClient.login"
 VALIDATE = "custom_components.tuxedo_touch.config_flow._validate_input"
@@ -98,14 +100,22 @@ def _suggested(marker):
     return (marker.description or {}).get("suggested_value")
 
 
+def _advanced(result):
+    """The collapsed Advanced section of a setup form: its options and its fields."""
+    schema = result["data_schema"].schema
+    folded = schema[_fields(result)[CONF_ADVANCED]]
+    return folded.options, {str(key): key for key in folded.schema.schema}
+
+
 async def test_user_step_creates_the_entry(hass):
     with patch(LOGIN, return_value=None):
         result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
+            DOMAIN, context={"source": SOURCE_USER}, data=setup_form(ENTRY_DATA)
         )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == f"Tuxedo Touch ({HOST})"
-    assert result["data"][CONF_HOST] == HOST
+    # The section is a form's layout only; the entry stores every field flat.
+    assert result["data"] == ENTRY_DATA
 
 
 async def test_the_first_form_is_shown_with_no_input(hass):
@@ -115,6 +125,59 @@ async def test_the_first_form_is_shown_with_no_input(hass):
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert not result["errors"]
+
+
+async def test_the_first_screen_asks_only_for_the_address_and_the_login(hass):
+    """Everything with a default or that may stay empty waits, collapsed, in
+    Advanced, so the address, user name and password are all a user types."""
+    form = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert list(_fields(form)) == [
+        CONF_HOST,
+        CONF_USERNAME,
+        CONF_PASSWORD,
+        CONF_ADVANCED,
+    ]
+    options, folded = _advanced(form)
+    assert options["collapsed"] is True
+    assert set(folded) == {
+        CONF_PORT,
+        CONF_USE_HTTPS,
+        CONF_CODE,
+        CONF_PARTITION,
+        CONF_TUXWEB_TOKEN,
+    }
+    login = {CONF_HOST: HOST, CONF_USERNAME: "installer", CONF_PASSWORD: "secret"}
+    with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
+        result = await hass.config_entries.flow.async_configure(form["flow_id"], login)
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        **login,
+        CONF_PORT: 443,
+        CONF_USE_HTTPS: True,
+        CONF_PARTITION: 1,
+    }
+
+
+async def test_an_error_opens_the_advanced_section_with_what_was_typed(hass):
+    """The port, HTTPS or the token can be why the panel did not answer, so a
+    failed submission shows them, filled in as they were sent."""
+    form = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    with patch(LOGIN, side_effect=TuxedoTouchConnectionError("down")):
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"],
+            setup_form({**ENTRY_DATA, CONF_PORT: 80, CONF_USE_HTTPS: False}),
+        )
+    assert result["errors"] == {"base": "cannot_connect"}
+    options, folded = _advanced(result)
+    assert options["collapsed"] is False
+    assert _suggested(folded[CONF_PORT]) == 80
+    assert _suggested(folded[CONF_USE_HTTPS]) is False
+    assert _suggested(folded[CONF_CODE]) in (None, "")
 
 
 @pytest.mark.parametrize(
@@ -134,7 +197,7 @@ async def test_each_failure_maps_to_its_own_message(hass, raised, expected):
     """
     with patch(LOGIN, side_effect=raised):
         result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
+            DOMAIN, context={"source": SOURCE_USER}, data=setup_form(ENTRY_DATA)
         )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": expected}
@@ -144,11 +207,11 @@ async def test_the_form_is_offered_again_after_a_failure(hass):
     """A rejected password must be correctable without restarting the flow."""
     with patch(LOGIN, side_effect=TuxedoTouchAuthError("no")):
         first = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
+            DOMAIN, context={"source": SOURCE_USER}, data=setup_form(ENTRY_DATA)
         )
     with patch(LOGIN, return_value=None):
         second = await hass.config_entries.flow.async_configure(
-            first["flow_id"], dict(ENTRY_DATA)
+            first["flow_id"], setup_form(ENTRY_DATA)
         )
     assert second["type"] is FlowResultType.CREATE_ENTRY
 
@@ -161,13 +224,15 @@ async def test_the_form_after_an_error_keeps_everything_but_the_secrets(hass):
     """
     with patch(LOGIN, side_effect=TuxedoTouchAuthError("no")):
         result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
+            DOMAIN, context={"source": SOURCE_USER}, data=setup_form(ENTRY_DATA)
         )
     fields = _fields(result)
     assert _suggested(fields[CONF_HOST]) == HOST
     assert _suggested(fields[CONF_USERNAME]) == "installer"
     assert _suggested(fields[CONF_PASSWORD]) in (None, "")
-    assert _suggested(fields[CONF_CODE]) in (None, "")
+    _, folded = _advanced(result)
+    assert _suggested(folded[CONF_PARTITION]) == 1
+    assert _suggested(folded[CONF_CODE]) in (None, "")
 
 
 async def test_an_emptied_code_field_is_not_stored_as_a_code(hass):
@@ -177,7 +242,7 @@ async def test_an_emptied_code_field_is_not_stored_as_a_code(hass):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
-            data={**ENTRY_DATA, CONF_CODE: ""},
+            data=setup_form({**ENTRY_DATA, CONF_CODE: ""}),
         )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert CONF_CODE not in result["data"]
@@ -187,7 +252,7 @@ async def test_the_same_panel_and_partition_cannot_be_added_twice(hass, config_e
     config_entry.add_to_hass(hass)
     with patch(LOGIN, return_value=None):
         result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
+            DOMAIN, context={"source": SOURCE_USER}, data=setup_form(ENTRY_DATA)
         )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
@@ -200,7 +265,7 @@ async def test_a_second_partition_on_the_same_panel_is_allowed(hass, config_entr
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
-            data={**ENTRY_DATA, CONF_PARTITION: 2},
+            data=setup_form({**ENTRY_DATA, CONF_PARTITION: 2}),
         )
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
@@ -937,7 +1002,7 @@ async def test_a_panel_added_by_hand_is_identified_by_its_address(hass):
     failure - the entry upgrades the first time a lease arrives."""
     with patch(LOGIN, return_value=None):
         result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}, data=dict(ENTRY_DATA)
+            DOMAIN, context={"source": SOURCE_USER}, data=setup_form(ENTRY_DATA)
         )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["result"].unique_id == f"{HOST}:{PORT}:1"
@@ -1029,15 +1094,36 @@ async def test_a_lease_from_a_panel_nobody_has_added_offers_setup(hass):
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "dhcp_confirm"
     assert result["description_placeholders"] == {"host": "203.0.113.61", "mac": MAC}
-    # The address came from the lease, so it is not asked for again.
-    assert CONF_HOST not in _fields(result)
+    # The address came from the lease, so it is not asked for again, and the
+    # web login is all the first screen holds.
+    assert list(_fields(result)) == [CONF_USERNAME, CONF_PASSWORD, CONF_ADVANCED]
+    options, folded = _advanced(result)
+    assert options["collapsed"] is True
+    assert CONF_PORT in folded and CONF_USE_HTTPS in folded
+
+
+async def test_the_discovered_panel_needs_only_the_login(hass):
+    form = await _dhcp_flow(hass, _lease("203.0.113.61"))
+    login = {CONF_USERNAME: "installer", CONF_PASSWORD: "secret"}
+    with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
+        result = await hass.config_entries.flow.async_configure(form["flow_id"], login)
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        **login,
+        CONF_HOST: "203.0.113.61",
+        CONF_MAC: MAC,
+        CONF_PORT: 443,
+        CONF_USE_HTTPS: True,
+        CONF_PARTITION: 1,
+    }
 
 
 async def test_the_discovered_panel_is_created_with_its_mac_as_the_identity(hass):
     form = await _dhcp_flow(hass, _lease("203.0.113.61"))
     with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
         result = await hass.config_entries.flow.async_configure(
-            form["flow_id"], dict(CONFIRM_INPUT)
+            form["flow_id"], setup_form(CONFIRM_INPUT)
         )
         await hass.async_block_till_done()
 
@@ -1056,18 +1142,19 @@ async def test_the_discovery_form_recovers_from_a_wrong_password(hass):
     form = await _dhcp_flow(hass, _lease("203.0.113.61"))
     with patch(LOGIN, side_effect=TuxedoTouchAuthError("no")):
         again = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {**CONFIRM_INPUT, CONF_PASSWORD: "wrong"}
+            form["flow_id"], setup_form({**CONFIRM_INPUT, CONF_PASSWORD: "wrong"})
         )
     assert again["type"] is FlowResultType.FORM
     assert again["errors"] == {"base": "invalid_auth"}
     fields = _fields(again)
     assert _suggested(fields[CONF_USERNAME]) == "installer"
     assert _suggested(fields[CONF_PASSWORD]) in (None, "")
-    assert _suggested(fields[CONF_CODE]) in (None, "")
+    _, folded = _advanced(again)
+    assert _suggested(folded[CONF_CODE]) in (None, "")
 
     with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
         done = await hass.config_entries.flow.async_configure(
-            again["flow_id"], dict(CONFIRM_INPUT)
+            again["flow_id"], setup_form(CONFIRM_INPUT)
         )
         await hass.async_block_till_done()
     assert done["type"] is FlowResultType.CREATE_ENTRY
@@ -1078,7 +1165,7 @@ async def test_an_emptied_code_on_the_discovery_form_is_not_stored(hass):
     form = await _dhcp_flow(hass, _lease("203.0.113.61"))
     with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
         result = await hass.config_entries.flow.async_configure(
-            form["flow_id"], {**CONFIRM_INPUT, CONF_CODE: ""}
+            form["flow_id"], setup_form({**CONFIRM_INPUT, CONF_CODE: ""})
         )
         await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY

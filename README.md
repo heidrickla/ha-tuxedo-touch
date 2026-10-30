@@ -1,8 +1,6 @@
 # Honeywell Tuxedo Touch for Home Assistant
 
-[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration) [![GitHub Release](https://img.shields.io/github/release/heidrickla/ha-tuxedo-touch.svg)](https://github.com/heidrickla/ha-tuxedo-touch/releases) [![License](https://img.shields.io/github/license/heidrickla/ha-tuxedo-touch.svg)](LICENSE) [![Validate](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/validate.yml/badge.svg)](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/validate.yml) [![Tests](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/tests.yml/badge.svg)](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/tests.yml)
-
-[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=heidrickla&repository=ha-tuxedo-touch&category=integration)
+[![HACS](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration) [![GitHub Release](https://img.shields.io/github/release/heidrickla/ha-tuxedo-touch.svg)](https://github.com/heidrickla/ha-tuxedo-touch/releases) [![License](https://img.shields.io/github/license/heidrickla/ha-tuxedo-touch.svg)](LICENSE) [![Validate](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/validate.yml/badge.svg)](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/validate.yml) [![Tests](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/tests.yml/badge.svg)](https://github.com/heidrickla/ha-tuxedo-touch/actions/workflows/tests.yml)
 
 Local (no cloud) Home Assistant custom integration for the Honeywell Tuxedo Touch WIFI security/home automation controller (TUXWIFIS/TUXWIFIW), talking to it entirely over your local network - no Total Connect Comfort cloud account involved. Ported from the [heidrickla/Hubitat](https://github.com/heidrickla/Hubitat) driver of the same name.
 
@@ -119,32 +117,44 @@ It exists on **both** firmwares: the record it reads is the vendor's own produce
 - Home Assistant 2026.3 or newer. The integration's icon and logo ship in the repository and are served by Home Assistant from that release on. That is the only floor - the DHCP discovery described below needs nothing newer.
 - A Tuxedo Touch WIFI unit reachable on your LAN. Its **DHCP lease** is how Home Assistant discovers the panel and learns which unit it is talking to, so leaving the panel on DHCP - with a reservation if you want its address fixed - suits this integration better than a static address set on the unit itself. Where Home Assistant sees the lease it knows the panel's MAC and follows a changed address by itself, though polling stops for the gap between the lease changing and Home Assistant seeing the new one. An install routed or VLAN-separated from the panel sees no lease, is identified by address, and has to be corrected under Settings -> Devices & Services -> Configure. See "How the panel is identified" below.
 - Its **web login username and password** (Settings on the touchscreen -> Login settings). This is different from the 4-digit keypad user code used to arm/disarm.
-- The 4-digit keypad user code, entered either at setup (used as the default arm/disarm code) or each time from the Home Assistant UI/automations.
+- The 4-digit keypad user code, stored at setup under Advanced (used as the default arm/disarm code) or entered each time from the Home Assistant UI/automations.
 
 ## Installation
 
-HACS: search for "Honeywell Tuxedo Touch", or add `heidrickla/ha-tuxedo-touch` as a custom repository of type Integration when it is not in the default list. Install and restart Home Assistant.
+[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=heidrickla&repository=ha-tuxedo-touch&category=integration)
 
-Manual: copy `custom_components/tuxedo_touch` into your Home Assistant `config/custom_components/` directory and restart.
+1. Press the button above, then Download in HACS, and restart Home Assistant when it asks.
+2. A panel on Home Assistant's own network appears under Settings, Devices & services as a discovered Honeywell Tuxedo Touch; press Add. Otherwise press this button to start the setup:
 
-After the restart, watch Settings -> Devices & Services for a **discovered** "Honeywell Tuxedo Touch" card: the panel is found from its DHCP lease and only asks for the login (see [Discovery](#discovery-and-moving-addresses)). If it does not appear - Home Assistant is routed away from the panel, or the panel holds a static address and issues no lease - add it by hand with Add Integration -> "Honeywell Tuxedo Touch".
+[![Open your Home Assistant instance and start setting up Honeywell Tuxedo Touch.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=tuxedo_touch)
+
+The setup is one screen:
+
+1. Connect to Tuxedo Touch: enter the panel's IP address and its web login username and password, and press Submit. A discovered panel does not ask for the address.
+2. Home Assistant logs in to the panel once to check them, and the entry is created.
+
+The Advanced section of that screen holds the port and HTTPS, a keypad code to store for automations, the partition and the tuxweb token; the defaults fit a stock single-partition panel. A failed check opens it, with what was typed kept.
+
+Without the buttons: in HACS search for Honeywell Tuxedo Touch, download it and restart; then Settings, Devices & services, Add integration, Honeywell Tuxedo Touch. Manual install: copy `custom_components/tuxedo_touch` into your configuration's `custom_components` folder and restart.
+
+If no discovered card appears (Home Assistant is routed away from the panel, or the panel holds a static address and issues no lease), add the panel by hand as above; see [Discovery](#discovery-and-moving-addresses).
 
 ### Installation parameters
 
-| Field | Meaning |
-|---|---|
-| IP address | IP address or hostname of the Tuxedo Touch unit on your LAN. A discovered panel does not ask for this - the lease supplies it. |
-| Port | The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without. |
-| Use HTTPS | On by default. Required whenever "Secured Web Server Access" is enabled on the unit, which it is unless you turned it off. |
-| Web login username | The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code. |
-| Web login password | The unit's web login password. Masked; never shown again once stored. |
-| Keypad user code | Optional. The 4-digit user code used as the default for arm and disarm so automations and dashboards need not supply one. Masked; never shown again once stored. Leave it empty to be asked for a code on every arm and disarm. |
-| Partition number | The panel partition this entry controls. Default 1. Add the integration once per partition for a multi-partition panel. |
-| tuxweb token | Optional, and empty on stock firmware. Only for a panel running the tuxweb replacement web server: the token issued on the panel with `tuxweb --issue-token`. Masked; never shown again once stored. See [tuxweb, the replacement web server](#tuxweb-the-replacement-web-server). |
+| Field | Where | Meaning |
+|---|---|---|
+| IP address | First screen | IP address or hostname of the Tuxedo Touch unit on your LAN. A discovered panel does not ask for this - the lease supplies it. |
+| Web login username | First screen | The unit's web login username (touchscreen: Settings -> Login settings), not the keypad code. |
+| Web login password | First screen | The unit's web login password. Masked; never shown again once stored. |
+| Port | Advanced | The web server port on the unit. 443 with HTTPS enabled (the default state), 80 without. |
+| Use HTTPS | Advanced | On by default. Required whenever "Secured Web Server Access" is enabled on the unit, which it is unless you turned it off. |
+| Keypad user code | Advanced | Optional. The 4-digit user code used as the default for arm and disarm so automations and dashboards need not supply one. Masked; never shown again once stored. Leave it empty to be asked for a code on every arm and disarm. |
+| Partition number | Advanced | The panel partition this entry controls. Default 1. Add the integration once per partition for a multi-partition panel. |
+| tuxweb token | Advanced | Optional, and empty on stock firmware. Only for a panel running the tuxweb replacement web server: the token issued on the panel with `tuxweb --issue-token`. Masked; never shown again once stored. See [tuxweb, the replacement web server](#tuxweb-the-replacement-web-server). |
 
 Setup performs a real login against the panel before the entry is created, so a wrong password, an unreachable address or a panel that answered oddly is caught on the form with a message that says which. This is true of the discovered panel's form too: the address comes from the lease, everything else is asked for and checked the same way. On a panel running tuxweb the check is one token-gated status read instead of a login, and a wrong or missing token is named as such on the form.
 
-**On HTTPS**: leave it enabled unless you have specifically disabled "Secured Web Server Access" in the unit's settings. The unit's command endpoints redirect to HTTPS regardless of the scheme you request whenever that setting is on, so mixing an HTTP login with HTTPS-only commands would silently break arming and disarming. The integration detects the redirect and raises a repair notification that switches the entry over for you. See [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md) for the full writeup.
+**On HTTPS** (under Advanced): leave it enabled unless you have specifically disabled "Secured Web Server Access" in the unit's settings. The unit's command endpoints redirect to HTTPS regardless of the scheme you request whenever that setting is on, so mixing an HTTP login with HTTPS-only commands would silently break arming and disarming. The integration detects the redirect and raises a repair notification that switches the entry over for you. See [docs/tuxedo_touch_api_notes.md](docs/tuxedo_touch_api_notes.md) for the full writeup.
 
 ### Reconfiguring
 
@@ -169,9 +179,9 @@ Clear `push_url` to take the stream from the panel again; that clears the token 
 
 **Only the stream moves.** Login and every command still go to the panel, and that is a constraint rather than a simplification. The panel answers `302` to https on the REST namespace when it is addressed over plain HTTP, whatever credentials are presented, so commands cannot be redirected; and it binds a session to the address that created it, so a consumer that logged in against the panel has to keep talking to the panel for everything else. A half-redirected setup presents as a random logout.
 
-**A relay receives the push token and nothing of the panel's**: no session cookie, no tuxweb token, and opening the relay stream spends no panel login. A relay is still as trusted as the panel itself for state reporting - it decides what this integration believes the alarm is doing. Run one you control. Nothing else moves: the relay cannot arm or disarm anything, because commands never leave the panel, and a relay-fed entity goes unavailable when the panel's own poll stops answering rather than coasting on forwarded state.
+**A relay receives the push token and nothing of the panel's**: no session cookie, no tuxweb token, and opening the relay stream spends no panel login. Nothing else moves: the relay cannot arm or disarm anything, because commands never leave the panel, and a relay-fed entity goes unavailable when the panel's own poll stops answering rather than coasting on forwarded state.
 
-**A relay's certificate is verified; the panel's is not.** The panel is exempt because it ships an expired 2009 self-signed certificate that no modern TLS stack will accept, and that exemption is the panel's alone. A relay is an address you typed and it receives the push token, so it gets ordinary verification, and its URL must be https. Terminate TLS with a certificate this Home Assistant trusts. An entry holding a relay URL that is not https keeps the stream closed and runs on the status poll until the URL is changed.
+**A relay's URL must be https, with a certificate this Home Assistant trusts.** An entry holding a relay URL that is not https keeps the stream closed and runs on the status poll until the URL is changed.
 
 Why a relay is worth having at all: firmware that gates the push path on a session needs one, and a relay can hold a single upstream subscription and fan it out. That matters to the panel rather than to throughput, because every registration makes it flush its reply queue, so one subscriber costs it less than three.
 
@@ -179,9 +189,9 @@ Why a relay is worth having at all: firmware that gates the push path on a sessi
 
 The panel announces nothing on mDNS or SSDP, but it is a DHCP client and its lease is distinctive: the unit's network interface uses Resideo's `00:D0:2D` OUI and it puts `Tux` followed by the twelve hex digits of its own MAC in the lease hostname - for example `Tux00D02D000001`. The manifest matches on both together, so another vendor's device is never offered as a Tuxedo panel.
 
-**A panel you have not added** shows up under Settings -> Devices & Services as a discovered device. Opening it asks only for what a lease cannot say: the web login username and password, the keypad code and the partition, plus the port and the HTTPS toggle in case you turned "Secured Web Server Access" off. The integration logs in to the panel before creating the entry, exactly as the manual form does, and keys the entry on the MAC the lease carried.
+**A panel you have not added** shows up under Settings -> Devices & Services as a discovered device. Opening it asks only for what a lease cannot say: the web login username and password, with the keypad code, the partition, the port and the HTTPS toggle under Advanced in case you store a code, use another partition or turned "Secured Web Server Access" off. The integration logs in to the panel before creating the entry, exactly as the manual form does, and keys the entry on the MAC the lease carried.
 
-**A second partition is added by hand.** Discovery offers a panel once. As soon as one entry carries the panel's MAC, later leases from it are treated as a move rather than a new device, so the discovered card does not come back for partition 2. Add it with Settings -> Devices & Services -> Add integration -> Honeywell Tuxedo Touch, giving the same address and the other partition number; the next lease Home Assistant sees for that address hands the new entry the panel's MAC, and from then on both entries move together.
+**A second partition is added by hand.** Discovery offers a panel once. As soon as one entry carries the panel's MAC, later leases from it are treated as a move rather than a new device, so the discovered card does not come back for partition 2. Add it with Settings -> Devices & Services -> Add integration -> Honeywell Tuxedo Touch, giving the same address and, under Advanced, the other partition number; the next lease Home Assistant sees for that address hands the new entry the panel's MAC, and from then on both entries move together.
 
 **A panel you ignore stays ignored.** Dismissing the discovered card with Ignore keeps Home Assistant from raising it again, however often the panel renews its lease. Undo it with Settings -> Devices & Services -> the three-dot menu -> Show ignored integrations.
 
@@ -356,7 +366,7 @@ automation:
 
 | Symptom | Cause and fix |
 |---|---|
-| Setup says "Failed to connect" | Home Assistant cannot reach the address and port, or the panel's single web session is held by a browser tab. Close any tab open on the unit and retry; check the port matches the HTTPS setting (443 on, 80 off). |
+| Setup says "Failed to connect" | Home Assistant cannot reach the address and port, or the panel's single web session is held by a browser tab. Close any tab open on the unit and retry; check under Advanced that the port matches the HTTPS setting (443 on, 80 off). |
 | Reconfigure says "Failed to connect" | The new address, port, scheme or credentials did not answer. The entry has already been put back on its old settings and is running as it was before, so correct the form and submit it once more. It is not the entry itself getting in the way: whether it was polling or retrying, it is stood down for the moment the check takes. |
 | Setup says "Invalid username or password" and they are right | Web access for that user was disabled, which a panel reset does. Re-enable it on the touchscreen under Setup -> Account, or use the Login settings page to set the credentials again. |
 | Setup says the panel answered but the response could not be used | The login page came back without the challenge headers, or the key page was short: firmware this client does not know. The log line names which. Open an issue with the firmware version from the touchscreen's About page. |
@@ -383,19 +393,20 @@ Download diagnostics from the entry's menu for a report with the host, MAC, cred
 
 ## Development
 
+The tests run on Linux under Python 3.14, with the versions the GitHub Tests workflow pins:
+
 ```
-python tests/test_api.py          # the client's pure logic, no Home Assistant needed
-python -m pytest tests -q         # the whole suite; tests/ha needs the harness
-python -m pytest tests -q --cov=custom_components/tuxedo_touch --cov-fail-under=95
-python -m mypy custom_components/tuxedo_touch
-python tools/validate_local.py    # the offline stand-in for hassfest and HACS
+python3.14 -m venv .venv
+.venv/bin/pip install "mypy==1.18.2" "ruff==0.15.21" "pytest-homeassistant-custom-component==0.13.357"
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/python tests/test_api.py
+.venv/bin/python -m pytest tests -q --cov=custom_components/tuxedo_touch --cov-fail-under=95
+.venv/bin/python -m mypy custom_components/tuxedo_touch
+.venv/bin/python tools/validate_local.py
 ```
 
-`tests/ha` needs `pytest-homeassistant-custom-component`, which brings Home Assistant with it, and skips where it is absent - so a run without it covers the client only, and the coverage figure from such a run measures the skip rather than the code. What the harness needs first is the Python version: 2026.x is written for 3.14 and will not install under 3.12.
-
-A Linux environment with all of that already stands, and [`docs/TEST-ENVIRONMENT.md`](docs/TEST-ENVIRONMENT.md) records where it is and how to rebuild it. Last full run there: **280 passed, 99% coverage** on CPython 3.14.7. Use it rather than the Windows stand-ins below, which are documented because they were built, not because they are the recommended path.
-
-It needs a POSIX platform too, and on Windows that costs three stand-ins. Measured on 2026-09-05 with `pytest-homeassistant-custom-component` 0.13.357, Home Assistant 2026.8.3 and CPython 3.14: `homeassistant.runner` imports `fcntl` and `resource`, neither of which exists on Windows, and the proactor event loop builds its self-pipe from an AF_INET `socket.socketpair()`, which the harness's socket guard refuses. Stub `fcntl` and `resource` modules plus a `sitecustomize.py` rebinding `socket.socketpair` to the real socket class, all on `PYTHONPATH`, carry the whole suite through - 207 tests, 99% coverage, mypy strict clean. The replacement `socketpair` has to accept the connection itself, from `_accept()` and the saved class: `socket.accept()` builds its return value from the name `socket` inside the socket module, which is the very name the guard replaced, so calling it puts the guard back in the path one line after stepping around it. Put the virtualenv at a short path as well - `pip` unpacking Home Assistant's `components/overkiz` tree fails with `Errno 2` against Windows' 260-character path limit from a deep one. That scaffolding belongs outside the repository, and Linux needs none of it. Several tests stand a fake panel up on 127.0.0.1 and talk to it over a real socket, which the test harness blocks by default; those ask for the `socket_enabled` fixture, and the harness's own guard still allows nothing but 127.0.0.1. The GitHub Tests workflow is still the gate: it runs the whole suite, holds coverage of the integration at 95%, and runs mypy in strict mode and the validator on every push. A mypy run without Home Assistant installed reports its classes as `Any`; that is the missing package, not the code.
+`tests/test_api.py` covers the client's pure logic and needs no Home Assistant. `tests/ha` needs `pytest-homeassistant-custom-component`, which brings Home Assistant 2026.8.3 with it, and skips where it is absent. Several tests stand a fake panel up on 127.0.0.1 and talk to it over a real socket through the harness's `socket_enabled` fixture. `tools/validate_local.py` is the offline stand-in for hassfest and the HACS action. mypy is strict and needs Home Assistant installed to mean anything.
 
 Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 

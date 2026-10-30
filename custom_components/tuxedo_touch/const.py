@@ -14,6 +14,9 @@ CONF_USE_HTTPS = "use_https"
 # stock entry. Stored beside the web credentials because it is one: it opens
 # the alarm, so it is masked on every form and never suggested back.
 CONF_TUXWEB_TOKEN = "tuxweb_token"
+# The collapsed section of the setup forms; its fields are stored flat in the
+# entry beside the address and the login.
+CONF_ADVANCED = "advanced"
 
 # Set on the entry's OPTIONS once the panel has refused the stored credentials.
 # On the options rather than in memory because surviving a restart is the whole
