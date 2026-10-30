@@ -7,6 +7,7 @@ Notable changes to this integration, newest first. The format follows [Keep a Ch
 ### Changed
 
 - The setup screen asks only for the panel's address and its web login; a discovered panel asks only for the login. The port, HTTPS, the keypad code, the partition and the tuxweb token sit in a collapsed Advanced section with their defaults, and a failed check opens it with what was typed kept. Entries are stored as before, so existing ones are unchanged.
+- The setup screen submits with Advanced left collapsed: the section opens holding its defaults, where before the frontend sent it empty and refused Submit with "Not all required fields are filled in."
 - The README opens the repository in HACS and starts the setup with My Home Assistant buttons, and lists the setup screen as it now is.
 - `translations/en.json` is the only translation file shipped; `strings.json` is gone.
 

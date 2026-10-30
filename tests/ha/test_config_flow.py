@@ -46,6 +46,7 @@ from custom_components.tuxedo_touch.const import (
 )
 
 from .conftest import ENTRY_DATA, HOST, MAC, PORT, setup_form
+from .frontend_form import frontend_submission
 
 LOGIN = "custom_components.tuxedo_touch.api.TuxedoTouchClient.login"
 VALIDATE = "custom_components.tuxedo_touch.config_flow._validate_input"
@@ -150,7 +151,9 @@ async def test_the_first_screen_asks_only_for_the_address_and_the_login(hass):
     }
     login = {CONF_HOST: HOST, CONF_USERNAME: "installer", CONF_PASSWORD: "secret"}
     with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
-        result = await hass.config_entries.flow.async_configure(form["flow_id"], login)
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], frontend_submission(form, login)
+        )
         await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"] == {
@@ -1106,7 +1109,9 @@ async def test_the_discovered_panel_needs_only_the_login(hass):
     form = await _dhcp_flow(hass, _lease("203.0.113.61"))
     login = {CONF_USERNAME: "installer", CONF_PASSWORD: "secret"}
     with patch(LOGIN, return_value=None), patch(SETUP, return_value=True):
-        result = await hass.config_entries.flow.async_configure(form["flow_id"], login)
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"], frontend_submission(form, login)
+        )
         await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"] == {

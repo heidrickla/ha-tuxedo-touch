@@ -113,7 +113,9 @@ def _setup_schema(*, with_host: bool, errors: Mapping[str, str]) -> vol.Schema:
         fields[vol.Required(CONF_HOST)] = str
     fields[vol.Required(CONF_USERNAME)] = str
     fields[vol.Required(CONF_PASSWORD)] = _PASSWORD
-    fields[vol.Required(CONF_ADVANCED, default={})] = section(
+    # No default on the section key: the frontend would send that default as
+    # the section's data and never fill in the defaults of the fields inside.
+    fields[vol.Required(CONF_ADVANCED)] = section(
         STEP_ADVANCED_SCHEMA, {"collapsed": not errors}
     )
     return vol.Schema(fields)
