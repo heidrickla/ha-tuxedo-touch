@@ -414,9 +414,9 @@ async def test_bad_credentials_do_not_hammer_the_panel(panel, session, monkeypat
     minutes and then goes on knocking at a door it has bricked shut. A longer
     backoff is not a fix: it only spaces out the attempts that reach three.
 
-    Both waits are shrunk to a hundredth of a second and then a full second
-    is allowed to pass: a hundred backoff periods, against a loop whose first
-    iteration would already have been the second attempt. What is counted is
+    Both waits are shrunk to a hundredth of a second, and after the task ends
+    a tenth of a second is allowed to pass: ten backoff periods, against a
+    loop whose first iteration would already have been the second attempt. What is counted is
     what the PANEL counts - `panel.logins` records only successful logins and
     stays at zero however hard a wrong password is hammered, so a test
     written against it would pass while the panel was being disabled.
@@ -437,7 +437,7 @@ async def test_bad_credentials_do_not_hammer_the_panel(panel, session, monkeypat
     # it requires a task still running, and that assertion inverts with the
     # fix. Waiting on task.done() is the fix's own claim.
     await wait_until(lambda: task.done())
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(0.1)
 
     assert panel.login_attempts == 1
     assert task.done()

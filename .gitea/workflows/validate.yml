@@ -89,30 +89,35 @@ jobs:
           python-version: "3.14"
 
       # 0.13.357 pins Home Assistant 2026.8.3 and brings pytest and pytest-cov
-      # with it, along with cryptography, which the integration imports.
+      # with it, along with cryptography, which the integration imports. A
+      # venv, because the runner's setup-python toolcache is shared with other
+      # repos' jobs. uv installs the same packages as pip did (compared
+      # 2026-10-30) in a quarter of the time; 0.11.31 is the uv the harness
+      # itself pins.
       - name: Install
         timeout-minutes: 15
         run: |
-          python -m pip install --quiet --upgrade pip
-          python -m pip install --quiet "mypy==1.18.2" \
-            "pytest-homeassistant-custom-component==0.13.357"
+          python -m venv .venv
+          .venv/bin/python -m pip install --quiet "uv==0.11.31"
+          .venv/bin/python -m uv pip install --quiet --python .venv/bin/python \
+            "mypy==1.18.2" "pytest-homeassistant-custom-component==0.13.357"
 
       # A check() script rather than pytest functions, so running it directly
       # is the honest invocation. Everything else in tests/ is pytest.
       - name: Pure tests
         timeout-minutes: 15
-        run: python tests/test_api.py
+        run: .venv/bin/python tests/test_api.py
 
       - name: Tests and coverage
         timeout-minutes: 15
         run: >
-          python -m pytest --durations=15 --junitxml=reports/junit-1.xml tests -q
+          .venv/bin/python -m pytest --durations=15 --junitxml=reports/junit-1.xml tests -q
           --cov=custom_components/tuxedo_touch --cov-report=term-missing
           --cov-fail-under=95
 
       - name: mypy strict
         timeout-minutes: 15
-        run: python -m mypy custom_components/tuxedo_touch
+        run: .venv/bin/python -m mypy custom_components/tuxedo_touch
 
       # each test's time and result, kept whatever the outcome: the forge shows no job log
       - name: test results

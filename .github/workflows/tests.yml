@@ -32,15 +32,18 @@ jobs:
 
       # 0.13.357 pins Home Assistant 2026.8.3, the release on the HA VM. It
       # brings pytest, pytest-cov, the asyncio and aiohttp plugins and PyYAML
-      # with it; pinning those again makes pip's resolution impossible.
+      # with it; pinning those again makes the resolution impossible.
       # cryptography, the one third-party package the integration imports,
       # comes in with Home Assistant. Everything goes in a venv so the
-      # runner's own packages cannot change what a run means.
+      # runner's own packages cannot change what a run means. uv installs the
+      # same packages as pip did (compared 2026-10-30) in a quarter of the
+      # time; 0.11.31 is the uv the harness itself pins.
       - name: Install
         run: |
           python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install "mypy==1.18.2" "ruff==0.15.21" \
+          .venv/bin/python -m pip install "uv==0.11.31"
+          .venv/bin/python -m uv pip install --python .venv/bin/python \
+            "mypy==1.18.2" "ruff==0.15.21" \
             "pytest-homeassistant-custom-component==0.13.357"
 
       - name: Ruff check

@@ -16,6 +16,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.exceptions import HomeAssistantError
 
+from custom_components.tuxedo_touch import push
 from custom_components.tuxedo_touch.api import TuxedoTouchError
 from custom_components.tuxedo_touch.const import OPT_CREDENTIALS_REJECTED
 from tests.fake_panel import COUNTDOWN_FRAME, status_frame, wait_until
@@ -216,15 +217,21 @@ async def test_an_entry_loading_during_an_outage_never_shows_unknown(
 
 
 async def test_the_stream_dropping_and_returning_is_logged_once_each_way(
-    hass, fake_panel, panel_entry, caplog
+    hass, fake_panel, panel_entry, caplog, monkeypatch
 ):
     """log-when-unavailable: one line when the stream goes, one when it is
-    back - not one per reconnect attempt."""
+    back - not one per reconnect attempt. The reconnect wait is shrunk from
+    its 5 s floor, and the panel refuses a few attempts before it takes one."""
+    monkeypatch.setattr(push, "PUSH_BACKOFF_INITIAL", 0.01)
     coordinator = await _setup(hass, panel_entry)
     caplog.clear()
 
+    fake_panel.push_status = 500
+    requests_before = fake_panel.stream_requests
     fake_panel.drop_stream()
     await wait_until(lambda: not coordinator.push.connected)
+    await wait_until(lambda: fake_panel.stream_requests >= requests_before + 3)
+    fake_panel.push_status = 200
     await wait_until(lambda: coordinator.push.connected)
 
     messages = [record.getMessage() for record in caplog.records]
