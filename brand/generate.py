@@ -1,7 +1,7 @@
-"""Generate the brand images: a stylized front view of the Honeywell Tuxedo
-Touch wall-mount touchscreen keypad.
+"""Generate brand images for the Tuxedo Touch touchscreen keypad.
 
-Renders at 4x and downsamples (LANCZOS) for crisp edges. Needs only Pillow.
+The icons use icon-source.png. The wide logos are drawn and downsampled
+with Pillow.
 
     python generate.py                 # contact sheet into ./preview for review
     python generate.py --final grid    # write the PNGs into the integration's
@@ -296,7 +296,8 @@ def save_scaled(img, path, target_short):
 def contact_sheet():
     tiles = []
     for _variant in ("grid", "shield"):
-        icon = make_icon(variant).resize((256, 256), Image.LANCZOS)
+        with Image.open(os.path.join(HERE, "icon-source.png")) as original:
+            icon = original.convert("RGBA").resize((256, 256), Image.LANCZOS)
         logo = trim(make_logo(variant))
         logo = logo.resize((round(logo.width * 256 / logo.height), 256), Image.LANCZOS)
         dark_logo = trim(make_logo(variant, dark=True))
@@ -332,7 +333,8 @@ if __name__ == "__main__":
             os.path.join(HERE, "..", "custom_components", "tuxedo_touch", "brand")
         )
         os.makedirs(dest, exist_ok=True)
-        icon = make_icon(variant)
+        with Image.open(os.path.join(HERE, "icon-source.png")) as original:
+            icon = original.convert("RGBA")
         print("icon@2x:", save_scaled(icon, dest + r"\icon@2x.png", 512))
         print("icon:", save_scaled(icon, dest + r"\icon.png", 256))
         logo = trim(make_logo(variant))
