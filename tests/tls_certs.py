@@ -99,7 +99,7 @@ class Leaf:
         return self.cert.not_valid_after_utc.isoformat()
 
 
-def make_leaf(authority: Authority, ip: str = LEAF_IP) -> Leaf:
+def make_leaf(authority: Authority, ip: str = LEAF_IP, days: int = 397) -> Leaf:
     key = ec.generate_private_key(ec.SECP256R1())
     now = datetime.datetime.now(datetime.UTC)
     cert = (
@@ -109,7 +109,7 @@ def make_leaf(authority: Authority, ip: str = LEAF_IP) -> Leaf:
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(days=1))
-        .not_valid_after(now + datetime.timedelta(days=397))
+        .not_valid_after(now + datetime.timedelta(days=days))
         .add_extension(
             x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(ip))]),
             critical=False,

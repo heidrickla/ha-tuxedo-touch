@@ -7,11 +7,15 @@ import logging
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.typing import ConfigType
 
+from .ca_view import CertificateAuthorityView
 from .const import (
     DOMAIN,
+    ISSUE_CERTIFICATE_RENEWAL_FAILED,
     ISSUE_CREDENTIALS_REJECTED,
     ISSUE_DUPLICATE_ENTRY,
     ISSUE_HTTPS_REDIRECT,
@@ -32,8 +36,17 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [
     Platform.ALARM_CONTROL_PANEL,
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.SENSOR,
 ]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the download of an entry's certificate authority, once per hass."""
+    hass.http.register_view(CertificateAuthorityView())
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: TuxedoTouchConfigEntry) -> bool:
@@ -81,6 +94,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: TuxedoTouchConfigEntry) 
     # reports the state and the poll is the fallback underneath it.
     coordinator.async_start_push()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # A panel certificate issued by Home Assistant is checked now and daily.
+    coordinator.async_start_certificate_watch()
     return True
 
 
@@ -127,10 +142,12 @@ async def async_remove_entry(
 ) -> None:
     """Take this entry's repair issues with it.
 
-    Nothing is written to the panel, so deleting the entry has nothing else
-    to undo; an issue left behind would outlive the thing it is about.
+    A certificate Home Assistant installed stays on the panel, which goes on
+    serving it until it is replaced there; an issue left behind would outlive
+    the thing it is about.
     """
     for key in (
+        ISSUE_CERTIFICATE_RENEWAL_FAILED,
         ISSUE_CREDENTIALS_REJECTED,
         ISSUE_DUPLICATE_ENTRY,
         ISSUE_HTTPS_REDIRECT,

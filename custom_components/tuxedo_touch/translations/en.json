@@ -119,7 +119,8 @@
       "cannot_connect": "Failed to connect - check the IP/port and that the unit is reachable. The panel serves only ONE connection at a time, so close any browser tab open to it and retry.",
       "panel_error": "The panel answered but the response could not be used. See the Home Assistant log for the specific reason.",
       "certificate_untrusted": "The panel presented a certificate that does not verify against the certificate authority this entry trusts. Open the certificate repair for this entry under Settings, then System, then Repairs, check the new certificate there and accept it, then try again.",
-      "unknown": "Unexpected error - see the Home Assistant log for the traceback"
+      "unknown": "Unexpected error - see the Home Assistant log for the traceback",
+      "certificate_renewal_failed": "The panel at this address presents the certificate Home Assistant issued it for its old address, and issuing it one for the new address failed. The entry is unchanged; see the Home Assistant log for the reason."
     },
     "abort": {
       "already_configured": "This panel/partition is already configured",
@@ -140,6 +141,11 @@
       },
       "panel_offline": {
         "name": "Panel offline"
+      }
+    },
+    "button": {
+      "renew_certificate": {
+        "name": "Renew certificate"
       }
     },
     "sensor": {
@@ -181,6 +187,9 @@
     },
     "panel_certificate": {
       "message": "The panel's certificate does not verify against the certificate authority this entry trusts: {error}. The repair notification shows the certificate the panel presents now."
+    },
+    "certificate_renewal_failed": {
+      "message": "Home Assistant could not install a new certificate on the panel ({reason}). The panel keeps the certificate it has, and the entry is unchanged."
     }
   },
   "issues": {
@@ -248,11 +257,22 @@
           "certificate_unverifiable": "The certificate authority the panel presents does not verify the panel's own certificate, so there is nothing that can be trusted. Check the certificate installed on the panel, then try again."
         }
       }
+    },
+    "certificate_renewal_failed": {
+      "title": "Tuxedo Touch could not renew the panel's certificate",
+      "description": "Home Assistant could not renew the certificate it issued to {title} ({reason}). The panel keeps the certificate it has. After the panel refuses a certificate, Home Assistant does not try again on its own. Put the cause right, then press Renew certificate on the panel's device under Settings, then Devices & services; if the entry is not loaded, reload it instead. This notice goes away once a renewal succeeds."
     }
   },
   "options": {
     "step": {
       "init": {
+        "title": "Tuxedo Touch options",
+        "menu_options": {
+          "push_source": "Push stream source",
+          "trust_on_computer": "Trust the panel on a computer"
+        }
+      },
+      "push_source": {
         "title": "Push stream source",
         "description": "Leave both boxes empty unless you are running a push-stream relay. Empty means the panel serves its own stream, which is the normal setup.\n\nOnly the stream moves. Logging in and sending commands always go to the panel, because the panel requires TLS for commands and ties a session to the address that created it. A relay is sent the push token and nothing of the panel's: no session cookie, no tuxweb token.",
         "data": {
@@ -263,11 +283,19 @@
           "push_url": "Full https address of the relay's stream endpoint, path included, used exactly as given. No user name or password in it.",
           "push_token": "Credential the relay requires, sent as both a bearer token and a cookie so either style of relay accepts it. Required with a relay. Leave blank to keep the stored token. This is not your panel password."
         }
+      },
+      "trust_on_computer": {
+        "title": "Trust the panel on a computer",
+        "description": "Home Assistant issued the panel its certificate from a certificate authority of this entry's own. A computer that trusts this authority connects to the panel over HTTPS without a certificate warning.\n\nSubject: {subject}\nSHA-256 fingerprint: {fingerprint}\n\n[Download the certificate authority]({download_url}). The link works for five minutes; open this page again for a new one.\n\nOn Windows, open the downloaded file, choose Install Certificate, and place it in the store named Trusted Root Certification Authorities. On macOS, open the file in Keychain Access and set it to Always Trust. Firefox keeps a list of its own: import the file in its certificate settings, under Authorities.\n\nSubmitting closes this and changes nothing."
       }
     },
     "error": {
       "invalid_push_url": "The push stream URL must be an https address with a host and no user name or password in it: the relay is sent the push token, which plain http would carry in clear text.",
       "push_token_required": "A relay needs a push token. The relay is never sent the panel's own credentials in its place."
+    },
+    "abort": {
+      "certificate_not_issued": "The panel's certificate has not been issued by Home Assistant yet, so there is no certificate authority to download. Press Renew certificate on the panel's device first. That button is there for a panel running tuxweb over HTTPS that can install a certificate.",
+      "no_signed_link": "A download link is made only for a signed-in administrator opening this from the Home Assistant interface."
     }
   }
 }

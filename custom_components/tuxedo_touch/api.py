@@ -29,6 +29,11 @@ verifies against it, and from then on every request of that client verifies
 against that authority (panel_ca). A pinned client never goes back to the
 legacy context: a certificate it does not verify is
 TuxedoTouchCertificateError.
+
+A pinned client may also trust the entry's own authority (own_ca), the one
+Home Assistant issues the panel's certificate from: the verifying context then
+loads both, so connections keep verifying while the panel switches from one
+certificate to the other (async_install_certificate).
 """
 
 from __future__ import annotations
@@ -55,10 +60,13 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from .const import (
     API_BASE_PATH,
+    CAP_CERTIFICATE_INSTALL,
     CAP_COMMAND_RESULT,
     CAPABILITIES_PATH,
     COLOURS,
     COUNTDOWN_RE,
+    INSTALL_BODY_LIMIT,
+    INSTALL_CERTIFICATE_PATH,
     KEYS_PATH,
     LOGIN_PATH,
     SOURCE_POLL,
@@ -236,6 +244,29 @@ class TuxedoTouchCertificateError(TuxedoTouchError):
     """
 
 
+class TuxedoTouchInstallRefused(TuxedoTouchError):
+    """The panel answered InstallCertificate with something other than success.
+
+    `reason` is tuxweb's own word for it where it gives one (bad_chain,
+    key_mismatch, tls_not_configured, write_failed and the rest), and
+    otherwise names the status. The panel keeps serving the pair it had.
+    Never retried by the client, and never a login.
+    """
+
+    def __init__(self, reason: str, status: int | None = None) -> None:
+        super().__init__(f"The panel refused the certificate: {reason}")
+        self.reason = reason
+        self.status = status
+
+
+@dataclass(frozen=True)
+class InstalledCertificate:
+    """tuxweb's answer to an InstallCertificate it accepted."""
+
+    not_after: str
+    sha256: str
+
+
 @dataclass(frozen=True)
 class PanelCertificate:
     """A certificate authority as the panel presented it, in readable form.
@@ -304,6 +335,21 @@ def _legacy_ssl_context() -> ssl.SSLContext:
     return ctx
 
 
+def trust_anchors(panel_ca: str | None, own_ca: str | None) -> str | None:
+    """The cadata a pinned client verifies against: the pin, and the entry's own CA.
+
+    None without a pin. The pin alone when there is no own authority or it
+    is the pin. Otherwise both PEMs, pin first, in one string built the same
+    way by every caller, so every client of an entry hands aiohttp the same
+    cached context.
+    """
+    if panel_ca is None:
+        return None
+    if own_ca is None or own_ca == panel_ca:
+        return panel_ca
+    return f"{panel_ca.rstrip()}\n{own_ca}"
+
+
 @cache
 def _verified_ssl_context(pem: str) -> ssl.SSLContext:
     """A context that verifies a tuxweb panel against the authority pinned for it.
@@ -311,18 +357,38 @@ def _verified_ssl_context(pem: str) -> ssl.SSLContext:
     Certificate and hostname verification on, TLS 1.2 at least, default
     ciphers and no legacy options. The authority is loaded from `cadata`
     only: Home Assistant's blocking-call guard flags a load from a file path
-    in the event loop, and a PEM string needs no file.
+    in the event loop, and a PEM string needs no file. `pem` may hold more
+    than one authority (trust_anchors).
 
-    ONE object per PEM string, cached for the same reason _legacy_ssl_context
-    is: aiohttp keys its connection pool on the ssl argument and SSLContext
-    defines no equality, so the config flow's probe and the entry's
-    coordinator must be handed the same object to share a pool key. Building
-    one per client would put two connections on a panel the rest of this
-    module treats as one-connection.
+    ONE object per exact cadata string, cached for the same reason
+    _legacy_ssl_context is: aiohttp keys its connection pool on the ssl
+    argument and SSLContext defines no equality, so the config flow's probe
+    and the entry's coordinator must be handed the same object to share a
+    pool key. Building one per client would put two connections on a panel
+    the rest of this module treats as one-connection.
     """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.check_hostname = True
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_verify_locations(cadata=pem)
+    return ctx
+
+
+@cache
+def _install_ssl_context(pem: str) -> ssl.SSLContext:
+    """The verifying context without the name check, for InstallCertificate only.
+
+    The chain is verified against the same authorities as
+    _verified_ssl_context(pem), so only a panel holding a certificate they
+    issued completes the handshake; the name it carries is not compared.
+    That is what lets a panel whose address moved be issued a certificate for
+    the new one. Cached per cadata string like the others, and never used for
+    status, commands or the stream.
+    """
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_verify_locations(cadata=pem)
     return ctx
@@ -444,6 +510,7 @@ class TuxedoTouchClient:
         panel_ca: str | None = None,
         *,
         trust_on_first_use: bool = True,
+        own_ca: str | None = None,
     ) -> None:
         self._session = session
         self._host = host
@@ -476,6 +543,8 @@ class TuxedoTouchClient:
         # stored on the entry, or learnt by this client's own probe. Used
         # only over HTTPS and only while the panel is not known to be stock.
         self._panel_ca = panel_ca or None
+        # The entry's own authority, trusted beside the pin; see trust_anchors.
+        self._own_ca = own_ca or None
         # What the panel presented to the probe that learnt (or failed to
         # learn) the pin, for the certificate repair to show.
         self._presented: PanelCertificate | None = None
@@ -499,14 +568,55 @@ class TuxedoTouchClient:
         """
         if self._scheme != "https":
             return None
-        if self._panel_ca is not None and self._tuxweb is not False:
-            return _verified_ssl_context(self._panel_ca)
+        anchors = self._anchors
+        if anchors is not None and self._tuxweb is not False:
+            return _verified_ssl_context(anchors)
         return _legacy_ssl_context()
+
+    @property
+    def _anchors(self) -> str | None:
+        return trust_anchors(self._panel_ca, self._own_ca)
 
     @property
     def panel_ca(self) -> str | None:
         """The pinned certificate authority as PEM, or None."""
         return self._panel_ca
+
+    @property
+    def own_ca(self) -> str | None:
+        """The entry's own authority this client trusts beside the pin, or None."""
+        return self._own_ca
+
+    def trust_own_ca(self, pem: str | None) -> None:
+        """Trust the entry's own authority beside the pin, from the next request.
+
+        Called before a certificate from a new authority is installed, so a
+        request made while the panel switches still verifies, and with the
+        stored value again if the install failed.
+        """
+        self._own_ca = pem or None
+
+    def pin_own_ca(self) -> None:
+        """Make the own authority the pin, dropping the old one.
+
+        After the panel has accepted a certificate it issued: the old
+        authority no longer issues anything the panel serves.
+        """
+        if self._own_ca is not None:
+            self._panel_ca = self._own_ca
+
+    @property
+    def certificate_install(self) -> bool:
+        """Whether the panel can be issued a certificate from Home Assistant.
+
+        tuxweb over HTTPS, declaring certificate_install. False on stock, on
+        plain HTTP, and on a tuxweb that does not declare it.
+        """
+        return (
+            self.tuxweb
+            and self._scheme == "https"
+            and CAP_CERTIFICATE_INSTALL in self._capabilities
+        )
 
     @property
     def presented_certificate(self) -> PanelCertificate | None:
@@ -761,6 +871,73 @@ class TuxedoTouchClient:
             with suppress(OSError, TimeoutError):
                 async with asyncio.timeout(_CHAIN_TIMEOUT):
                     await writer.wait_closed()
+
+    async def async_read_presented_chain(self) -> list[bytes]:
+        """The chain the panel serves now, leaf first, as DER; empty if unread.
+
+        A handshake on the legacy context and nothing sent: for reading the
+        expiry and the names of the certificate the panel presents.
+        """
+        return await self._async_read_chain()
+
+    async def async_install_certificate(
+        self, chain_pem: str, key_pem: str, *, ignore_hostname: bool = False
+    ) -> InstalledCertificate:
+        """Install a certificate pair on the panel with tuxweb's InstallCertificate.
+
+        Over HTTPS on the verifying context only, with the bearer token as
+        every tuxweb call carries it; with `ignore_hostname`, on the context
+        that verifies the chain against the same authorities without the name
+        check (_install_ssl_context), for a panel whose address moved. One
+        POST: no login, no capability re-check, never retried. A status other
+        than 200 is TuxedoTouchInstallRefused with tuxweb's reason; a 200 is
+        checked to say installed. A failure below HTTP raises as any request
+        does, as a certificate error on the verifying context.
+        """
+        anchors = self._anchors
+        if self._scheme != "https" or anchors is None or self._tuxweb is False:
+            raise TuxedoTouchError(
+                "A certificate is installed only over a verified HTTPS connection "
+                "to a tuxweb panel"
+            )
+        headers = {**self._tuxweb_headers(), "Content-Type": "application/json"}
+        body = json.dumps({"chain": chain_pem, "key": key_pem}).encode("utf-8")
+        if len(body) > INSTALL_BODY_LIMIT:
+            raise TuxedoTouchInstallRefused("too_large")
+        ssl_arg = (
+            _install_ssl_context(anchors)
+            if ignore_hostname
+            else _verified_ssl_context(anchors)
+        )
+        url = f"{self.base_url}{API_BASE_PATH}{INSTALL_CERTIFICATE_PATH}"
+        try:
+            async with self._session.post(
+                url,
+                data=body,
+                headers=headers,
+                ssl=ssl_arg,
+                timeout=_TIMEOUT,
+                allow_redirects=False,
+            ) as resp:
+                status = resp.status
+                try:
+                    payload = await resp.json(content_type=None)
+                except ValueError:
+                    payload = None
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise _transport_error(err, ssl_arg) from err
+        if status != 200:
+            raise TuxedoTouchInstallRefused(_install_reason(status, payload), status)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("installed") is not True
+            or not isinstance(payload.get("not_after"), str)
+            or not isinstance(payload.get("sha256"), str)
+        ):
+            raise TuxedoTouchInstallRefused("unexpected_answer", status)
+        return InstalledCertificate(
+            not_after=payload["not_after"], sha256=payload["sha256"].lower()
+        )
 
     async def async_look_for_tuxweb(self) -> PanelCertificate | None:
         """Ask a stock client's panel again whether it now runs tuxweb.
@@ -1525,6 +1702,27 @@ def _capabilities_of(payload: Any) -> frozenset[str] | None:
     if not isinstance(declared, list):
         return None
     return frozenset(item for item in declared if isinstance(item, str))
+
+
+# What InstallCertificate's statuses mean when the body names no reason.
+_INSTALL_STATUS_REASONS = {
+    401: "token_rejected",
+    403: "tls_required",
+    404: "not_supported",
+    405: "not_supported",
+    409: "tls_not_configured",
+    413: "too_large",
+    500: "write_failed",
+}
+
+
+def _install_reason(status: int, payload: Any) -> str:
+    """tuxweb's `error` word for a refused install, or one for its status."""
+    if isinstance(payload, dict):
+        reason = payload.get("error")
+        if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,40}", reason):
+            return reason
+    return _INSTALL_STATUS_REASONS.get(status, f"http_{status}")
 
 
 def _tuxweb_reason(payload: Any) -> str:

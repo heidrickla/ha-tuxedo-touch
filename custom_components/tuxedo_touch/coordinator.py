@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import time
 from collections.abc import Callable, Coroutine
@@ -13,10 +14,16 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryError,
+    HomeAssistantError,
+)
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import (
     TuxedoStatus,
@@ -28,14 +35,25 @@ from .api import (
     TuxedoTouchTokenRejected,
     TuxedoTouchUnreachable,
 )
+from .certificate import (
+    CertificateRenewalFailed,
+    async_follow_move,
+    async_issue_and_install,
+    leaf_expiry,
+)
 from .const import (
+    CERTIFICATE_CHECK_INTERVAL,
+    CERTIFICATE_RENEW_BEFORE,
     COMMAND_CONFIRM_TIMEOUT,
+    CONF_CA_CERT,
+    CONF_CERT_NOT_AFTER,
     CONF_PANEL_CA,
     CONF_PARTITION,
     CONF_TUXWEB_TOKEN,
     CONF_USE_HTTPS,
     DEFAULT_PARTITION,
     DOMAIN,
+    ISSUE_CERTIFICATE_RENEWAL_FAILED,
     ISSUE_CREDENTIALS_REJECTED,
     ISSUE_HTTPS_REDIRECT,
     ISSUE_PANEL_CERTIFICATE,
@@ -168,7 +186,11 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             # An existing entry pins only once the user has accepted the
             # authority from the trust_certificate repair.
             trust_on_first_use=False,
+            own_ca=entry.data.get(CONF_CA_CERT),
         )
+        # One certificate issue at a time, and the daily expiry check in flight.
+        self._renew_lock = asyncio.Lock()
+        self._certificate_task: asyncio.Task[None] | None = None
         # Set when the panel is lost - a dropped stream, a poll that could
         # not connect - and spent by the first sign it is back, which asks a
         # stock panel once whether it was updated meanwhile.
@@ -946,7 +968,14 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         if self._entry.data.get(CONF_PANEL_CA):
             self._async_clear_trust_issue()
         try:
-            await self.client.async_probe_capabilities()
+            try:
+                await self.client.async_probe_capabilities()
+            except TuxedoTouchCertificateError:
+                # A panel whose address moved still serves our certificate
+                # for the old one; it is re-issued, then asked again.
+                if not await self._async_follow_moved_certificate():
+                    raise
+                await self.client.async_probe_capabilities()
         except TuxedoTouchCertificateError as err:
             self.async_note_certificate_failure(err)
             raise UpdateFailed(
@@ -965,6 +994,189 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         elif not self.client.tuxweb:
             # Stock again before the user said yes: nothing left to trust.
             self._async_clear_trust_issue()
+
+    # ------------------------------------------------------------------
+    # The panel's certificate, issued by Home Assistant
+    # ------------------------------------------------------------------
+    @property
+    def _renewal_issue_id(self) -> str:
+        return issue_id(ISSUE_CERTIFICATE_RENEWAL_FAILED, self._entry.entry_id)
+
+    @callback
+    def _async_raise_renewal_issue(self, err: CertificateRenewalFailed) -> None:
+        """A renewal nobody asked for failed: warned once per episode, and raised.
+
+        The issue records whether the panel refused it, which no automatic
+        path then retries until the button succeeds.
+        """
+        existing = ir.async_get(self.hass).async_get_issue(
+            DOMAIN, self._renewal_issue_id
+        )
+        if existing is None or not existing.active:
+            _LOGGER.warning(
+                "Home Assistant could not renew the certificate of the panel at "
+                "%s (%s); the panel keeps the certificate it has. Press Renew "
+                "certificate on the panel's device to try again",
+                self._entry.data[CONF_HOST],
+                err.reason,
+            )
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._renewal_issue_id,
+            data={"entry_id": self._entry.entry_id, "refused": err.refused},
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_CERTIFICATE_RENEWAL_FAILED,
+            translation_placeholders={"title": self._entry.title, "reason": err.reason},
+        )
+
+    def _renewal_refused(self) -> bool:
+        """Whether the panel refused the last automatic renewal (a 4xx)."""
+        issue = ir.async_get(self.hass).async_get_issue(DOMAIN, self._renewal_issue_id)
+        return issue is not None and bool((issue.data or {}).get("refused"))
+
+    @callback
+    def _async_store_certificate(self, updates: dict[str, Any]) -> None:
+        """Write what an install changed, and end any failed-renewal episode."""
+        self.hass.config_entries.async_update_entry(
+            self._entry, data={**self._entry.data, **updates}
+        )
+        ir.async_delete_issue(self.hass, DOMAIN, self._renewal_issue_id)
+
+    async def async_renew_certificate(self) -> None:
+        """Issue the panel a certificate from the entry's authority and install it.
+
+        Under the gate only - tuxweb over HTTPS declaring certificate_install
+        - and only on a verified connection, because the new private key goes
+        out on it. On success the entry stores the authority and the pin
+        moved to it, and is reloaded so every connection opens on the new
+        pin. Raises CertificateRenewalFailed with the entry unchanged.
+        """
+        async with self._renew_lock:
+            if not self.client.certificate_install:
+                raise CertificateRenewalFailed("not_supported", refused=True)
+            if self.client.tls != "verified":
+                raise CertificateRenewalFailed("not_verified", refused=True)
+            updates = await async_issue_and_install(
+                self.hass,
+                self.client,
+                self._entry.data,
+                entry_id=self._entry.entry_id,
+            )
+            _LOGGER.info(
+                "The panel at %s now serves a certificate issued by Home "
+                "Assistant, expiring %s",
+                self._entry.data[CONF_HOST],
+                updates[CONF_CERT_NOT_AFTER],
+            )
+            self._async_store_certificate(updates)
+            self.hass.config_entries.async_schedule_reload(self._entry.entry_id)
+
+    async def _async_follow_moved_certificate(self) -> bool:
+        """Re-issue the certificate of a panel whose address moved, during setup.
+
+        True when it was re-issued and the probe can be asked again; False
+        when the failure is not that, for the certificate repair. A refusal
+        fails setup without a retry; a panel that could not be reached is
+        retried with setup.
+        """
+        try:
+            updates = await async_follow_move(self.hass, self.client, self._entry.data)
+        except CertificateRenewalFailed as err:
+            self._async_raise_renewal_issue(err)
+            if err.refused:
+                raise ConfigEntryError(
+                    translation_domain=DOMAIN,
+                    translation_key="certificate_renewal_failed",
+                    translation_placeholders={"reason": err.reason},
+                ) from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="certificate_renewal_failed",
+                translation_placeholders={"reason": err.reason},
+            ) from err
+        if updates is None:
+            return False
+        _LOGGER.info(
+            "The panel moved to %s and has been issued a certificate for it",
+            self._entry.data[CONF_HOST],
+        )
+        self._async_store_certificate(updates)
+        return True
+
+    @callback
+    def async_start_certificate_watch(self) -> None:
+        """Check the panel's certificate expiry now and then once a day.
+
+        Under the gate only. Never per poll: the daily timer is the only
+        thing that asks again, and it is cancelled with the entry.
+        """
+        if not self.client.certificate_install:
+            return
+        self._entry.async_on_unload(
+            async_track_time_interval(
+                self.hass,
+                self._async_certificate_tick,
+                CERTIFICATE_CHECK_INTERVAL,
+                name=f"{DOMAIN} certificate check {self._entry.entry_id}",
+                cancel_on_shutdown=True,
+            )
+        )
+        self._async_certificate_tick()
+
+    @callback
+    def _async_certificate_tick(self, _now: datetime.datetime | None = None) -> None:
+        if self._certificate_task is not None and not self._certificate_task.done():
+            return
+        self._certificate_task = self._entry.async_create_background_task(
+            self.hass,
+            self._async_check_certificate_expiry(),
+            f"{DOMAIN} certificate check {self._entry.entry_id}",
+        )
+
+    async def _async_certificate_expiry(self) -> datetime.datetime | None:
+        """When the panel's certificate expires.
+
+        The stored expiry while the panel serves a certificate of the entry's
+        own authority; otherwise read from the chain it presents, which is
+        one handshake and nothing sent.
+        """
+        data = self._entry.data
+        stored = data.get(CONF_CERT_NOT_AFTER)
+        parsed = dt_util.parse_datetime(stored) if stored else None
+        if parsed is not None and data.get(CONF_CA_CERT) == data.get(CONF_PANEL_CA):
+            return dt_util.as_utc(parsed)
+        return leaf_expiry(await self.client.async_read_presented_chain())
+
+    async def _async_check_certificate_expiry(self) -> None:
+        """Renew a panel certificate that expires within 30 days, if allowed.
+
+        Not on a client that does not verify the panel, and not after the
+        panel refused an automatic renewal: then the button is the way.
+        """
+        if not self.client.certificate_install or self.client.tls != "verified":
+            return
+        if self._renewal_refused():
+            return
+        expires = await self._async_certificate_expiry()
+        if expires is None:
+            _LOGGER.debug(
+                "Could not read when the certificate of the panel at %s expires",
+                self._entry.data[CONF_HOST],
+            )
+            return
+        if expires - dt_util.utcnow() > CERTIFICATE_RENEW_BEFORE:
+            return
+        _LOGGER.info(
+            "The certificate of the panel at %s expires %s; renewing it",
+            self._entry.data[CONF_HOST],
+            expires.isoformat(),
+        )
+        try:
+            await self.async_renew_certificate()
+        except CertificateRenewalFailed as err:
+            self._async_raise_renewal_issue(err)
 
     async def _async_update_data(self) -> TuxedoStatus:
         """Poll the panel, one poll at a time.

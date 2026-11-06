@@ -21,18 +21,26 @@ SSLContext they need. Given `ssl_context`, the same server speaks TLS with the
 certificate chain that context serves - the shape of a tuxweb panel over
 HTTPS (tests/tls_certs.py) - closes every connection after one answer so each
 request is a new handshake, and can be moved to another chain with use_tls().
+Over TLS it also takes InstallCertificate as tuxweb does, checking the pair
+the way the firmware contract says and serving it from the next handshake.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import datetime
 import hashlib
 import hmac
+import json
+import os
 import ssl
+import tempfile
 from typing import Any
 
 from aiohttp import web
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
 
 KEY_HEX = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 IV_HEX = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
@@ -49,6 +57,9 @@ BOUNDARY = "EH912ZZ"
 TUXWEB_TOKEN = "5f4dcc3b5aa765d61d8327deb882cf99e99a18c428cb38d5f260853678922e03"
 # The capabilities tuxweb 0.1.0 declares, as api.rs spells them.
 TUXWEB_CAPABILITIES = ("panel_link_state", "command_result", "status_refresh")
+# A tuxweb serving TLS from a configured pair adds this one.
+CERTIFICATE_INSTALL = "certificate_install"
+INSTALL_LIMIT = 16384
 # The stock answer to the capability endpoint: 404 with this exact 20-byte
 # body, measured on TUXW_V5.3.21.0_VA and reproduced by tuxweb's not_found().
 # The key is unquoted, so it is not JSON, and that is part of the measurement.
@@ -209,8 +220,20 @@ class FakePanel:
         token: str | None = TUXWEB_TOKEN,
         capabilities: tuple[str, ...] = TUXWEB_CAPABILITIES,
         ssl_context: ssl.SSLContext | None = None,
+        tls_dir: str | None = None,
     ) -> None:
         self.ssl_context = ssl_context
+        # Where an installed pair is written for the server context to load.
+        self.tls_dir = tls_dir
+        # InstallCertificate: every request, the leaves it accepted, a forced
+        # (status, reason) answer, and the headers of the last request.
+        self.install_requests = 0
+        self.installed: list[x509.Certificate] = []
+        self.install_error: tuple[int, str] | None = None
+        # Whether TLS is served from a configured pair; tuxweb answers 409
+        # tls_not_configured without one, before it looks at the scheme.
+        self.tls_configured = True
+        self.last_install_headers: dict[str, str] = {}
         self.username = username
         self.password = password
         self.status = status
@@ -339,6 +362,9 @@ class FakePanel:
             "/system_http_api/API_REV01/AdvancedSecurity/{command}", self._command
         )
         app.router.add_get("/SimpleDebugger.interface/G.", self._stream)
+        app.router.add_post(
+            "/system_http_api/API_REV01/InstallCertificate", self._install_certificate
+        )
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         front = None
@@ -601,6 +627,51 @@ class FakePanel:
             await self.push(COUNTDOWN_FRAME)
         return web.Response(body=TUXWEB_ARM_OK, content_type="application/json")
 
+    async def _install_certificate(self, request: web.Request) -> web.Response:
+        """tuxweb's InstallCertificate: check the pair, then serve it from now on.
+
+        HTTPS only, the token as on every call, a JSON body of at most 16384
+        bytes; the refusals are the contract's, as {"error": reason}.
+        """
+        self.install_requests += 1
+        self.last_install_headers = dict(request.headers)
+        if not self.tuxweb:
+            return web.Response(
+                status=404, body=STOCK_NOT_FOUND, content_type="application/json"
+            )
+        if not self.tls_configured:
+            return web.json_response({"error": "tls_not_configured"}, status=409)
+        if self.ssl_context is None:
+            return web.json_response({"error": "tls_required"}, status=403)
+        if not self._token_ok(request):
+            return self._unauthorized()
+        if self.install_error is not None:
+            status, reason = self.install_error
+            return web.json_response({"error": reason}, status=status)
+        if request.content_type != "application/json":
+            return web.json_response({"error": "bad_json"}, status=400)
+        body = await request.read()
+        if len(body) > INSTALL_LIMIT:
+            return web.json_response({"error": "too_large"}, status=413)
+        loop = asyncio.get_running_loop()
+        try:
+            context, leaf = await loop.run_in_executor(
+                None, _load_installed_pair, self.tls_dir, body
+            )
+        except _Refused as refused:
+            return web.json_response({"error": refused.reason}, status=400)
+        self.ssl_context = context
+        self.installed.append(leaf)
+        return web.json_response(
+            {
+                "installed": True,
+                "not_after": leaf.not_valid_after_utc.isoformat().replace(
+                    "+00:00", "Z"
+                ),
+                "sha256": leaf.fingerprint(hashes.SHA256()).hex(),
+            }
+        )
+
     async def _stream(self, request: web.Request) -> Any:
         self.stream_requests += 1
         self.last_push_headers = dict(request.headers)
@@ -635,3 +706,67 @@ class FakePanel:
             self.stream_open.clear()
             self._writers.remove(resp)
         return resp
+
+
+class _Refused(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _public(key: Any) -> bytes:
+    return bytes(
+        key.public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+
+
+def _load_installed_pair(
+    directory: str | None, body: bytes
+) -> tuple[ssl.SSLContext, x509.Certificate]:
+    """Check an InstallCertificate body as tuxweb does and load it to serve.
+
+    Blocking (files and the ssl module), so the fake runs it in the executor.
+    """
+    try:
+        payload = json.loads(body)
+        chain_pem = payload["chain"]
+        key_pem = payload["key"]
+        if not isinstance(chain_pem, str) or not isinstance(key_pem, str):
+            raise TypeError
+    except (ValueError, KeyError, TypeError) as err:
+        raise _Refused("bad_json") from err
+    try:
+        certs = x509.load_pem_x509_certificates(chain_pem.encode("ascii"))
+    except ValueError as err:
+        raise _Refused("bad_chain") from err
+    try:
+        key = serialization.load_pem_private_key(key_pem.encode("ascii"), None)
+    except ValueError as err:
+        raise _Refused("bad_key") from err
+    leaf = certs[0]
+    if _public(key.public_key()) != _public(leaf.public_key()):
+        raise _Refused("key_mismatch")
+    now = datetime.datetime.now(datetime.UTC)
+    if leaf.not_valid_before_utc > now:
+        raise _Refused("not_yet_valid")
+    if leaf.not_valid_after_utc < now:
+        raise _Refused("expired")
+    try:
+        leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+    except x509.ExtensionNotFound as err:
+        raise _Refused("no_san") from err
+    directory = directory or tempfile.mkdtemp()
+    os.makedirs(directory, exist_ok=True)
+    name = leaf.fingerprint(hashes.SHA256()).hex()[:16]
+    chain_path = os.path.join(directory, f"installed-{name}.chain.pem")
+    key_path = os.path.join(directory, f"installed-{name}.key.pem")
+    with open(chain_path, "w", encoding="ascii") as handle:
+        handle.write(chain_pem)
+    with open(key_path, "w", encoding="ascii") as handle:
+        handle.write(key_pem)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(chain_path, key_path)
+    return context, leaf

@@ -22,7 +22,7 @@ from typing import Any
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 DOMAIN = "tuxedo_touch"
 COMP = os.path.join(ROOT, "custom_components", DOMAIN)
-PLATFORMS = ("alarm_control_panel", "binary_sensor", "sensor")
+PLATFORMS = ("alarm_control_panel", "binary_sensor", "button", "sensor")
 # Where the device info every platform shares is built. Checked alongside the
 # platforms wherever a rule is about what an entity carries.
 COMMON_ENTITY_MODULE = "entity"
@@ -593,12 +593,15 @@ def main() -> int:
             "CONNECTION_NETWORK_MAC connection",
         )
     # Every abort the flow can reach needs its text, or the user reads a key.
-    declared_aborts = set(strings.get("config", {}).get("abort", {}))
-    flow_aborts = set(re.findall(r'reason="([^"]+)"', flow_src))
-    check(
-        flow_aborts <= declared_aborts,
-        f"config.abort is missing {sorted(flow_aborts - declared_aborts)}",
-    )
+    # The options flow's aborts are read from options.abort instead.
+    config_src, _, options_src = flow_src.partition("class TuxedoTouchOptionsFlow")
+    for section_name, src in (("config", config_src), ("options", options_src)):
+        declared_aborts = set(strings.get(section_name, {}).get("abort", {}))
+        flow_aborts = set(re.findall(r'reason="([^"]+)"', src))
+        check(
+            flow_aborts <= declared_aborts,
+            f"{section_name}.abort is missing {sorted(flow_aborts - declared_aborts)}",
+        )
 
     # ------------------------------------------------------ strict typing
     # strict-typing is claimed on pyproject.toml saying strict with nothing

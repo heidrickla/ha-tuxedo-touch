@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
+from homeassistant.components.http.auth import async_sign_path
+from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigEntryState,
@@ -27,6 +29,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.http import current_request
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from .api import (
@@ -36,9 +39,16 @@ from .api import (
     TuxedoTouchConnectionError,
     TuxedoTouchError,
     TuxedoTouchTokenRejected,
+    describe_certificate,
 )
+from .certificate import CertificateRenewalFailed, async_follow_move
 from .const import (
+    CA_DOWNLOAD_EXPIRY,
+    CA_DOWNLOAD_URL,
     CONF_ADVANCED,
+    CONF_CA_CERT,
+    CONF_CA_KEY,
+    CONF_CERT_NOT_AFTER,
     CONF_MAC,
     CONF_PANEL_CA,
     CONF_PARTITION,
@@ -68,8 +78,9 @@ _PASSWORD = selector.TextSelector(
 # masked in the form, never given a default and never sent back as a
 # suggested value. A default reaches the frontend, where the field can reveal
 # it, and is also applied when the user clears the field. The options form's
-# push token follows the same rule.
-SECRETS = (CONF_PASSWORD, CONF_CODE, CONF_TUXWEB_TOKEN)
+# push token follows the same rule. The entry's authority key is on no form at
+# all; listed so a reconfigure keeps it and nothing ever suggests it.
+SECRETS = (CONF_PASSWORD, CONF_CODE, CONF_TUXWEB_TOKEN, CONF_CA_KEY)
 
 # Everything the login handshake depends on - and the token, which on tuxweb
 # is the handshake. A reconfigure that changes none of these - a different
@@ -202,6 +213,18 @@ def _without_blank_optionals(data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _renewed(entry: ConfigEntry[Any], data: Mapping[str, Any]) -> dict[str, Any]:
+    """The certificate data a validation renewed, to store with the credentials.
+
+    Only the expiry: the pin a reauthentication learns is not stored (an
+    existing entry pins from the trust repair), and a renewal for a moved
+    panel leaves the authority and the pin as they were.
+    """
+    if data.get(CONF_CERT_NOT_AFTER) != entry.data.get(CONF_CERT_NOT_AFTER):
+        return {CONF_CERT_NOT_AFTER: data[CONF_CERT_NOT_AFTER]}
+    return {}
+
+
 def _needs_a_probe(entry: ConfigEntry[Any], data: Mapping[str, Any]) -> bool:
     """Whether anything the login handshake depends on has changed."""
     return any(data.get(field) != entry.data.get(field) for field in PROBED)
@@ -223,6 +246,11 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str | No
     read on tuxweb. A tuxweb panel with no token entered fails here with the
     token named rather than with a login the panel does not serve.
 
+    A panel whose address moved, and which still serves a certificate the
+    entry's own authority issued for the old one, is issued one for the new
+    address first (certificate.async_follow_move) and then checked; what the
+    renewal changed is written into `data`.
+
     Returns the certificate authority the client is pinned to: the one in
     `data`, or the one a tuxweb panel over HTTPS proved on this first use.
     """
@@ -237,8 +265,16 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str | No
             password=data[CONF_PASSWORD],
             tuxweb_token=data.get(CONF_TUXWEB_TOKEN),
             panel_ca=data.get(CONF_PANEL_CA),
+            own_ca=data.get(CONF_CA_CERT),
         )
-        await client.async_check_credentials()
+        try:
+            await client.async_check_credentials()
+        except TuxedoTouchCertificateError:
+            renewed = await async_follow_move(hass, client, data)
+            if renewed is None:
+                raise
+            data.update(renewed)
+            await client.async_check_credentials()
         return client.panel_ca
     finally:
         # detach(), not close(): helper-created sessions share HA's connector
@@ -268,7 +304,8 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         """Validate credentials against the panel, returning form errors.
 
         A pin the probe learnt is written into `data`, so the entry created
-        or updated from it carries the authority it was proved against.
+        or updated from it carries the authority it was proved against; so is
+        a certificate renewed for a panel whose address moved.
         """
         try:
             pin = await _validate_input(self.hass, data)
@@ -278,6 +315,11 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             # is accepted.
             _LOGGER.debug("Tuxedo Touch check refused on the certificate: %s", err)
             return {"base": "certificate_untrusted"}
+        except CertificateRenewalFailed as err:
+            # The panel moved and could not be issued a certificate for its
+            # new address; the entry is left as it was.
+            _LOGGER.warning("Tuxedo Touch certificate not renewed: %s", err.reason)
+            return {"base": "certificate_renewal_failed"}
         except TuxedoTouchTokenRejected as err:
             # Before the parent class, so a token is named as a token. The
             # message tells the two apart: a token the panel refused, or a
@@ -573,9 +615,12 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             if mac := entry.data.get(CONF_MAC):
                 merged[CONF_MAC] = mac
             # The pinned authority is kept too, and the probe verifies
-            # against it. Unused while the entry is on plain HTTP.
-            if pin := entry.data.get(CONF_PANEL_CA):
-                merged[CONF_PANEL_CA] = pin
+            # against it. Unused while the entry is on plain HTTP. So are the
+            # entry's own authority and its certificate's expiry (its key is
+            # kept with the secrets above).
+            for key in (CONF_PANEL_CA, CONF_CA_CERT, CONF_CERT_NOT_AFTER):
+                if value := entry.data.get(key):
+                    merged[key] = value
             unique_id = build_unique_id(
                 merged.get(CONF_MAC),
                 user_input[CONF_HOST],
@@ -715,9 +760,12 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                 else:
                     errors = {"base": "invalid_auth"}
             else:
-                errors = await self._async_validate({**reauth_entry.data, **merged})
+                candidate = {**reauth_entry.data, **merged}
+                errors = await self._async_validate(candidate)
                 if not errors:
-                    return self._async_credentials_accepted(reauth_entry, merged)
+                    return self._async_credentials_accepted(
+                        reauth_entry, {**merged, **_renewed(reauth_entry, candidate)}
+                    )
                 if already_rejected and errors.get("base") == "invalid_auth":
                     errors = {"base": "possibly_locked_out"}
 
@@ -753,9 +801,12 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                 data_schema=vol.Schema({}),
                 description_placeholders={"host": reauth_entry.data[CONF_HOST]},
             )
-        errors = await self._async_validate(dict(reauth_entry.data))
+        candidate = dict(reauth_entry.data)
+        errors = await self._async_validate(candidate)
         if not errors:
-            return self._async_credentials_accepted(reauth_entry, {})
+            return self._async_credentials_accepted(
+                reauth_entry, _renewed(reauth_entry, candidate)
+            )
         if errors.get("base") == "invalid_auth":
             errors = {"base": "possibly_locked_out"}
         return self.async_show_form(
@@ -769,8 +820,26 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
+def _requesting_refresh_token_id() -> str | None:
+    """The refresh token of the user whose request is running this flow step.
+
+    The frontend drives an options flow over HTTP, and the request carries
+    the token it was authenticated with; a signed link is made for that
+    user. None outside a user's request.
+    """
+    request = current_request.get()
+    if request is None:
+        return None
+    token_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
+    return token_id if isinstance(token_id, str) else None
+
+
 class TuxedoTouchOptionsFlow(OptionsFlowWithReload):
-    """Take the push stream from somewhere other than the panel.
+    """A menu: the push stream's source, and trusting the panel on a computer.
+
+    trust_on_computer offers the entry's own certificate authority as a
+    download and stores nothing. push_source takes the push stream from
+    somewhere other than the panel, as follows.
 
     OptionsFlowWithReload rather than OptionsFlow, and that is the whole
     difference between this form working and this form lying. The coordinator
@@ -796,6 +865,50 @@ class TuxedoTouchOptionsFlow(OptionsFlowWithReload):
     """
 
     async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """The menu."""
+        return self.async_show_menu(
+            step_id="init", menu_options=["push_source", "trust_on_computer"]
+        )
+
+    async def async_step_trust_on_computer(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Offer the entry's own authority for download, to trust on a computer.
+
+        Only once Home Assistant has issued the panel's certificate. The link
+        is a path signed for the administrator viewing the form, valid five
+        minutes, to the admin-only view in ca_view.py. Submitting stores the
+        options unchanged, which does not reload the entry.
+        """
+        entry = self.config_entry
+        authority = entry.data.get(CONF_CA_CERT)
+        described = describe_certificate(authority) if authority else None
+        if described is None:
+            return self.async_abort(reason="certificate_not_issued")
+        if user_input is not None:
+            return self.async_create_entry(data=dict(entry.options))
+        token_id = _requesting_refresh_token_id()
+        if token_id is None:
+            return self.async_abort(reason="no_signed_link")
+        download_url = async_sign_path(
+            self.hass,
+            CA_DOWNLOAD_URL.format(entry_id=entry.entry_id),
+            CA_DOWNLOAD_EXPIRY,
+            refresh_token_id=token_id,
+        )
+        return self.async_show_form(
+            step_id="trust_on_computer",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "subject": described.subject,
+                "fingerprint": described.fingerprint,
+                "download_url": download_url,
+            },
+        )
+
+    async def async_step_push_source(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Show and store the push source."""
@@ -849,7 +962,7 @@ class TuxedoTouchOptionsFlow(OptionsFlowWithReload):
             dict(user_input) if user_input is not None else self.config_entry.options
         )
         return self.async_show_form(
-            step_id="init",
+            step_id="push_source",
             data_schema=self.add_suggested_values_to_schema(
                 vol.Schema(
                     {

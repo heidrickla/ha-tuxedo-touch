@@ -40,6 +40,16 @@ def _entry(options: dict | None = None) -> MockConfigEntry:
     )
 
 
+async def _open_push_form(hass: HomeAssistant, entry_id: str):
+    """The options open on a menu; the push-stream form is its first choice."""
+    menu = await hass.config_entries.options.async_init(entry_id)
+    assert menu["type"] is FlowResultType.MENU
+    assert menu["menu_options"] == ["push_source", "trust_on_computer"]
+    return await hass.config_entries.options.async_configure(
+        menu["flow_id"], {"next_step_id": "push_source"}
+    )
+
+
 def _suggested(result) -> dict:
     return {
         key.schema: key.description["suggested_value"]
@@ -59,9 +69,9 @@ def _defaults(result) -> dict:
 async def test_form_opens_with_the_current_values(hass: HomeAssistant) -> None:
     entry = _entry({OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: "stored-token"})
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_push_form(hass, entry.entry_id)
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "init"
+    assert result["step_id"] == "push_source"
     # And it really opens with them. The name of this test promised that while
     # the body only checked that a form appeared, which it would have done with
     # add_suggested_values_to_schema deleted - a stored relay would then come
@@ -81,7 +91,7 @@ async def test_form_opens_with_the_current_values(hass: HomeAssistant) -> None:
 async def test_setting_a_relay_stores_both_fields(hass: HomeAssistant) -> None:
     entry = _entry()
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_push_form(hass, entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         user_input={OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: "s3cr3t"},
@@ -97,7 +107,7 @@ async def test_blank_clears_rather_than_storing_an_empty_string(
     """A cleared box must mean "use the panel", not "fetch the stream from ''"."""
     entry = _entry({OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: "old"})
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_push_form(hass, entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={OPT_PUSH_URL: "", OPT_PUSH_TOKEN: "   "}
     )
@@ -110,7 +120,7 @@ async def test_whitespace_is_trimmed(hass: HomeAssistant) -> None:
     """A pasted URL with a trailing newline must not become a 404."""
     entry = _entry()
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_push_form(hass, entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         user_input={OPT_PUSH_URL: f"  {RELAY}  ", OPT_PUSH_TOKEN: " tok "},
@@ -123,7 +133,7 @@ async def test_an_unrelated_option_survives(hass: HomeAssistant) -> None:
     """This form does not own the credentials-rejected flag, and must not eat it."""
     entry = _entry({OPT_CREDENTIALS_REJECTED: True})
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_push_form(hass, entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: "tok"}
     )
@@ -176,7 +186,7 @@ async def test_a_url_without_a_scheme_is_refused(hass: HomeAssistant) -> None:
     """
     entry = _entry()
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_push_form(hass, entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         user_input={OPT_PUSH_URL: "10.0.0.5:8081/x", OPT_PUSH_TOKEN: "s3cr3t"},
@@ -192,7 +202,7 @@ async def test_a_refused_form_comes_back_holding_what_was_typed(
     """Retyping a long URL to add a scheme is how a person gives up on a form."""
     entry = _entry()
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_push_form(hass, entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         user_input={OPT_PUSH_URL: "10.0.0.5:8081/x", OPT_PUSH_TOKEN: "s3cr3t"},
@@ -217,7 +227,7 @@ async def test_only_an_https_relay_is_accepted(hass: HomeAssistant) -> None:
     ):
         entry = _entry()
         entry.add_to_hass(hass)
-        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await _open_push_form(hass, entry.entry_id)
         result = await hass.config_entries.options.async_configure(
             result["flow_id"], user_input={OPT_PUSH_URL: url, OPT_PUSH_TOKEN: "tok"}
         )
@@ -234,7 +244,7 @@ async def test_a_relay_without_a_token_is_refused(hass: HomeAssistant) -> None:
     """A relay is never opened on the panel's credentials in place of a token."""
     entry = _entry()
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_push_form(hass, entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: ""}
     )
@@ -247,7 +257,7 @@ async def test_a_blank_token_keeps_the_stored_one(hass: HomeAssistant) -> None:
     """The box is never filled in, so blank has to mean keep."""
     entry = _entry({OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: "stored-token"})
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_push_form(hass, entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: ""}
     )
@@ -258,7 +268,7 @@ async def test_a_blank_token_keeps_the_stored_one(hass: HomeAssistant) -> None:
 async def test_clearing_the_url_clears_the_token(hass: HomeAssistant) -> None:
     entry = _entry({OPT_PUSH_URL: RELAY, OPT_PUSH_TOKEN: "stored-token"})
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_push_form(hass, entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={OPT_PUSH_URL: "", OPT_PUSH_TOKEN: "typed"}
     )
@@ -352,7 +362,7 @@ async def test_saving_the_form_takes_effect_without_a_restart(
     assert panel_entry.runtime_data.push._push_url is None, "precondition: on the panel"
 
     relay = f"https://127.0.0.1:{fake_panel.port}/SimpleDebugger.interface/G."
-    result = await hass.config_entries.options.async_init(panel_entry.entry_id)
+    result = await _open_push_form(hass, panel_entry.entry_id)
     await hass.config_entries.options.async_configure(
         result["flow_id"],
         user_input={OPT_PUSH_URL: relay, OPT_PUSH_TOKEN: "s3cr3t"},

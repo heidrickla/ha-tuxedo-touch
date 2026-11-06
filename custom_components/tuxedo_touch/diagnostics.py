@@ -9,19 +9,32 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
 from .api import describe_certificate
-from .const import CONF_MAC, CONF_PANEL_CA, CONF_TUXWEB_TOKEN
+from .const import (
+    CAP_CERTIFICATE_INSTALL,
+    CONF_CA_CERT,
+    CONF_CA_KEY,
+    CONF_CERT_NOT_AFTER,
+    CONF_MAC,
+    CONF_PANEL_CA,
+    CONF_TUXWEB_TOKEN,
+)
 from .coordinator import TuxedoTouchConfigEntry
 
 # The host is on the user's LAN and the credentials open their alarm panel.
-# The tuxweb token is a credential in exactly that sense.
+# The tuxweb token is a credential in exactly that sense, and the entry's
+# authority key signs certificates the panel and every trusting computer accept.
 REDACT = {
     CONF_PASSWORD,
     CONF_USERNAME,
     CONF_HOST,
     CONF_MAC,
     CONF_TUXWEB_TOKEN,
+    CONF_CA_KEY,
     "code",
 }
+# Reported by name and fingerprint below rather than as the PEM stored, and
+# the key not at all.
+NOT_IN_CONFIG = {CONF_PANEL_CA, CONF_CA_CERT, CONF_CA_KEY}
 
 
 async def async_get_config_entry_diagnostics(
@@ -30,11 +43,11 @@ async def async_get_config_entry_diagnostics(
     coordinator = entry.runtime_data
     push = coordinator.push
     status = coordinator.data
-    # The pinned authority is reported by name and fingerprint under
-    # `panel_ca` below rather than as the PEM it is stored as.
-    config = {k: v for k, v in entry.data.items() if k != CONF_PANEL_CA}
+    config = {k: v for k, v in entry.data.items() if k not in NOT_IN_CONFIG}
     pinned = coordinator.client.panel_ca
     described = describe_certificate(pinned) if pinned else None
+    own = entry.data.get(CONF_CA_CERT)
+    own_described = describe_certificate(own) if own else None
     return {
         "config": async_redact_data(config, REDACT),
         # Which contract the panel answered to when it was asked at setup:
@@ -60,6 +73,18 @@ async def async_get_config_entry_diagnostics(
         # tuxweb and presents an authority that verifies it, and the entry
         # goes on unverified until the user accepts it.
         "trust_pending": coordinator.trust_pending,
+        # Whether the panel declared it can be issued a certificate, whether
+        # Home Assistant has issued one from an authority of the entry's own
+        # (its subject and fingerprint), and when that certificate expires.
+        "certificate_install": CAP_CERTIFICATE_INSTALL
+        in coordinator.client.capabilities,
+        "ca_issued_by_home_assistant": own_described is not None,
+        "home_assistant_ca": (
+            {"subject": own_described.subject, "sha256": own_described.fingerprint}
+            if own_described is not None
+            else None
+        ),
+        "cert_not_after": entry.data.get(CONF_CERT_NOT_AFTER),
         # The partition this entry addresses on the REST poll and on every
         # arm/disarm command. NOT a filter on the push stream, which carries
         # no partition field and is scoped by the firmware to whichever
