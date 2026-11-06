@@ -53,6 +53,7 @@ import aiohttp
 
 from .api import (
     TuxedoTouchAuthError,
+    TuxedoTouchCertificateError,
     TuxedoTouchClient,
     TuxedoTouchError,
     TuxedoTouchTokenRejected,
@@ -475,6 +476,7 @@ class TuxedoPushStream:
         on_connection_change: Callable[[bool], None],
         on_display: Callable[[KeypadDisplay], None] | None = None,
         on_credentials_rejected: Callable[[], None] | None = None,
+        on_certificate_failed: Callable[[TuxedoTouchError], None] | None = None,
         push_url: str | None = None,
         push_token: str | None = None,
     ) -> None:
@@ -488,6 +490,9 @@ class TuxedoPushStream:
         # Told when the stream stops on a refused web login, so the refusal is
         # written to the entry before anything can restart with a fresh budget.
         self._on_credentials_rejected = on_credentials_rejected
+        # Told when the stream stops because the panel's certificate did not
+        # verify, so the repair is raised whichever source met it first.
+        self._on_certificate_failed = on_certificate_failed
         # Where the stream comes from, if not the panel. Defaults to None so an
         # existing entry behaves exactly as before.
         self._push_url = push_url or None
@@ -498,6 +503,11 @@ class TuxedoPushStream:
         # the stream has stopped rather than backed off. Only a reauth and the
         # reload it brings starts a stream again.
         self.auth_failed = False
+        # Terminal too: the panel's TLS did not verify against the pinned
+        # authority. Reconnecting would meet the same certificate, and the
+        # legacy context is never the answer; accepting the certificate in
+        # the repair reloads the entry, which starts a new stream.
+        self.certificate_failed = False
         # The third terminal state: the loop failed repeatedly for a reason
         # this module does not name, or a configured relay URL is not https.
         # `last_error` says which. Reported in diagnostics beside the other
@@ -589,6 +599,9 @@ class TuxedoPushStream:
                     _LOGGER.debug("Push stream session expired; logging in again")
                     continue
                 _LOGGER.debug("Push stream session expired again; backing off")
+            except TuxedoTouchCertificateError as err:
+                self._stop_on_certificate(err)
+                return
             except TuxedoTouchAuthError as err:
                 # Terminal ONLY because this class means the panel compared a
                 # credential and refused it; api.py raises it nowhere else. A
@@ -636,6 +649,18 @@ class TuxedoPushStream:
                 )
                 return
             except (TuxedoTouchError, aiohttp.ClientError, TimeoutError) as err:
+                # The panel's own stream on a verifying context, refused at
+                # the TLS layer: the certificate, not a drop. A relay keeps
+                # its ordinary verification and its ordinary reconnect.
+                certificate = (
+                    self._client.certificate_error(err)
+                    if isinstance(err, aiohttp.ClientSSLError)
+                    and self._push_url is None
+                    else None
+                )
+                if certificate is not None:
+                    self._stop_on_certificate(certificate)
+                    return
                 _LOGGER.debug("Push stream dropped (%s); reconnecting", err)
                 unexpected_failures = 0
                 self._drops += 1
@@ -737,15 +762,14 @@ class TuxedoPushStream:
             sock_connect=PUSH_CONNECT_TIMEOUT,
             sock_read=PUSH_READ_TIMEOUT,
         )
-        # The client's SSL argument is a DELIBERATELY BROKEN context - no
-        # certificate verification, no hostname check - and it is justified by
-        # exactly one thing: the panel's own expired 2009 self-signed
-        # certificate, which nothing else will complete a handshake against.
-        # A configured relay is not that panel. It is an address the operator
-        # typed, it receives the push token, and it has no claim on the
-        # panel's exemption, so it is verified the ordinary way. Anyone
-        # terminating TLS on a shim can present a certificate the box trusts
-        # or serve the stream over http.
+        # The client's SSL argument, read now so the stream opens with the
+        # context current at connect time: the one verifying against the
+        # pinned authority on tuxweb, or on stock the legacy one that stock's
+        # expired 2009 self-signed certificate needs. A configured relay is
+        # neither. It is an address the operator typed, it receives the push
+        # token, and it has no claim on the panel's context, so it is
+        # verified the ordinary way. Anyone terminating TLS on a shim can
+        # present a certificate the box trusts or serve the stream over http.
         ssl_arg: ssl.SSLContext | bool = (
             True if self._push_url else self._client.ssl_arg
         )
@@ -839,6 +863,19 @@ class TuxedoPushStream:
                 held = time.monotonic() - started >= PUSH_STABLE_AFTER
                 if held and self.frames > frames_before:
                     self.reconnect_wait = PUSH_BACKOFF_INITIAL
+
+    def _stop_on_certificate(self, err: TuxedoTouchError) -> None:
+        """End the task on a certificate the pinned authority does not verify.
+
+        Like a refused credential: no reconnect loop and no login. Logged at
+        debug here because the coordinator warns once per episode for both
+        sources when it raises the repair.
+        """
+        self.certificate_failed = True
+        self.last_error = f"{type(err).__name__}: {err}"
+        _LOGGER.debug("The push stream stopped on the panel's certificate: %s", err)
+        if self._on_certificate_failed is not None:
+            self._on_certificate_failed(err)
 
     def _relay_headers(self) -> dict[str, str]:
         """The push token, both ways, because a relay may gate on either."""

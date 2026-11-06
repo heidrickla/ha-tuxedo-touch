@@ -14,6 +14,11 @@ CONF_USE_HTTPS = "use_https"
 # stock entry. Stored beside the web credentials because it is one: it opens
 # the alarm, so it is masked on every form and never suggested back.
 CONF_TUXWEB_TOKEN = "tuxweb_token"
+# The certificate authority a tuxweb panel over HTTPS is trusted through, as
+# PEM. Learnt the first time the panel is reached and proved by a request
+# that verifies against it; every later connection verifies against it. Never
+# typed by anyone, and absent on stock and on plain HTTP.
+CONF_PANEL_CA = "panel_ca"
 # The collapsed section of the setup forms; its fields are stored flat in the
 # entry beside the address and the login.
 CONF_ADVANCED = "advanced"
@@ -31,6 +36,7 @@ OPT_CREDENTIALS_REJECTED = "credentials_rejected"
 ISSUE_HTTPS_REDIRECT = "https_redirect"
 ISSUE_DUPLICATE_ENTRY = "duplicate_entry"
 ISSUE_CREDENTIALS_REJECTED = "credentials_rejected"
+ISSUE_PANEL_CERTIFICATE = "panel_certificate"
 
 DEFAULT_PARTITION = 1
 DEFAULT_PORT_HTTP = 80

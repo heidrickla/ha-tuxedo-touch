@@ -88,10 +88,11 @@ def no_panel_behind_the_fixtures(request):
     on the machine running the suite. The probe answers "stock", which is
     what every entry in ENTRY_DATA is: a test about tuxweb brings the fake.
 
-    A test that brings its own `fake_panel` or `fake_tuxweb` is opted out -
-    it has a real server on 127.0.0.1 and wants the real client to reach it.
+    A test that brings its own `fake_panel`, `fake_tuxweb` or `tls_tuxweb`
+    is opted out - it has a real server on 127.0.0.1 and wants the real
+    client to reach it.
     """
-    if {"fake_panel", "fake_tuxweb"} & set(request.fixturenames):
+    if {"fake_panel", "fake_tuxweb", "tls_tuxweb"} & set(request.fixturenames):
         yield
         return
     with (

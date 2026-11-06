@@ -31,6 +31,7 @@ from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from .api import (
     TuxedoTouchAuthError,
+    TuxedoTouchCertificateError,
     TuxedoTouchClient,
     TuxedoTouchConnectionError,
     TuxedoTouchError,
@@ -39,6 +40,7 @@ from .api import (
 from .const import (
     CONF_ADVANCED,
     CONF_MAC,
+    CONF_PANEL_CA,
     CONF_PARTITION,
     CONF_TUXWEB_TOKEN,
     CONF_USE_HTTPS,
@@ -205,13 +207,14 @@ def _needs_a_probe(entry: ConfigEntry[Any], data: Mapping[str, Any]) -> bool:
     return any(data.get(field) != entry.data.get(field) for field in PROBED)
 
 
-async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
+async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str | None:
     """Attempt a real login against the panel; raises on failure.
 
     A session of its own for its cookie jar, but on Home Assistant's shared
     connector - the same pool an entry's coordinator uses. With one SSLContext
-    shared by every client (see api._legacy_ssl_context) that pool key matches
-    the coordinator's, so this login lands on the connection the entry left
+    shared by every client (see api._legacy_ssl_context, and
+    api._verified_ssl_context for a pinned panel) that pool key matches the
+    coordinator's, so this login lands on the connection the entry left
     behind rather than opening a second one to a panel that serves one at a
     time.
 
@@ -219,6 +222,9 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
     what "a real login" is: the handshake on stock, one token-gated status
     read on tuxweb. A tuxweb panel with no token entered fails here with the
     token named rather than with a login the panel does not serve.
+
+    Returns the certificate authority the client is pinned to: the one in
+    `data`, or the one a tuxweb panel over HTTPS proved on this first use.
     """
     session = async_create_clientsession(hass, auto_cleanup=False)
     try:
@@ -230,8 +236,10 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
             username=data[CONF_USERNAME],
             password=data[CONF_PASSWORD],
             tuxweb_token=data.get(CONF_TUXWEB_TOKEN),
+            panel_ca=data.get(CONF_PANEL_CA),
         )
         await client.async_check_credentials()
+        return client.panel_ca
     finally:
         # detach(), not close(): helper-created sessions share HA's connector
         # pool, so HA replaces close() with a warn-and-no-op wrapper. detach()
@@ -257,9 +265,19 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     _discovered_mac: str
 
     async def _async_validate(self, data: dict[str, Any]) -> dict[str, str]:
-        """Validate credentials against the panel, returning form errors."""
+        """Validate credentials against the panel, returning form errors.
+
+        A pin the probe learnt is written into `data`, so the entry created
+        or updated from it carries the authority it was proved against.
+        """
         try:
-            await _validate_input(self.hass, data)
+            pin = await _validate_input(self.hass, data)
+        except TuxedoTouchCertificateError as err:
+            # A pinned entry meeting a certificate its authority did not
+            # issue. Never retried unverified; the repair is where a new one
+            # is accepted.
+            _LOGGER.debug("Tuxedo Touch check refused on the certificate: %s", err)
+            return {"base": "certificate_untrusted"}
         except TuxedoTouchTokenRejected as err:
             # Before the parent class, so a token is named as a token. The
             # message tells the two apart: a token the panel refused, or a
@@ -283,6 +301,8 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         except Exception:
             _LOGGER.exception("Unexpected error validating Tuxedo Touch connection")
             return {"base": "unknown"}
+        if pin is not None:
+            data[CONF_PANEL_CA] = pin
         return {}
 
     async def _async_validate_reconfigure(
@@ -552,6 +572,10 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             # what makes an address change a move rather than a new panel.
             if mac := entry.data.get(CONF_MAC):
                 merged[CONF_MAC] = mac
+            # The pinned authority is kept too, and the probe verifies
+            # against it. Unused while the entry is on plain HTTP.
+            if pin := entry.data.get(CONF_PANEL_CA):
+                merged[CONF_PANEL_CA] = pin
             unique_id = build_unique_id(
                 merged.get(CONF_MAC),
                 user_input[CONF_HOST],

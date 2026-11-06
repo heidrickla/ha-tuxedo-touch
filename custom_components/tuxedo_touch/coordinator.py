@@ -21,6 +21,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import (
     TuxedoStatus,
     TuxedoTouchAuthError,
+    TuxedoTouchCertificateError,
     TuxedoTouchClient,
     TuxedoTouchError,
     TuxedoTouchHttpsRequiredError,
@@ -28,6 +29,7 @@ from .api import (
 )
 from .const import (
     COMMAND_CONFIRM_TIMEOUT,
+    CONF_PANEL_CA,
     CONF_PARTITION,
     CONF_TUXWEB_TOKEN,
     CONF_USE_HTTPS,
@@ -35,6 +37,7 @@ from .const import (
     DOMAIN,
     ISSUE_CREDENTIALS_REJECTED,
     ISSUE_HTTPS_REDIRECT,
+    ISSUE_PANEL_CERTIFICATE,
     OPT_CREDENTIALS_REJECTED,
     OPT_PUSH_TOKEN,
     OPT_PUSH_URL,
@@ -118,10 +121,12 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
 
     The session comes from Home Assistant's helper, so it runs on the shared
     connector. It is a session of its own only for its cookie jar: the panel
-    sets a session cookie with a random name per login. (The permissive
-    SSLContext is passed per-request and would work on any session; it is not
-    the reason for a separate session, and it is shared with every other
-    client so that they all queue on one pooled connection per panel.)
+    sets a session cookie with a random name per login. (The SSLContext is
+    passed per-request and would work on any session; it is not the reason
+    for a separate session. Whichever one the client uses - the legacy one
+    for stock, the verifying one for a pinned tuxweb panel - is one cached
+    object shared with every other client for the same panel, so that they
+    all queue on one pooled connection.)
     """
 
     def __init__(self, hass: HomeAssistant, entry: TuxedoTouchConfigEntry) -> None:
@@ -157,6 +162,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             username=entry.data[CONF_USERNAME],
             password=entry.data[CONF_PASSWORD],
             tuxweb_token=entry.data.get(CONF_TUXWEB_TOKEN),
+            panel_ca=entry.data.get(CONF_PANEL_CA),
         )
         self._last_command_monotonic = 0.0
         # One poll at a time, and a handle on the one in flight: see
@@ -170,6 +176,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             self._async_push_connection_changed,
             on_display=self._async_push_display,
             on_credentials_rejected=self._async_credentials_rejected,
+            on_certificate_failed=self.async_note_certificate_failure,
             push_url=entry.options.get(OPT_PUSH_URL),
             push_token=entry.options.get(OPT_PUSH_TOKEN),
         )
@@ -612,6 +619,10 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             self._command_waiters.append(waiter)
         try:
             await command
+        except TuxedoTouchCertificateError as err:
+            self._drop_waiter(waiter)
+            self.async_note_certificate_failure(err)
+            raise
         except TuxedoTouchAuthError as err:
             self._drop_waiter(waiter)
             # A command can be the call whose login the panel refuses. Written
@@ -768,6 +779,56 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         self._https_issue_raised = False
         ir.async_delete_issue(self.hass, DOMAIN, self._https_issue_id)
 
+    @property
+    def _certificate_issue_id(self) -> str:
+        return issue_id(ISSUE_PANEL_CERTIFICATE, self._entry.entry_id)
+
+    @callback
+    def async_note_certificate_failure(self, err: TuxedoTouchError) -> None:
+        """The panel's TLS did not verify against the pinned authority.
+
+        Raises the fixable panel_certificate issue, whose fix flow shows what
+        the panel now presents and asks before trusting it. Warned once per
+        episode rather than once per poll: the issue standing is the episode,
+        and it outlives this coordinator across setup retries. Nothing here
+        logs in or falls back to the legacy context.
+        """
+        existing = ir.async_get(self.hass).async_get_issue(
+            DOMAIN, self._certificate_issue_id
+        )
+        if existing is None or not existing.active:
+            _LOGGER.warning(
+                "The panel at %s presented a certificate that does not verify "
+                "against the certificate authority this entry trusts (%s). "
+                "Its entities stay unavailable, and nothing logs in or falls "
+                "back to an unverified connection, until the panel presents "
+                "the trusted certificate again or the new one is accepted "
+                "from the repair notification",
+                self._entry.data[CONF_HOST],
+                err,
+            )
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._certificate_issue_id,
+            data={"entry_id": self._entry.entry_id},
+            is_fixable=True,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=ISSUE_PANEL_CERTIFICATE,
+            translation_placeholders={"title": self._entry.title},
+        )
+
+    @callback
+    def _async_clear_certificate_issue(self) -> None:
+        """A request that verified (or needed no verifying) has succeeded."""
+        if ir.async_get(self.hass).async_get_issue(DOMAIN, self._certificate_issue_id):
+            _LOGGER.info(
+                "The panel at %s verifies against the trusted certificate "
+                "authority again",
+                self._entry.data[CONF_HOST],
+            )
+            ir.async_delete_issue(self.hass, DOMAIN, self._certificate_issue_id)
+
     async def _async_setup(self) -> None:
         """Ask the panel which firmware it runs, once, before the first poll.
 
@@ -783,15 +844,34 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         poll: UpdateFailed, which the first refresh turns into a setup retry.
         Nothing here can spend a login - the probe never touches the
         handshake - so a panel that is down costs nothing but the retry.
+
+        It is also where an existing entry learns its pin: a tuxweb panel
+        over HTTPS with none stored is trusted on first use by the probe, and
+        the authority it proved is written to the entry here, once. Writing
+        data reloads nothing, because this integration registers no update
+        listener. A pinned probe that does not verify raises the certificate
+        repair and fails setup, and is retried without a login.
         """
         try:
             await self.client.async_probe_capabilities()
+        except TuxedoTouchCertificateError as err:
+            self.async_note_certificate_failure(err)
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="panel_certificate",
+                translation_placeholders={"error": str(err)},
+            ) from err
         except TuxedoTouchError as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="update_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+        pin = self.client.panel_ca
+        if pin is not None and pin != self._entry.data.get(CONF_PANEL_CA):
+            self.hass.config_entries.async_update_entry(
+                self._entry, data={**self._entry.data, CONF_PANEL_CA: pin}
+            )
 
     async def _async_update_data(self) -> TuxedoStatus:
         """Poll the panel, one poll at a time.
@@ -850,6 +930,13 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 translation_domain=DOMAIN,
                 translation_key="https_required",
             ) from err
+        except TuxedoTouchCertificateError as err:
+            self.async_note_certificate_failure(err)
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="panel_certificate",
+                translation_placeholders={"error": str(err)},
+            ) from err
         except TuxedoTouchError as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
@@ -858,6 +945,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             ) from err
 
         self._async_clear_https_issue()
+        self._async_clear_certificate_issue()
 
         if self._last_command_monotonic > poll_started and self.data is not None:
             _LOGGER.debug(

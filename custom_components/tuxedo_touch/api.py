@@ -20,6 +20,15 @@ reopens the question is a tuxweb refusal - a 401 on the token, or a tuxweb
 path answering 404 - which asks once more before it is believed
 (async_recheck_capabilities), so a panel rolled back to stock under a running
 entry is talked to as stock from the next call rather than for ever as tuxweb.
+
+TLS follows the firmware. Stock is reached with the legacy context its 2009
+certificate needs. A tuxweb panel over HTTPS is trusted on first use: once
+the probe has said tuxweb, the client reads the certificate authority the
+panel presents, proves it by repeating the probe with a context that
+verifies against it, and from then on every request of that client verifies
+against that authority (panel_ca). A pinned client never goes back to the
+legacy context: a certificate it does not verify is
+TuxedoTouchCertificateError.
 """
 
 from __future__ import annotations
@@ -34,12 +43,14 @@ import re
 import ssl
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import cache
 from typing import Any
 
 import aiohttp
-from cryptography.hazmat.primitives import padding
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from .const import (
@@ -66,6 +77,8 @@ ALARM_CODE_RE = re.compile(r"[0-9]+")
 # indicates a hang, not a slow success. aiohttp raises TimeoutError (not a
 # ClientError) when this expires - see the except clauses below.
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
+# The same budget for the handshake-only connection that reads the chain.
+_CHAIN_TIMEOUT = 15.0
 
 # How many credential POSTs one client may spend on credentials the panel is
 # refusing. One - and that number comes from the panel, not from politeness.
@@ -200,6 +213,36 @@ class TuxedoTouchHttpsRequiredError(TuxedoTouchError):
     """
 
 
+class TuxedoTouchCertificateError(TuxedoTouchError):
+    """The panel's TLS did not verify against the authority this entry trusts.
+
+    Raised only by a client holding a pinned authority, and only for a
+    request made with the verifying context: a certificate that authority
+    did not issue, a name that does not match, or a handshake the verifying
+    context refuses (a panel back on stock firmware ends there, before any
+    certificate is compared). Never retried on the legacy context, never read
+    as the panel having gone back to stock, and never a reason to log in: the
+    coordinator raises the panel_certificate repair, whose fix flow shows the
+    certificate the panel now presents and asks before trusting it.
+    """
+
+
+@dataclass(frozen=True)
+class PanelCertificate:
+    """A certificate authority as the panel presented it, in readable form.
+
+    `fingerprint` is the SHA-256 of the authority's DER encoding in colon
+    hex, `leaf_expires` the expiry of the certificate the panel serves (None
+    when only the authority is known, as for a stored pin).
+    """
+
+    anchor_pem: str
+    subject: str
+    issuer: str
+    fingerprint: str
+    leaf_expires: str | None = None
+
+
 @dataclass(frozen=True)
 class TuxedoStatus:
     """One reported panel status, and where it came from.
@@ -252,6 +295,131 @@ def _legacy_ssl_context() -> ssl.SSLContext:
     return ctx
 
 
+@cache
+def _verified_ssl_context(pem: str) -> ssl.SSLContext:
+    """A context that verifies a tuxweb panel against the authority pinned for it.
+
+    Certificate and hostname verification on, TLS 1.2 at least, default
+    ciphers and no legacy options. The authority is loaded from `cadata`
+    only: Home Assistant's blocking-call guard flags a load from a file path
+    in the event loop, and a PEM string needs no file.
+
+    ONE object per PEM string, cached for the same reason _legacy_ssl_context
+    is: aiohttp keys its connection pool on the ssl argument and SSLContext
+    defines no equality, so the config flow's probe and the entry's
+    coordinator must be handed the same object to share a pool key. Building
+    one per client would put two connections on a panel the rest of this
+    module treats as one-connection.
+    """
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.check_hostname = True
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_verify_locations(cadata=pem)
+    return ctx
+
+
+def _verifies(ssl_arg: ssl.SSLContext | bool) -> bool:
+    """Whether a request made with this ssl argument verifies the panel."""
+    return isinstance(ssl_arg, ssl.SSLContext) and ssl_arg.verify_mode in (
+        ssl.CERT_REQUIRED,
+        ssl.CERT_OPTIONAL,
+    )
+
+
+def _transport_error(
+    err: aiohttp.ClientError | TimeoutError, ssl_arg: ssl.SSLContext | bool
+) -> TuxedoTouchError:
+    """The client's error for a request that failed below HTTP.
+
+    A TLS failure on a verifying request is a certificate error, whether the
+    certificate was refused or the handshake never reached it; everything
+    else, and every failure on the legacy context, is a connection error as
+    it always was.
+    """
+    if _verifies(ssl_arg) and isinstance(err, aiohttp.ClientSSLError):
+        return TuxedoTouchCertificateError(
+            "The panel's TLS connection did not verify against the certificate "
+            f"authority this entry trusts: {err}"
+        )
+    return TuxedoTouchConnectionError(str(err))
+
+
+def _der_of(item: object) -> bytes | None:
+    """One certificate of a peer chain as DER bytes.
+
+    get_unverified_chain answers DER bytes on Python 3.14; on 3.13 the same
+    call has answered certificate objects, whose public_bytes() defaults to
+    PEM. Both are taken, and anything else is dropped.
+    """
+    if isinstance(item, (bytes, bytearray)):
+        return bytes(item)
+    public_bytes = getattr(item, "public_bytes", None)
+    if public_bytes is None:
+        return None
+    encoded = public_bytes()
+    if isinstance(encoded, bytes) and not encoded.startswith(b"-----"):
+        return encoded
+    if isinstance(encoded, bytes):
+        encoded = encoded.decode("ascii")
+    if isinstance(encoded, str):
+        return ssl.PEM_cert_to_DER_cert(encoded)
+    return None
+
+
+def _chain_of(ssl_object: object) -> list[bytes]:
+    """The certificate chain a TLS connection's peer sent, leaf first, as DER.
+
+    Empty when the TLS object offers no chain.
+    """
+    chain_of = getattr(ssl_object, "get_unverified_chain", None)
+    if chain_of is None:
+        return []
+    return [der for item in chain_of() or [] if (der := _der_of(item)) is not None]
+
+
+def _fingerprint(certificate: x509.Certificate) -> str:
+    return certificate.fingerprint(hashes.SHA256()).hex(":").upper()
+
+
+def presented_certificate(chain: list[bytes]) -> PanelCertificate | None:
+    """The trust anchor of a peer chain - its last certificate - and the leaf's expiry.
+
+    None for an empty chain or one that does not parse.
+    """
+    if not chain:
+        return None
+    try:
+        leaf = x509.load_der_x509_certificate(chain[0])
+        anchor = x509.load_der_x509_certificate(chain[-1])
+    except ValueError:
+        return None
+    return PanelCertificate(
+        anchor_pem=ssl.DER_cert_to_PEM_cert(chain[-1]),
+        subject=anchor.subject.rfc4514_string(),
+        issuer=anchor.issuer.rfc4514_string(),
+        fingerprint=_fingerprint(anchor),
+        leaf_expires=leaf.not_valid_after_utc.isoformat(),
+    )
+
+
+def describe_certificate(pem: str) -> PanelCertificate | None:
+    """A stored authority in readable form, for diagnostics.
+
+    None if it does not parse.
+    """
+    try:
+        certificate = x509.load_pem_x509_certificate(pem.encode("ascii"))
+    except ValueError:
+        return None
+    return PanelCertificate(
+        anchor_pem=pem,
+        subject=certificate.subject.rfc4514_string(),
+        issuer=certificate.issuer.rfc4514_string(),
+        fingerprint=_fingerprint(certificate),
+    )
+
+
 class TuxedoTouchClient:
     """Handles login/session/crypto for one Tuxedo Touch unit."""
 
@@ -264,6 +432,7 @@ class TuxedoTouchClient:
         username: str,
         password: str,
         tuxweb_token: str | None = None,
+        panel_ca: str | None = None,
     ) -> None:
         self._session = session
         self._host = host
@@ -292,13 +461,61 @@ class TuxedoTouchClient:
         # every reconnect, poll and command for as long as the client lives.
         self._failed_logins = 0
 
-        self._ssl_ctx: ssl.SSLContext | None = (
-            _legacy_ssl_context() if use_https else None
-        )
+        # The certificate authority this panel is trusted through, as PEM:
+        # stored on the entry, or learnt by this client's own probe. Used
+        # only over HTTPS and only while the panel is not known to be stock.
+        self._panel_ca = panel_ca or None
+        # What the panel presented to the probe that learnt (or failed to
+        # learn) the pin, for the certificate repair to show.
+        self._presented: PanelCertificate | None = None
 
     @property
     def base_url(self) -> str:
         return f"{self._scheme}://{self._host}:{self._port}"
+
+    @property
+    def _ssl_ctx(self) -> ssl.SSLContext | None:
+        """The context the next request uses, decided at the time it is made.
+
+        None on plain HTTP. The verifying context once an authority is pinned,
+        for the probe, the re-check and every tuxweb request; it is given up
+        only for a panel that answered stock through it. Otherwise the legacy
+        context stock firmware needs.
+        """
+        if self._scheme != "https":
+            return None
+        if self._panel_ca is not None and self._tuxweb is not False:
+            return _verified_ssl_context(self._panel_ca)
+        return _legacy_ssl_context()
+
+    @property
+    def panel_ca(self) -> str | None:
+        """The pinned certificate authority as PEM, or None."""
+        return self._panel_ca
+
+    @property
+    def presented_certificate(self) -> PanelCertificate | None:
+        """What the panel presented to this client's first-use probe, if it ran."""
+        return self._presented
+
+    @property
+    def tls(self) -> str:
+        """How this client reaches the panel: verified, legacy, or plain."""
+        ctx = self._ssl_ctx
+        if ctx is None:
+            return "plain"
+        return "verified" if _verifies(ctx) else "legacy"
+
+    def certificate_error(
+        self, err: aiohttp.ClientError
+    ) -> TuxedoTouchCertificateError | None:
+        """The certificate error a failed request of this client amounts to, if any.
+
+        For a caller that made the request itself on this client's ssl_arg -
+        the push stream - and has to tell a certificate failure from a drop.
+        """
+        failed = _transport_error(err, self.ssl_arg)
+        return failed if isinstance(failed, TuxedoTouchCertificateError) else None
 
     @property
     def session(self) -> aiohttp.ClientSession:
@@ -312,7 +529,11 @@ class TuxedoTouchClient:
 
     @property
     def ssl_arg(self) -> ssl.SSLContext | bool:
-        """What to pass as aiohttp's `ssl=`, shared for the pool key's sake."""
+        """What to pass as aiohttp's `ssl=`, shared for the pool key's sake.
+
+        Read per request, so the push stream opens with the context current
+        when it connects - the verifying one once the probe has pinned.
+        """
         return self._ssl_ctx or True
 
     # ------------------------------------------------------------------
@@ -363,12 +584,21 @@ class TuxedoTouchClient:
         panel that has stopped declaring the list drops the client to stock.
         A stock client is never re-asked - its 401 is a session to renew, its
         login budget is the guard, and a move TO tuxweb takes a reload.
+
+        Over HTTPS with no pinned authority, a tuxweb answer is also where
+        the pin is learnt: see _async_trust_on_first_use. With a pin, this
+        GET is made with the verifying context, and a certificate it does not
+        verify raises TuxedoTouchCertificateError, uncached, rather than
+        being asked again on the legacy context.
         """
         if self._tuxweb is not None:
             return self._tuxweb
+        learning = self._scheme == "https" and self._panel_ca is None
         status, capabilities = await self._async_ask_capabilities()
         self._tuxweb = capabilities is not None
         self._capabilities = capabilities or frozenset()
+        if self._tuxweb and learning:
+            await self._async_trust_on_first_use()
         if self._tuxweb:
             _LOGGER.debug(
                 "The panel at %s runs tuxweb, declaring %s",
@@ -415,6 +645,8 @@ class TuxedoTouchClient:
         """
         if not self.tuxweb:
             raise TuxedoTouchError("async_recheck_capabilities is for tuxweb mode only")
+        # On a pinned client this GET verifies, and a certificate failure is
+        # raised as itself: it says nothing about which firmware answered.
         probe_status, capabilities = await self._async_ask_capabilities()
         if capabilities is not None:
             self._capabilities = capabilities
@@ -444,20 +676,24 @@ class TuxedoTouchClient:
             "talks to it on the stock contract from the next request"
         )
 
-    async def _async_ask_capabilities(self) -> tuple[int, frozenset[str] | None]:
+    async def _async_ask_capabilities(
+        self, *, ssl_ctx: ssl.SSLContext | None = None
+    ) -> tuple[int, frozenset[str] | None]:
         """One GET of GetCapabilities: the status, and the list if it declared one.
 
-        The request behind both the probe and the re-check, so the two cannot
-        drift: built by hand, no session and no token, redirects not followed,
-        and a connection failure raised as such. None for the list is "not
-        tuxweb", whatever the status was; see _capabilities_of for why an
-        empty list is not the same thing.
+        The request behind the probe, the re-check and the first-use proof,
+        so they cannot drift: built by hand, no session and no token,
+        redirects not followed, and a connection failure raised as such. None
+        for the list is "not tuxweb", whatever the status was; see
+        _capabilities_of for why an empty list is not the same thing.
+        `ssl_ctx` overrides the client's own context, for the proof only.
         """
         url = f"{self.base_url}{API_BASE_PATH}{CAPABILITIES_PATH}"
+        ssl_arg: ssl.SSLContext | bool = ssl_ctx or self.ssl_arg
         try:
             async with self._session.get(
                 url,
-                ssl=self._ssl_ctx or True,
+                ssl=ssl_arg,
                 timeout=_TIMEOUT,
                 allow_redirects=False,
             ) as resp:
@@ -470,8 +706,100 @@ class TuxedoTouchClient:
                         payload = None
                     capabilities = _capabilities_of(payload)
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise TuxedoTouchConnectionError(str(err)) from err
+            raise _transport_error(err, ssl_arg) from err
         return status, capabilities
+
+    async def _async_read_chain(self) -> list[bytes]:
+        """The certificate chain the panel serves, read from a handshake alone.
+
+        Its own connection, on the legacy context, closed as soon as the
+        handshake is done and nothing sent on it. The probe's own response
+        cannot supply the chain: aiohttp hands the connection back to the
+        pool as soon as a body has arrived with the headers, which the
+        capability answer always does, so the response no longer holds it.
+        Empty when the connection cannot be made; the proof that follows is
+        what the chain is judged by in any case.
+        """
+        try:
+            async with asyncio.timeout(_CHAIN_TIMEOUT):
+                _, writer = await asyncio.open_connection(
+                    self._host, self._port, ssl=_legacy_ssl_context()
+                )
+        except (OSError, TimeoutError) as err:
+            _LOGGER.debug(
+                "Could not read the certificate chain at %s: %s", self._host, err
+            )
+            return []
+        try:
+            return _chain_of(writer.get_extra_info("ssl_object"))
+        finally:
+            writer.close()
+            with suppress(OSError, TimeoutError):
+                async with asyncio.timeout(_CHAIN_TIMEOUT):
+                    await writer.wait_closed()
+
+    async def _async_trust_on_first_use(self) -> None:
+        """Pin the authority a tuxweb panel presented, once it has proved itself.
+
+        The anchor is the last certificate of the chain the panel sends
+        (_async_read_chain). It is kept only if the probe, repeated once with
+        a context that verifies against it - hostname included - still
+        answers as tuxweb: that is the anchor verifying the certificate of the
+        panel answering HTTP, by effect. If it does
+        not, nothing is pinned and this client goes on with the legacy
+        context exactly as before, with one warning. A proof that could not
+        connect at all pins nothing and says nothing more than debug; the
+        next setup asks again.
+        """
+        self._presented = presented_certificate(await self._async_read_chain())
+        if self._presented is None:
+            _LOGGER.warning(
+                "The panel at %s runs tuxweb over HTTPS but its certificate chain "
+                "could not be read, so its certificate is not verified",
+                self._host,
+            )
+            return
+        anchor = self._presented
+        try:
+            context = _verified_ssl_context(anchor.anchor_pem)
+            _, capabilities = await self._async_ask_capabilities(ssl_ctx=context)
+        except (ssl.SSLError, TuxedoTouchCertificateError) as err:
+            _LOGGER.warning(
+                "The panel at %s runs tuxweb over HTTPS, but the certificate "
+                "authority it presents (%s, SHA-256 %s) does not verify its own "
+                "certificate (%s), so its certificate is not verified and the "
+                "connection is made as before",
+                self._host,
+                anchor.subject,
+                anchor.fingerprint,
+                err,
+            )
+            return
+        except TuxedoTouchError as err:
+            _LOGGER.debug(
+                "Could not repeat the capability probe at %s to prove its "
+                "certificate (%s); nothing is pinned this time",
+                self._host,
+                err,
+            )
+            return
+        if capabilities is None:
+            _LOGGER.warning(
+                "The panel at %s verified against the certificate authority it "
+                "presents (%s) but then declared no capabilities, so nothing is "
+                "pinned",
+                self._host,
+                anchor.subject,
+            )
+            return
+        self._panel_ca = anchor.anchor_pem
+        _LOGGER.info(
+            "The panel at %s is trusted through the certificate authority %s "
+            "(SHA-256 %s), and every connection to it is verified from here on",
+            self._host,
+            anchor.subject,
+            anchor.fingerprint,
+        )
 
     def _tuxweb_headers(self) -> dict[str, str]:
         """The whole of tuxweb's auth: the token, as a bearer header.
@@ -562,7 +890,7 @@ class TuxedoTouchClient:
 
         try:
             async with self._session.get(
-                login_url, ssl=self._ssl_ctx or True, timeout=_TIMEOUT
+                login_url, ssl=self.ssl_arg, timeout=_TIMEOUT
             ) as resp:
                 if resp.status != 200:
                     raise TuxedoTouchConnectionError(
@@ -572,7 +900,7 @@ class TuxedoTouchClient:
                 random_id = resp.headers.get("RandomID")
                 zfl_cookie = resp.cookies.get("_zFL")
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise TuxedoTouchConnectionError(str(err)) from err
+            raise _transport_error(err, self.ssl_arg) from err
 
         if not challenge or not random_id:
             raise TuxedoTouchError(
@@ -593,7 +921,7 @@ class TuxedoTouchClient:
                 login_url,
                 data=body,
                 cookies=cookies,
-                ssl=self._ssl_ctx or True,
+                ssl=self.ssl_arg,
                 timeout=_TIMEOUT,
                 allow_redirects=False,
             ) as resp:
@@ -630,7 +958,7 @@ class TuxedoTouchClient:
                     session_cookie = f"{name}={morsel.value}"
                     break
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise TuxedoTouchConnectionError(str(err)) from err
+            raise _transport_error(err, self.ssl_arg) from err
 
         if not session_cookie:
             self._failed_logins += 1
@@ -670,7 +998,7 @@ class TuxedoTouchClient:
             async with self._session.get(
                 url,
                 headers=headers,
-                ssl=self._ssl_ctx or True,
+                ssl=self.ssl_arg,
                 timeout=_TIMEOUT,
             ) as resp:
                 if resp.status != 200:
@@ -680,7 +1008,7 @@ class TuxedoTouchClient:
                     )
                 body = await resp.text()
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise TuxedoTouchConnectionError(str(err)) from err
+            raise _transport_error(err, self.ssl_arg) from err
 
         match = READIT_RE.search(body)
         if not match:
@@ -823,7 +1151,7 @@ class TuxedoTouchClient:
                 url,
                 data=body,
                 headers=headers,
-                ssl=self._ssl_ctx or True,
+                ssl=self.ssl_arg,
                 timeout=_TIMEOUT,
                 allow_redirects=False,
             ) as resp:
@@ -882,7 +1210,7 @@ class TuxedoTouchClient:
                     )
                     return {}
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise TuxedoTouchConnectionError(str(err)) from err
+            raise _transport_error(err, self.ssl_arg) from err
 
         if not isinstance(payload, dict):
             raise TuxedoTouchError(f"Unexpected API response shape: {payload!r}")
@@ -926,7 +1254,7 @@ class TuxedoTouchClient:
                 # parameters in.
                 data=params,
                 headers=headers,
-                ssl=self._ssl_ctx or True,
+                ssl=self.ssl_arg,
                 timeout=_TIMEOUT,
                 allow_redirects=False,
             ) as resp:
@@ -939,7 +1267,7 @@ class TuxedoTouchClient:
                     # the body to be readable.
                     payload = None
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise TuxedoTouchConnectionError(str(err)) from err
+            raise _transport_error(err, self.ssl_arg) from err
 
         if status == 401:
             # Not a session that expired, and never retried: there is no

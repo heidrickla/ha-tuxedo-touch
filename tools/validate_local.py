@@ -175,6 +175,42 @@ def untranslated_raises(source: str) -> list[str]:
     return bad
 
 
+def repair_flow_sources(source: str) -> dict[str, str] | None:
+    """The source of the flow class FIX_FLOWS maps each ISSUE_ constant to.
+
+    Each class's text includes its bases defined in the same module, so a
+    step inherited from a shared base counts for every flow built on it.
+    None when repairs.py has no FIX_FLOWS mapping.
+    """
+    tree = ast.parse(source)
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+
+    def text_of(name: str) -> str:
+        node = classes.get(name)
+        if node is None:
+            return ""
+        own = ast.get_source_segment(source, node) or ""
+        bases = [base.id for base in node.bases if isinstance(base, ast.Name)]
+        return own + "".join(text_of(base) for base in bases)
+
+    for node in tree.body:
+        target = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target, value = node.target.id, node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            first = node.targets[0]
+            target = first.id if isinstance(first, ast.Name) else None
+            value = node.value
+        if target != "FIX_FLOWS" or not isinstance(value, ast.Dict):
+            continue
+        return {
+            key.id: text_of(flow.id)
+            for key, flow in zip(value.keys, value.values, strict=True)
+            if isinstance(key, ast.Name) and isinstance(flow, ast.Name)
+        }
+    return None
+
+
 def version_tuple(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
 
@@ -500,16 +536,31 @@ def main() -> int:
             "repairs.py defines no async_create_fix_flow",
         )
         # Every step and abort a fix flow can reach needs its own text under
-        # the issue's fix_flow, or the user gets a raw key.
+        # the issue's fix_flow, or the user gets a raw key. With FIX_FLOWS
+        # mapping issues to flow classes, each issue is held to its own
+        # class (and that class's bases in the module); without it, to every
+        # step and abort in the file.
         repairs_src = read(repairs_path)
+        flow_sources = repair_flow_sources(repairs_src)
+        issue_names = constants(const_src, "ISSUE_")
         for key in issue_consts:
             flow = strings.get("issues", {}).get(key, {}).get("fix_flow")
             if flow is None:
                 continue
             steps = set(flow.get("step", {}))
             aborts = set(flow.get("abort", {}))
-            used_steps = set(re.findall(r'step_id="([^"]+)"', repairs_src))
-            used_aborts = set(re.findall(r'reason="([^"]+)"', repairs_src))
+            scoped = repairs_src
+            if flow_sources is not None:
+                const_name = next(
+                    (name for name, value in issue_names.items() if value == key), ""
+                )
+                check(
+                    const_name in flow_sources,
+                    f"issues.{key} has a fix_flow but FIX_FLOWS maps no class to it",
+                )
+                scoped = flow_sources.get(const_name, "")
+            used_steps = set(re.findall(r'step_id="([^"]+)"', scoped))
+            used_aborts = set(re.findall(r'reason="([^"]+)"', scoped))
             check(
                 used_steps <= steps,
                 f"issues.{key}.fix_flow is missing steps {sorted(used_steps - steps)}",

@@ -15,6 +15,7 @@ from .const import (
     ISSUE_CREDENTIALS_REJECTED,
     ISSUE_DUPLICATE_ENTRY,
     ISSUE_HTTPS_REDIRECT,
+    ISSUE_PANEL_CERTIFICATE,
     OPT_CREDENTIALS_REJECTED,
     issue_id,
 )
@@ -132,5 +133,6 @@ async def async_remove_entry(
         ISSUE_CREDENTIALS_REJECTED,
         ISSUE_DUPLICATE_ENTRY,
         ISSUE_HTTPS_REDIRECT,
+        ISSUE_PANEL_CERTIFICATE,
     ):
         ir.async_delete_issue(hass, DOMAIN, issue_id(key, entry.entry_id))

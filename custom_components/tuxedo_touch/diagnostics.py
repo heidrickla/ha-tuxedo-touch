@@ -8,7 +8,8 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_MAC, CONF_TUXWEB_TOKEN
+from .api import describe_certificate
+from .const import CONF_MAC, CONF_PANEL_CA, CONF_TUXWEB_TOKEN
 from .coordinator import TuxedoTouchConfigEntry
 
 # The host is on the user's LAN and the credentials open their alarm panel.
@@ -29,8 +30,13 @@ async def async_get_config_entry_diagnostics(
     coordinator = entry.runtime_data
     push = coordinator.push
     status = coordinator.data
+    # The pinned authority is reported by name and fingerprint under
+    # `panel_ca` below rather than as the PEM it is stored as.
+    config = {k: v for k, v in entry.data.items() if k != CONF_PANEL_CA}
+    pinned = coordinator.client.panel_ca
+    described = describe_certificate(pinned) if pinned else None
     return {
-        "config": async_redact_data(dict(entry.data), REDACT),
+        "config": async_redact_data(config, REDACT),
         # Which contract the panel answered to when it was asked at setup:
         # stock, or tuxweb with the capabilities it declared. Read before
         # anything else in the report, because the two fail differently - a
@@ -39,6 +45,17 @@ async def async_get_config_entry_diagnostics(
         # failed rather than merely sent.
         "firmware": "tuxweb" if coordinator.client.tuxweb else "stock",
         "capabilities": sorted(coordinator.client.capabilities),
+        # How the panel is reached: `verified` against the certificate
+        # authority pinned for a tuxweb panel, `legacy` for stock firmware
+        # (and a tuxweb panel whose certificate could not be proved), or
+        # `plain` HTTP. With a pin, the authority's subject and SHA-256
+        # fingerprint, which a certificate repair shows the same way.
+        "tls": coordinator.client.tls,
+        "panel_ca": (
+            {"subject": described.subject, "sha256": described.fingerprint}
+            if described is not None
+            else None
+        ),
         # The partition this entry addresses on the REST poll and on every
         # arm/disarm command. NOT a filter on the push stream, which carries
         # no partition field and is scoped by the firmware to whichever
@@ -104,9 +121,12 @@ async def async_get_config_entry_diagnostics(
         # terminal state: the panel refused the credentials, so the stream
         # stopped rather than spend more failed logins on them, and a report
         # carrying it explains a stream that is down and staying down.
-        # `stopped` is the third, and it says a bug rather than a panel: the
-        # loop failed repeatedly for a reason the module does not name and
-        # gave up, with `last_error` naming it. Without those two a report of
+        # `certificate_failed` is terminal in the same way: the panel's
+        # certificate did not verify against the pinned authority, and the
+        # certificate repair is what restarts it. `stopped` is the next, and
+        # it says a bug rather than a panel: the loop failed repeatedly for a
+        # reason the module does not name and gave up, with `last_error`
+        # naming it. Without these a report of
         # a task that has died reads exactly like one of a stream that is
         # briefly down and backing off, which is what it used to do.
         # `frames` separates a stream that is up and silent from one that
@@ -116,6 +136,7 @@ async def async_get_config_entry_diagnostics(
             "connected": push.connected,
             "unsupported": push.unsupported,
             "auth_failed": push.auth_failed,
+            "certificate_failed": push.certificate_failed,
             "stopped": push.stopped,
             "last_error": push.last_error,
             "connection_id": push.connection_id,

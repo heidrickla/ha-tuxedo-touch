@@ -14,10 +14,13 @@ from tuxweb's own src/api.rs and src/serve.rs, shape for shape - the same
 paths, the vendor's misspelt `Sucess`, arm answering under `Response` and
 disarm under `Result` - because that is what the integration is held to.
 
-Plain HTTP on 127.0.0.1: the panel's expired 1024-bit demo certificate and
-its legacy renegotiation are a property of the transport, not of anything
-tested here, and tests/test_client_io.py already pins the SSLContext they
-need.
+Plain HTTP on 127.0.0.1 by default: the panel's expired 1024-bit demo
+certificate and its legacy renegotiation are a property of the transport, not
+of anything tested here, and tests/test_client_io.py already pins the
+SSLContext they need. Given `ssl_context`, the same server speaks TLS with the
+certificate chain that context serves - the shape of a tuxweb panel over
+HTTPS (tests/tls_certs.py) - closes every connection after one answer so each
+request is a new handshake, and can be moved to another chain with use_tls().
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import ssl
 from typing import Any
 
 from aiohttp import web
@@ -167,6 +171,15 @@ async def wait_until(predicate: Any, timeout: float = 10.0) -> None:
             await asyncio.sleep(0.01)
 
 
+@web.middleware
+async def _close_after_answer(request: web.Request, handler: Any) -> Any:
+    """One answer per connection, so every request makes its own handshake."""
+    response = await handler(request)
+    if not response.prepared:
+        response.force_close()
+    return response
+
+
 def _encrypt(plaintext: str) -> str:
     from cryptography.hazmat.primitives import padding
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -195,7 +208,9 @@ class FakePanel:
         tuxweb: bool = False,
         token: str | None = TUXWEB_TOKEN,
         capabilities: tuple[str, ...] = TUXWEB_CAPABILITIES,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
+        self.ssl_context = ssl_context
         self.username = username
         self.password = password
         self.status = status
@@ -309,7 +324,8 @@ class FakePanel:
 
     # ------------------------------------------------------------- server
     async def start(self) -> None:
-        app = web.Application()
+        middlewares = [_close_after_answer] if self.ssl_context is not None else []
+        app = web.Application(middlewares=middlewares)
         app.router.add_get("/authenticated/index.html", self._login_page)
         app.router.add_post("/authenticated/index.html", self._login)
         app.router.add_get("/tuxedoapi.html", self._keys)
@@ -325,10 +341,32 @@ class FakePanel:
         app.router.add_get("/SimpleDebugger.interface/G.", self._stream)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        self._site = web.TCPSite(self._runner, "127.0.0.1", 0)
+        front = None
+        if self.ssl_context is not None:
+            # A context of its own whose only job is to hand each new
+            # handshake to the chain being served now, so use_tls() can
+            # change it under a running server.
+            front = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            front.sni_callback = self._serve_current_chain
+        self._site = web.TCPSite(self._runner, "127.0.0.1", 0, ssl_context=front)
         await self._site.start()
         sockets = self._runner.addresses
         self.port = int(sockets[0][1])
+
+    def _serve_current_chain(
+        self, ssl_object: ssl.SSLObject, _name: str | None, _front: ssl.SSLContext
+    ) -> None:
+        assert self.ssl_context is not None
+        ssl_object.context = self.ssl_context
+
+    async def use_tls(self, ssl_context: ssl.SSLContext) -> None:
+        """Serve another certificate chain from the next handshake on.
+
+        A connection already open (a push stream) keeps the chain it was
+        opened with, as it would on a panel whose certificate was replaced
+        under it.
+        """
+        self.ssl_context = ssl_context
 
     async def close(self) -> None:
         self.drop_stream()
@@ -580,6 +618,10 @@ class FakePanel:
                 "Content-Type": (f'multipart/x-mixed-replace; boundary="{BOUNDARY}"')
             },
         )
+        if self.ssl_context is not None:
+            # A stream that ends must not leave its connection in the client's
+            # pool either: the next stream request is a new handshake.
+            resp.force_close()
         await resp.prepare(request)
         await resp.write(b"--" + BOUNDARY.encode() + b"\r\n['setCid', 7]")
         if self.stream_ends_at_once:
