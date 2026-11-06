@@ -2,7 +2,7 @@
 
 Notable changes to this integration, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
-## [Unreleased]
+## [0.9.0] - 2026-11-06
 
 ### Added
 
