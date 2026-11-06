@@ -60,6 +60,8 @@ TUXWEB_CAPABILITIES = ("panel_link_state", "command_result", "status_refresh")
 # A tuxweb serving TLS from a configured pair adds this one.
 CERTIFICATE_INSTALL = "certificate_install"
 INSTALL_LIMIT = 16384
+# How long a stalled install holds its answer; tests shorten the client timeout.
+INSTALL_STALL = 1.0
 # The stock answer to the capability endpoint: 404 with this exact 20-byte
 # body, measured on TUXW_V5.3.21.0_VA and reproduced by tuxweb's not_found().
 # The key is unquoted, so it is not JSON, and that is part of the measurement.
@@ -230,6 +232,9 @@ class FakePanel:
         self.install_requests = 0
         self.installed: list[x509.Certificate] = []
         self.install_error: tuple[int, str] | None = None
+        # "after": install, then hold the answer back; "before": hold it back
+        # without installing. Either way it comes too late for the client.
+        self.install_stall: str | None = None
         # Whether TLS is served from a configured pair; tuxweb answers 409
         # tls_not_configured without one, before it looks at the scheme.
         self.tls_configured = True
@@ -653,6 +658,9 @@ class FakePanel:
         body = await request.read()
         if len(body) > INSTALL_LIMIT:
             return web.json_response({"error": "too_large"}, status=413)
+        if self.install_stall == "before":
+            await asyncio.sleep(INSTALL_STALL)
+            return web.json_response({"error": "write_failed"}, status=500)
         loop = asyncio.get_running_loop()
         try:
             context, leaf = await loop.run_in_executor(
@@ -662,6 +670,8 @@ class FakePanel:
             return web.json_response({"error": refused.reason}, status=400)
         self.ssl_context = context
         self.installed.append(leaf)
+        if self.install_stall == "after":
+            await asyncio.sleep(INSTALL_STALL)
         return web.json_response(
             {
                 "installed": True,

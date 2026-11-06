@@ -590,9 +590,9 @@ class TuxedoTouchClient:
     def trust_own_ca(self, pem: str | None) -> None:
         """Trust the entry's own authority beside the pin, from the next request.
 
-        Called before a certificate from a new authority is installed, so a
-        request made while the panel switches still verifies, and with the
-        stored value again if the install failed.
+        Called before a certificate from the entry's authority is installed,
+        so a request made while the panel switches, or after an answer that
+        never arrived, still verifies.
         """
         self._own_ca = pem or None
 

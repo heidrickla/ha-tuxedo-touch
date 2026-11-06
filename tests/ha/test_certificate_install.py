@@ -16,6 +16,7 @@ import ssl
 from http import HTTPStatus
 from unittest.mock import patch
 
+import aiohttp
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -42,6 +43,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.tuxedo_touch import api, certificate, push
+from custom_components.tuxedo_touch import coordinator as coordinator_module
 from custom_components.tuxedo_touch.ca_view import download_name
 from custom_components.tuxedo_touch.const import (
     CONF_CA_CERT,
@@ -200,6 +202,17 @@ async def _press(hass):
     await hass.services.async_call(
         "button", "press", {"entity_id": BUTTON}, blocking=True
     )
+
+
+def _only_the_authority_added(entry, before):
+    """A failed install stored the authority and moved nothing else."""
+    assert entry.data[CONF_CA_CERT]
+    assert entry.data[CONF_CA_KEY]
+    assert {
+        key: value
+        for key, value in entry.data.items()
+        if key not in (CONF_CA_CERT, CONF_CA_KEY)
+    } == before
 
 
 def _renewal_issue(hass):
@@ -445,7 +458,9 @@ async def test_connections_verify_while_the_panel_switches(hass, tls, tls_tuxweb
 async def test_the_authority_is_generated_once_only(hass, tls, tls_tuxweb):
     entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem)
     with patch.object(
-        certificate, "generate_authority", wraps=certificate.generate_authority
+        coordinator_module,
+        "generate_authority",
+        wraps=certificate.generate_authority,
     ) as generated:
         await _setup(hass, entry)
         await _press(hass)
@@ -481,9 +496,11 @@ async def test_the_authority_is_generated_once_only(hass, tls, tls_tuxweb):
         (502, "", "http_502"),
     ],
 )
-async def test_each_refusal_is_named_and_changes_nothing(
+async def test_each_refusal_is_named_and_keeps_the_pin(
     hass, tls, tls_tuxweb, status, body_reason, reason
 ):
+    """The authority is stored before the request and stays; the pin and the
+    expiry do not move, and the client trusts what a reload would."""
     owner = tls["panel"].authority.pem
     entry = _entry(tls_tuxweb, panel_ca=owner)
     await _setup(hass, entry)
@@ -498,14 +515,62 @@ async def test_each_refusal_is_named_and_changes_nothing(
         await _press(hass)
     assert raised.value.translation_key == "certificate_renewal_failed"
     assert raised.value.translation_placeholders == {"reason": reason}
-    assert dict(entry.data) == before
+    own = entry.data[CONF_CA_CERT]
+    assert entry.data[CONF_PANEL_CA] == owner
+    _only_the_authority_added(entry, before)
     reload.assert_not_called()
-    # One request, never retried, no login, and the client trusts what it did.
+    # One request, never retried, no login.
     assert tls_tuxweb.install_requests == 1
     assert tls_tuxweb.login_attempts == 0
-    assert coordinator.client.own_ca is None
-    assert coordinator.client.ssl_arg is api._verified_ssl_context(owner)
+    assert coordinator.client.own_ca == own
+    assert coordinator.client.panel_ca == owner
+    assert coordinator.client.ssl_arg is api._verified_ssl_context(
+        api.trust_anchors(owner, own)
+    )
     # A button press raises no repair.
+    assert _renewal_issue(hass) is None
+
+
+@pytest.mark.parametrize("stall", ["after", "before"])
+async def test_an_answer_that_never_arrives_needs_no_repair(
+    hass, tls, tls_tuxweb, stall
+):
+    """The install times out, whether the panel took the certificate or not:
+    the next connection verifies, a reload sets up verified, and the button
+    works again with the same authority."""
+    owner = tls["panel"].authority.pem
+    entry = _entry(tls_tuxweb, panel_ca=owner)
+    await _setup(hass, entry)
+    tls_tuxweb.install_stall = stall
+    with (
+        patch.object(api, "_TIMEOUT", aiohttp.ClientTimeout(total=0.2)),
+        patch.object(hass.config_entries, "async_schedule_reload") as reload,
+        pytest.raises(HomeAssistantError) as raised,
+    ):
+        await _press(hass)
+    assert raised.value.translation_placeholders == {"reason": "unreachable"}
+    reload.assert_not_called()
+    assert len(tls_tuxweb.installed) == (1 if stall == "after" else 0)
+    own = entry.data[CONF_CA_CERT], entry.data[CONF_CA_KEY]
+    assert entry.data[CONF_PANEL_CA] == owner
+    tls_tuxweb.install_stall = None
+
+    # A new connection verifies whichever certificate the panel serves.
+    await asyncio.sleep(1.2)
+    coordinator = entry.runtime_data
+    await coordinator.async_refresh()
+    assert coordinator.last_update_success
+    # So does a fresh setup, built from the stored data alone.
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.client.tls == "verified"
+
+    await _press(hass)
+    await _settled(hass, entry)
+    assert (entry.data[CONF_CA_CERT], entry.data[CONF_CA_KEY]) == own
+    assert entry.data[CONF_PANEL_CA] == own[0]
+    assert CONF_CERT_NOT_AFTER in entry.data
     assert _renewal_issue(hass) is None
 
 
@@ -525,7 +590,7 @@ async def test_an_answer_naming_another_certificate_is_refused(hass, tls, tls_tu
     ):
         await _press(hass)
     assert raised.value.translation_placeholders == {"reason": "unexpected_answer"}
-    assert dict(entry.data) == before
+    _only_the_authority_added(entry, before)
 
 
 async def test_a_panel_that_cannot_be_reached_is_named(hass, tls, tls_tuxweb):
@@ -567,6 +632,21 @@ async def test_a_panel_that_stops_declaring_it_is_refused(hass, tls, tls_tuxweb)
 
 
 # ------------------------------------------------------- a moved address
+
+
+async def test_a_move_after_an_unanswered_install_is_followed(hass, tls, tls_tuxweb):
+    """The panel took our certificate but its answer never came, so the pin is
+    still the owner's; it then moved. Its certificate is ours, so setup
+    follows the move rather than raising a repair."""
+    await tls_tuxweb.use_tls(tls["moved"])
+    owner = tls["panel"].authority.pem
+    entry = _entry(tls_tuxweb, panel_ca=owner, own=_own(tls))
+    await _setup(hass, entry)
+    assert entry.state is ConfigEntryState.LOADED
+    assert tls_tuxweb.install_requests == 1
+    assert certificate.leaf_names_host(tls_tuxweb.installed[0], "127.0.0.1")
+    assert entry.data[CONF_PANEL_CA] == tls["own_cert"]
+    assert entry.runtime_data.client.tls == "verified"
 
 
 async def test_a_moved_panel_is_reissued_on_the_no_hostname_context(
@@ -854,7 +934,9 @@ async def test_a_failed_renewal_raises_the_issue_once_and_success_clears_it(
     assert not issue.is_fixable
     assert issue.translation_key == ISSUE_CERTIFICATE_RENEWAL_FAILED
     assert issue.translation_placeholders["reason"] == "write_failed"
-    assert CONF_CA_CERT not in entry.data
+    # The authority is kept for the retry; the pin stays on the owner's.
+    authority = entry.data[CONF_CA_CERT]
+    assert entry.data[CONF_PANEL_CA] == tls["panel"].authority.pem
     assert tls_tuxweb.install_requests == 2
     warned = [
         r
@@ -872,7 +954,7 @@ async def test_a_failed_renewal_raises_the_issue_once_and_success_clears_it(
     await hass.async_block_till_done()
     assert tls_tuxweb.install_requests == 3
     assert _renewal_issue(hass) is None
-    assert entry.data[CONF_PANEL_CA] == entry.data[CONF_CA_CERT]
+    assert entry.data[CONF_PANEL_CA] == entry.data[CONF_CA_CERT] == authority
     await _settled(hass, entry)
 
 
@@ -1213,7 +1295,7 @@ async def test_a_success_that_does_not_say_installed_is_refused(hass, tls, tls_t
     with pytest.raises(HomeAssistantError) as raised:
         await _press(hass)
     assert raised.value.translation_placeholders == {"reason": "unexpected_answer"}
-    assert dict(entry.data) == before
+    _only_the_authority_added(entry, before)
 
 
 async def test_a_check_in_flight_is_not_started_twice(hass, tls, tls_tuxweb):

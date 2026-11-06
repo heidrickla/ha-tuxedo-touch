@@ -51,7 +51,7 @@ _CN_MAX = 64
 
 
 class CertificateRenewalFailed(TuxedoTouchError):
-    """Issuing or installing the panel's certificate failed; nothing was stored.
+    """Issuing or installing the panel's certificate failed; the pin did not move.
 
     `reason` names the cause for the user (tuxweb's own word for a refusal).
     `refused` is a refusal that asking again will not change - a 4xx, or no
@@ -292,44 +292,33 @@ def _refused(err: Exception) -> bool:
     return False
 
 
-def _authority_and_leaf(
-    ca_cert: str | None, ca_key: str | None, entry_id: str, host: str
-) -> tuple[str, str, IssuedLeaf]:
-    """The stored authority, or a new one, and a leaf it issued for `host`."""
-    if ca_cert is None or ca_key is None:
-        ca_cert, ca_key = generate_authority(entry_id)
-    return ca_cert, ca_key, issue_leaf(ca_cert, ca_key, host)
-
-
 async def async_issue_and_install(
     hass: HomeAssistant,
     client: TuxedoTouchClient,
     data: Mapping[str, Any],
     *,
-    entry_id: str,
     ignore_hostname: bool = False,
 ) -> dict[str, Any]:
-    """Issue the panel a certificate from the entry's authority and install it.
+    """Issue the panel a certificate from the entry's stored authority and install it.
 
-    The authority is the stored one, or a new one if none is stored. The
-    client trusts it beside the pin before the install goes out, so requests
-    made while the panel switches still verify, and pins it once the panel
-    has accepted the certificate. Returns the entry data to store: the
-    authority, the pin moved to it, and the new certificate's expiry. The
-    leaf's private key goes to the panel and nowhere else. Raises
-    CertificateRenewalFailed with the client as it was.
+    The authority must already be stored, so whatever becomes of the install
+    the panel's next certificate verifies. The client trusts it beside the pin
+    from before the install goes out and keeps trusting it after a failure,
+    as a reload would; it pins it once the panel has accepted the
+    certificate. Returns the entry data to store: the pin moved to the
+    authority and the new certificate's expiry. The leaf's private key goes
+    to the panel and nowhere else. Raises CertificateRenewalFailed.
     """
+    ca_cert = data.get(CONF_CA_CERT)
+    ca_key = data.get(CONF_CA_KEY)
+    if not ca_cert or not ca_key:
+        raise CertificateRenewalFailed("bad_authority", refused=True)
     try:
-        ca_cert, ca_key, leaf = await hass.async_add_executor_job(
-            _authority_and_leaf,
-            data.get(CONF_CA_CERT) or None,
-            data.get(CONF_CA_KEY) or None,
-            entry_id,
-            data[CONF_HOST],
+        leaf = await hass.async_add_executor_job(
+            issue_leaf, ca_cert, ca_key, data[CONF_HOST]
         )
     except ValueError as err:
         raise CertificateRenewalFailed("bad_authority", refused=True) from err
-    stored = client.own_ca
     client.trust_own_ca(ca_cert)
     try:
         answer = await client.async_install_certificate(
@@ -338,17 +327,11 @@ async def async_issue_and_install(
         if answer.sha256 != leaf.sha256:
             raise TuxedoTouchInstallRefused("unexpected_answer", 200)
     except TuxedoTouchError as err:
-        client.trust_own_ca(stored)
         raise CertificateRenewalFailed(
             failure_reason(err), refused=_refused(err)
         ) from err
     client.pin_own_ca()
-    return {
-        CONF_CA_CERT: ca_cert,
-        CONF_CA_KEY: ca_key,
-        CONF_PANEL_CA: ca_cert,
-        CONF_CERT_NOT_AFTER: leaf.not_after,
-    }
+    return {CONF_PANEL_CA: ca_cert, CONF_CERT_NOT_AFTER: leaf.not_after}
 
 
 async def async_follow_move(
@@ -357,22 +340,16 @@ async def async_follow_move(
     """Re-issue the certificate of a panel whose address moved, if that is the case.
 
     For a request that failed on the certificate. Applies only to an entry
-    pinned to its own authority over HTTPS whose panel presents a
-    certificate of that authority naming another address; then the install
-    goes over the context that skips the name check. None when it does not
+    holding its own authority, over HTTPS, whose panel presents a certificate
+    of that authority naming another address - which also proves the panel
+    took one, whether or not its answer arrived. The install then goes over
+    the context that skips the name check. None when it does not
     apply. Raises CertificateRenewalFailed when it applied and failed.
     """
     own = data.get(CONF_CA_CERT)
-    if (
-        not own
-        or not data.get(CONF_CA_KEY)
-        or data.get(CONF_PANEL_CA) != own
-        or not data.get(CONF_USE_HTTPS)
-    ):
+    if not own or not data.get(CONF_CA_KEY) or not data.get(CONF_USE_HTTPS):
         return None
     chain = await client.async_read_presented_chain()
     if not moved_from(chain, own, data[CONF_HOST]):
         return None
-    return await async_issue_and_install(
-        hass, client, data, entry_id="", ignore_hostname=True
-    )
+    return await async_issue_and_install(hass, client, data, ignore_hostname=True)

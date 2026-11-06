@@ -39,6 +39,7 @@ from .certificate import (
     CertificateRenewalFailed,
     async_follow_move,
     async_issue_and_install,
+    generate_authority,
     leaf_expiry,
 )
 from .const import (
@@ -46,6 +47,7 @@ from .const import (
     CERTIFICATE_RENEW_BEFORE,
     COMMAND_CONFIRM_TIMEOUT,
     CONF_CA_CERT,
+    CONF_CA_KEY,
     CONF_CERT_NOT_AFTER,
     CONF_PANEL_CA,
     CONF_PARTITION,
@@ -1044,6 +1046,24 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         )
         ir.async_delete_issue(self.hass, DOMAIN, self._renewal_issue_id)
 
+    async def _async_store_authority(self) -> None:
+        """Generate the entry's authority if it has none, and store it at once.
+
+        Stored before any install goes out, without a reload: every verifying
+        context trusts it beside the pin, so the panel's next certificate
+        verifies whether or not the install's answer arrives.
+        """
+        data = self._entry.data
+        if data.get(CONF_CA_CERT) and data.get(CONF_CA_KEY):
+            return
+        ca_cert, ca_key = await self.hass.async_add_executor_job(
+            generate_authority, self._entry.entry_id
+        )
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            data={**self._entry.data, CONF_CA_CERT: ca_cert, CONF_CA_KEY: ca_key},
+        )
+
     async def async_renew_certificate(self) -> None:
         """Issue the panel a certificate from the entry's authority and install it.
 
@@ -1051,18 +1071,16 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         - and only on a verified connection, because the new private key goes
         out on it. On success the entry stores the authority and the pin
         moved to it, and is reloaded so every connection opens on the new
-        pin. Raises CertificateRenewalFailed with the entry unchanged.
+        pin. Raises CertificateRenewalFailed with the pin and expiry unchanged.
         """
         async with self._renew_lock:
             if not self.client.certificate_install:
                 raise CertificateRenewalFailed("not_supported", refused=True)
             if self.client.tls != "verified":
                 raise CertificateRenewalFailed("not_verified", refused=True)
+            await self._async_store_authority()
             updates = await async_issue_and_install(
-                self.hass,
-                self.client,
-                self._entry.data,
-                entry_id=self._entry.entry_id,
+                self.hass, self.client, self._entry.data
             )
             _LOGGER.info(
                 "The panel at %s now serves a certificate issued by Home "
