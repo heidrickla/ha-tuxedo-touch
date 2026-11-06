@@ -60,6 +60,16 @@ The token goes in the **tuxweb token** field, optional on every form and blank o
 
 **Stock is the default, and the answer is re-checked when it stops fitting.** The question is asked once at setup and the answer kept, with one exception: a refusal that is consistent with tuxweb no longer being there - a 401 on the token, the stream redirected to a login page, or a tuxweb path answering 404 - is asked about once more before it is believed, with the same GET and under the same rules (no session, no login, and a connection failure raised rather than read as an answer). A panel still declaring its capability list makes the refusal real, and it is reported exactly as above. A panel declaring none has gone back to stock under a running entry, and the entry talks to it as stock from its next request, with one warning in the log and no re-authentication card - the panel said nothing about the web credentials the entry also holds. One re-check per refusal and never a retry of the refused request, so a panel refusing a genuinely bad token cannot put the integration in a loop of questions; a stock entry is never re-asked, because a stock 401 is a session to renew; and a panel moving *to* tuxweb still takes a reload of the entry.
 
+### HTTPS
+
+With Use HTTPS on, how the connection is made follows the firmware.
+
+- **Stock firmware**: the integration connects the way the panel's built-in certificate and TLS stack require, as it always has.
+- **tuxweb**: the first time the integration reaches the panel, it takes the certificate authority the panel presents and keeps it only after a second request verifies the panel's certificate against it, host name included. From then on every connection to that panel - status, commands and the event stream - is verified against that authority, and nothing falls back to an unverified connection. A new entry stores the authority when it is created; an existing entry stores it on its first start after updating. Nothing has to be entered.
+- **A changed certificate**: if the panel later presents a certificate that authority did not issue, its status, commands and event stream stop, no login is sent, and the entry raises the **Tuxedo Touch presents a certificate this entry does not trust** repair. Opening it shows the certificate authority the panel presents now - subject, issuer, SHA-256 fingerprint - and when the panel's certificate expires; submitting stores the new authority and reloads the entry. If the panel has gone back to stock firmware, the repair offers to remove the stored authority instead.
+
+The diagnostics download reports `tls` as `verified`, `legacy` (stock firmware, or a tuxweb panel whose certificate could not be verified against the authority it presents) or `plain` (HTTP), and with a stored authority its subject and SHA-256 fingerprint.
+
 ## Supported functions
 
 One `alarm_control_panel` entity per configured partition, named **Partition N** under the device **Honeywell Tuxedo Touch**. A new entity gets the entity id `alarm_control_panel.honeywell_tuxedo_touch_partition_1`; an entity already in the registry keeps the entity id it has.
@@ -243,12 +253,13 @@ The event stream is a second connection and it is held open permanently, which s
 
 ## Repairs
 
-Three conditions cannot be cleared by retrying, so they arrive as repair notifications under Settings -> System -> Repairs rather than as log lines.
+Four conditions cannot be cleared by retrying, so they arrive as repair notifications under Settings -> System -> Repairs rather than as log lines.
 
 | Notification | What it does |
 |---|---|
 | **Tuxedo Touch needs HTTPS** | The panel redirected the API to HTTPS because "Secured Web Server Access" is on. Opening the notification and submitting turns on Use HTTPS for that entry, moves port 80 to 443 (any other port is left as you set it) and reloads the integration. |
 | **Two Tuxedo Touch entries reach one panel** | Two entries reach the same panel and partition - by different addresses, or by the same address on ports 80 and 443 - so only one of them can hold the panel's identity. The notification names both entries; remove whichever you do not want and the other adopts the panel's MAC on the panel's next DHCP lease. |
+| **Tuxedo Touch presents a certificate this entry does not trust** | A tuxweb panel presented a certificate that the certificate authority stored for the entry did not issue. Opening the notification shows the authority the panel presents now and its fingerprint; submitting trusts it and reloads the integration, or, for a panel back on stock firmware, removes the stored authority. See [HTTPS](#https). |
 | **Tuxedo Touch is refusing the stored credentials** | Credentials that used to work are being refused, most often because the web password was changed at the keypad. It stands beside the re-authentication card and carries what the card has no room for: that Home Assistant has stopped trying deliberately, and that guessing is itself the danger. See [One login attempt, then it waits for you](#one-login-attempt-then-it-waits-for-you). |
 
 They disappear on their own when the condition goes - including when you fix the panel's HTTPS setting from the touchscreen instead, or re-authenticate successfully - and when the entry is deleted.

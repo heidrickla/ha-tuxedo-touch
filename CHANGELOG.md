@@ -2,6 +2,19 @@
 
 Notable changes to this integration, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [Unreleased]
+
+### Added
+
+- A tuxweb panel over HTTPS is verified. The first time the integration reaches it, it takes the certificate authority the panel presents and keeps it only after a second request verifies the panel's certificate against it, host name included; every connection after that - status, commands and the event stream - verifies against that authority and never falls back to an unverified one. New entries store the authority when they are created, existing entries on their first start after updating, with nothing to enter. A panel whose certificate does not verify against the authority it presents is connected to as before.
+- The repair **Tuxedo Touch presents a certificate this entry does not trust**, raised when a tuxweb panel presents a certificate the stored authority did not issue. It shows the authority the panel presents now (subject, issuer, SHA-256 fingerprint) and the expiry of the panel's certificate, and submitting stores it and reloads the entry; for a panel back on stock firmware it removes the stored authority instead. While it stands the entity is unavailable, the event stream stops, and no login is sent.
+- The diagnostics download reports `tls` (`verified`, `legacy` or `plain`) and, with a stored authority, its subject and SHA-256 fingerprint; the stream block reports `certificate_failed`.
+
+### Changed
+
+- Reconfiguring a tuxweb entry keeps its stored authority and checks the panel against it; a certificate it did not issue is reported on the form as such.
+- Stock firmware, plain HTTP and a push relay connect exactly as before.
+
 ## [0.8.0] - 2026-10-30
 
 ### Changed
