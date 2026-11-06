@@ -65,10 +65,11 @@ The token goes in the **tuxweb token** field, optional on every form and blank o
 With Use HTTPS on, how the connection is made follows the firmware.
 
 - **Stock firmware**: the integration connects the way the panel's built-in certificate and TLS stack require, as it always has.
-- **tuxweb**: the first time the integration reaches the panel, it takes the certificate authority the panel presents and keeps it only after a second request verifies the panel's certificate against it, host name included. From then on every connection to that panel - status, commands and the event stream - is verified against that authority, and nothing falls back to an unverified connection. A new entry stores the authority when it is created; an existing entry stores it on its first start after updating. Nothing has to be entered.
+- **tuxweb**: the first time the integration reaches the panel, it takes the certificate authority the panel presents and keeps it only after a second request verifies the panel's certificate against it, host name included. From then on every connection to that panel - status, commands and the event stream - is verified against that authority, and nothing falls back to an unverified connection. A new entry stores the authority when it is created, with nothing to enter.
+- **After a firmware update**: an entry set up while the panel ran stock firmware stores no authority on its own. When it finds the panel running tuxweb - on its next start, or when the panel answers again after the update's restart - it checks the authority the panel presents the same way and raises the **Tuxedo Touch (...) runs the updated firmware, and its certificate can be trusted** repair, and goes on connecting as before until it is accepted. Opening it shows the authority's subject, issuer and SHA-256 fingerprint and when the panel's certificate expires; submitting stores the authority and reloads the entry, which from then on verifies every connection. An entry with no tuxweb token is asked for one on the same form. A panel whose certificate does not verify against the authority it presents raises no repair.
 - **A changed certificate**: if the panel later presents a certificate that authority did not issue, its status, commands and event stream stop, no login is sent, and the entry raises the **Tuxedo Touch presents a certificate this entry does not trust** repair. Opening it shows the certificate authority the panel presents now - subject, issuer, SHA-256 fingerprint - and when the panel's certificate expires; submitting stores the new authority and reloads the entry. If the panel has gone back to stock firmware, the repair offers to remove the stored authority instead.
 
-The diagnostics download reports `tls` as `verified`, `legacy` (stock firmware, or a tuxweb panel whose certificate could not be verified against the authority it presents) or `plain` (HTTP), and with a stored authority its subject and SHA-256 fingerprint.
+The diagnostics download reports `tls` as `verified`, `legacy` (stock firmware, or a tuxweb panel whose certificate could not be verified against the authority it presents) or `plain` (HTTP), and with a stored authority its subject and SHA-256 fingerprint. `trust_pending` is true while the firmware-update repair is waiting to be accepted.
 
 ## Supported functions
 
@@ -253,13 +254,14 @@ The event stream is a second connection and it is held open permanently, which s
 
 ## Repairs
 
-Four conditions cannot be cleared by retrying, so they arrive as repair notifications under Settings -> System -> Repairs rather than as log lines.
+Five conditions cannot be cleared by retrying, so they arrive as repair notifications under Settings -> System -> Repairs rather than as log lines.
 
 | Notification | What it does |
 |---|---|
 | **Tuxedo Touch needs HTTPS** | The panel redirected the API to HTTPS because "Secured Web Server Access" is on. Opening the notification and submitting turns on Use HTTPS for that entry, moves port 80 to 443 (any other port is left as you set it) and reloads the integration. |
 | **Two Tuxedo Touch entries reach one panel** | Two entries reach the same panel and partition - by different addresses, or by the same address on ports 80 and 443 - so only one of them can hold the panel's identity. The notification names both entries; remove whichever you do not want and the other adopts the panel's MAC on the panel's next DHCP lease. |
 | **Tuxedo Touch presents a certificate this entry does not trust** | A tuxweb panel presented a certificate that the certificate authority stored for the entry did not issue. Opening the notification shows the authority the panel presents now and its fingerprint; submitting trusts it and reloads the integration, or, for a panel back on stock firmware, removes the stored authority. See [HTTPS](#https). |
+| **Tuxedo Touch (...) runs the updated firmware, and its certificate can be trusted** | An entry set up on stock firmware found the panel running tuxweb, and the certificate authority the panel presents verifies its certificate. Opening the notification shows the authority and its fingerprint, and asks for a tuxweb token if the entry has none; submitting stores the authority and reloads the integration, after which every connection is verified. See [HTTPS](#https). |
 | **Tuxedo Touch is refusing the stored credentials** | Credentials that used to work are being refused, most often because the web password was changed at the keypad. It stands beside the re-authentication card and carries what the card has no room for: that Home Assistant has stopped trying deliberately, and that guessing is itself the danger. See [One login attempt, then it waits for you](#one-login-attempt-then-it-waits-for-you). |
 
 They disappear on their own when the condition goes - including when you fix the panel's HTTPS setting from the touchscreen instead, or re-authenticate successfully - and when the entry is deleted.
