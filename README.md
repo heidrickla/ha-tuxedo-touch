@@ -71,6 +71,17 @@ With Use HTTPS on, how the connection is made follows the firmware.
 
 The diagnostics download reports `tls` as `verified`, `legacy` (stock firmware, or a tuxweb panel whose certificate could not be verified against the authority it presents) or `plain` (HTTP), and with a stored authority its subject and SHA-256 fingerprint. `trust_pending` is true while the firmware-update repair is waiting to be accepted.
 
+### The panel's certificate, issued by Home Assistant
+
+A panel running tuxweb over HTTPS that declares the `certificate_install` capability can be given its certificate by Home Assistant, with no commands to run. On stock firmware, over plain HTTP, or on a tuxweb panel that does not declare the capability, none of this appears and nothing changes.
+
+- **The button**: the panel's device gets a **Renew certificate** button, under its configuration entities. Pressing it has Home Assistant issue the panel a new certificate and install it: the first time, Home Assistant creates a certificate authority for this entry and keeps it, and every later certificate comes from the same authority. The certificate names the panel's address and lasts 397 days; its private key goes to the panel once and is not kept. The entry then trusts the new authority and reloads, and every connection is verified against it. The button works only once the entry verifies the panel (see above), because the new key is sent on that connection. If the panel refuses the certificate, the error names the reason - for example `tls_not_configured`, `key_mismatch` or `write_failed` - and the panel and the entry keep what they had.
+- **Who can press it**: Home Assistant cannot limit a button to administrators, so any user who can see the device can press it. All it does is replace the panel's own certificate with a new one from the same authority.
+- **Automatic renewal**: Home Assistant renews the certificate by itself when the panel's address changes (DHCP discovery or a reconfigure) and the panel still presents the certificate it issued for the old address, and when the certificate the panel presents expires within 30 days. The expiry is checked when the entry starts and then once a day, never on every poll. A renewal that fails logs one warning and raises the **Tuxedo Touch could not renew the panel's certificate** repair, which says why; after the panel refuses a certificate, Home Assistant does not try again by itself until Renew certificate is pressed. The repair goes away when a renewal succeeds, and with the entry.
+- **Trusting it on a computer**: once Home Assistant has issued the certificate, the entry's options (the Configure button) offer **Trust the panel on a computer**. It shows the authority's subject and SHA-256 fingerprint and a link to download it, valid for five minutes and only for an administrator. On Windows, open the downloaded file, choose Install Certificate and place it in Trusted Root Certification Authorities. On macOS, open it in Keychain Access and set it to Always Trust. Firefox keeps its own list: import the file in its certificate settings, under Authorities. Closing the form changes nothing.
+
+The diagnostics download reports `certificate_install` (whether the panel declared it), `ca_issued_by_home_assistant`, the authority's subject and fingerprint under `home_assistant_ca`, and `cert_not_after`. The authority's private key is never in it.
+
 ## Supported functions
 
 One `alarm_control_panel` entity per configured partition, named **Partition N** under the device **Honeywell Tuxedo Touch**. A new entity gets the entity id `alarm_control_panel.honeywell_tuxedo_touch_partition_1`; an entity already in the registry keeps the entity id it has.
@@ -254,7 +265,7 @@ The event stream is a second connection and it is held open permanently, which s
 
 ## Repairs
 
-Five conditions cannot be cleared by retrying, so they arrive as repair notifications under Settings -> System -> Repairs rather than as log lines.
+Six conditions cannot be cleared by retrying, so they arrive as repair notifications under Settings -> System -> Repairs rather than as log lines.
 
 | Notification | What it does |
 |---|---|
@@ -262,6 +273,7 @@ Five conditions cannot be cleared by retrying, so they arrive as repair notifica
 | **Two Tuxedo Touch entries reach one panel** | Two entries reach the same panel and partition - by different addresses, or by the same address on ports 80 and 443 - so only one of them can hold the panel's identity. The notification names both entries; remove whichever you do not want and the other adopts the panel's MAC on the panel's next DHCP lease. |
 | **Tuxedo Touch presents a certificate this entry does not trust** | A tuxweb panel presented a certificate that the certificate authority stored for the entry did not issue. Opening the notification shows the authority the panel presents now and its fingerprint; submitting trusts it and reloads the integration, or, for a panel back on stock firmware, removes the stored authority. See [HTTPS](#https). |
 | **Tuxedo Touch (...) runs the updated firmware, and its certificate can be trusted** | An entry set up on stock firmware found the panel running tuxweb, and the certificate authority the panel presents verifies its certificate. Opening the notification shows the authority and its fingerprint, and asks for a tuxweb token if the entry has none; submitting stores the authority and reloads the integration, after which every connection is verified. See [HTTPS](#https). |
+| **Tuxedo Touch could not renew the panel's certificate** | Home Assistant tried to renew the certificate it issued to the panel - because the panel's address changed or its certificate expires within 30 days - and the panel refused it or could not be reached. The notification names the reason. Put the cause right and press Renew certificate on the panel's device, or reload the entry if it is not loaded. See [The panel's certificate, issued by Home Assistant](#the-panels-certificate-issued-by-home-assistant). |
 | **Tuxedo Touch is refusing the stored credentials** | Credentials that used to work are being refused, most often because the web password was changed at the keypad. It stands beside the re-authentication card and carries what the card has no room for: that Home Assistant has stopped trying deliberately, and that guessing is itself the danger. See [One login attempt, then it waits for you](#one-login-attempt-then-it-waits-for-you). |
 
 They disappear on their own when the condition goes - including when you fix the panel's HTTPS setting from the touchscreen instead, or re-authenticate successfully - and when the entry is deleted.

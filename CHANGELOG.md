@@ -2,6 +2,19 @@
 
 Notable changes to this integration, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the version numbers are the ones in `custom_components/tuxedo_touch/manifest.json`.
 
+## [Unreleased]
+
+### Added
+
+- A tuxweb panel over HTTPS that declares `certificate_install` gets a **Renew certificate** button on its device. Pressing it issues the panel a certificate from a certificate authority of the entry's own - created by Home Assistant the first time, EC P-256, ten years - and installs it with one InstallCertificate call over the verified connection: EC P-256, 397 days, naming the panel's address. The private key goes to the panel once and is not kept. The entry then pins its own authority and reloads; connections keep verifying while the panel switches. A refusal names tuxweb's reason and changes nothing. The button works only once the entry verifies the panel.
+- Automatic renewal under the same conditions: when the panel's address changes (DHCP discovery or reconfigure) and it still presents the certificate issued for the old address, the certificate is re-issued for the new one over a connection that verifies the chain without the name; and a panel certificate expiring within 30 days is renewed, checked at setup and once a day, never per poll. A failed renewal logs one warning and raises the **Tuxedo Touch could not renew the panel's certificate** repair; a refusal is not retried automatically.
+- The options open on a menu: the push-stream form, unchanged, and **Trust the panel on a computer**, which shows the entry's authority with its SHA-256 fingerprint and a five-minute download link for administrators, with instructions for Windows, macOS and Firefox.
+- The diagnostics download reports `certificate_install`, `ca_issued_by_home_assistant`, `home_assistant_ca` and `cert_not_after`; the authority's key is redacted and never reported.
+
+### Changed
+
+- Stock firmware, plain HTTP and a tuxweb panel that does not declare `certificate_install` behave as in 0.9.0.
+
 ## [0.9.0] - 2026-11-06
 
 ### Added
