@@ -4,6 +4,8 @@ Notable changes to this integration, newest first. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-06
+
 ### Added
 
 - A tuxweb panel over HTTPS that declares `certificate_install` gets a **Renew certificate** button on its device. Pressing it issues the panel a certificate from a certificate authority of the entry's own - created by Home Assistant the first time, EC P-256, ten years - and installs it with one InstallCertificate call over the verified connection: EC P-256, 397 days, naming the panel's address. The private key goes to the panel once and is not kept. The entry then pins its own authority and reloads; connections keep verifying while the panel switches. The authority is stored before the certificate is sent and trusted beside the pin, so an answer lost on the way leaves every connection verifying; a refusal names tuxweb's reason and leaves the pin as it was. The button works only once the entry verifies the panel.
