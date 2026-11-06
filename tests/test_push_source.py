@@ -197,20 +197,22 @@ def _run_loop(client, url=None, token=None, rounds=4):
     """Drive async_run's reconnect loop a few times with no real waiting.
 
     async_run resets reconnect_wait to PUSH_BACKOFF_INITIAL itself, so setting
-    it on the instance achieves nothing; the backoff sleep is replaced instead.
-    The replacement still yields, because without a yield point the loop task
-    never gets to run at all.
+    it on the instance achieves nothing; the backoff wait is replaced instead,
+    with one that times out at once as an unwoken wait does. The replacement
+    still yields, because without a yield point the loop task never gets to
+    run at all.
     """
     stream = push.TuxedoPushStream(
         client, lambda _s: None, lambda _c: None, push_url=url, push_token=token
     )
     real_sleep = asyncio.sleep
 
-    async def fast_sleep(_delay):
+    async def fast_backoff(_wait):
         await real_sleep(0)
+        return False
 
     async def drive():
-        with mock.patch.object(asyncio, "sleep", fast_sleep):
+        with mock.patch.object(stream, "_async_backoff", fast_backoff):
             task = asyncio.ensure_future(stream.async_run())
             for _ in range(rounds * 60):
                 await real_sleep(0)

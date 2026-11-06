@@ -15,6 +15,10 @@ Notable changes to this integration, newest first. The format follows [Keep a Ch
 
 - Stock firmware, plain HTTP and a tuxweb panel that does not declare `certificate_install` behave as in 0.9.0.
 
+### Fixed
+
+- After the panel has been unreachable for a while, the event stream reconnects with the first successful status poll. It used to sit out a reconnect wait that had doubled up to five minutes during the outage, leaving the entity on the 30-second poll alone and the keypad display unknown.
+
 ## [0.9.0] - 2026-11-06
 
 ### Added

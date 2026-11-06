@@ -835,3 +835,67 @@ async def test_a_dead_link_stops_the_stream_suppressing_the_poll(
     assert coordinator._push_status_seen is False, (
         "the stream still claims to be carrying the state after saying it is blind"
     )
+
+
+async def test_the_first_good_poll_after_a_failed_one_ends_a_long_reconnect_wait(
+    hass, fake_panel, panel_entry
+):
+    """A panel back from a long outage gets its stream back with the poll.
+
+    Measured 2026-11-06: tuxweb was down ten minutes for an upgrade, the
+    stream's wait had doubled to the 300 s ceiling, and the stream came back
+    five minutes after the panel did. In between the entity ran on the poll
+    alone and missed an arm and disarm made inside its 30 s granularity.
+    """
+    coordinator = await _setup(hass, panel_entry)
+    coordinator.push.reconnect_wait = push.PUSH_BACKOFF_MAX
+    fake_panel.drop_stream()
+    await wait_until(lambda: not coordinator.push.connected)
+    await asyncio.sleep(0.2)
+    assert coordinator.push.connected is False
+
+    # What the failed polls during the outage leave behind.
+    coordinator.last_update_success = False
+    await coordinator.async_refresh()
+    assert coordinator.last_update_success is True
+
+    await wait_until(lambda: coordinator.push.connected, timeout=5)
+    assert coordinator.push.reconnect_wait == push.PUSH_BACKOFF_INITIAL
+
+
+async def test_a_good_poll_after_a_good_one_leaves_the_reconnect_wait_alone(
+    hass, fake_panel, panel_entry
+):
+    """Only the recovery wakes the stream.
+
+    A stream that fails while the poll keeps working is failing for its own
+    reasons, and waking it on every poll would retry it every 30 s instead of
+    backing off.
+    """
+    coordinator = await _setup(hass, panel_entry)
+    coordinator.push.reconnect_wait = push.PUSH_BACKOFF_MAX
+    fake_panel.drop_stream()
+    await wait_until(lambda: not coordinator.push.connected)
+
+    await coordinator.async_refresh()
+    await asyncio.sleep(0.3)
+    assert coordinator.push.connected is False
+
+
+async def test_a_wake_reaches_neither_a_connected_stream_nor_a_relay(
+    hass, fake_panel, panel_entry
+):
+    """A connected stream has nothing to cut short, and a relay's host is not
+    the panel the poll just reached."""
+    coordinator = await _setup(hass, panel_entry)
+    stream = coordinator.push
+    stream.wake()
+    assert not stream._wake.is_set()
+
+    stream.connected = False
+    stream._push_url = "https://relay.example"
+    stream.wake()
+    assert not stream._wake.is_set()
+    stream._push_url = None
+    stream.wake()
+    assert stream._wake.is_set()

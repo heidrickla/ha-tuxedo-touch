@@ -1277,6 +1277,10 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         self._async_clear_https_issue()
         self._async_clear_certificate_issue()
         self._async_look_after_recovery()
+        if not self.last_update_success:
+            # The panel answers again after a failed poll: the stream need not
+            # sit out a reconnect wait the outage grew.
+            self.push.wake()
 
         if self._last_command_monotonic > poll_started and self.data is not None:
             _LOGGER.debug(

@@ -529,6 +529,33 @@ class TuxedoPushStream:
         # so the reset can be asserted, and so diagnostics can say how far a
         # failing stream has backed off.
         self.reconnect_wait = PUSH_BACKOFF_INITIAL
+        # Set by wake() when the poll finds the panel answering again, so a
+        # reconnect wait grown long by an outage ends with the outage.
+        self._wake = asyncio.Event()
+
+    def wake(self) -> None:
+        """Cut the reconnect wait short: the panel answers polls again.
+
+        Called by the coordinator on the first successful poll after a failed
+        one. A ten-minute outage otherwise leaves the stream waiting up to
+        PUSH_BACKOFF_MAX after the panel is back, with the entity on the poll
+        alone. A connected stream, or one fed by a relay (whose host the poll
+        says nothing about), ignores it.
+        """
+        if self.connected or self.from_relay:
+            return
+        self._wake.set()
+
+    async def _async_backoff(self, wait: float) -> bool:
+        """Wait before the next reconnect; True when wake() ended it early."""
+        if not self._wake.is_set():
+            try:
+                async with asyncio.timeout(wait):
+                    await self._wake.wait()
+            except TimeoutError:
+                return False
+        self._wake.clear()
+        return True
 
     @property
     def from_relay(self) -> bool:
@@ -725,8 +752,10 @@ class TuxedoPushStream:
                     )
                     return
 
-            await asyncio.sleep(self.reconnect_wait)
-            self.reconnect_wait = next_backoff(self.reconnect_wait)
+            if await self._async_backoff(self.reconnect_wait):
+                self.reconnect_wait = PUSH_BACKOFF_INITIAL
+            else:
+                self.reconnect_wait = next_backoff(self.reconnect_wait)
 
     async def _async_stream_once(self) -> None:
         """One connection, from login to the moment the panel stops talking."""
@@ -888,6 +917,9 @@ class TuxedoPushStream:
 
     def _set_connected(self, connected: bool) -> None:
         if connected:
+            # A wake that arrived while this connection was being made has
+            # done its job.
+            self._wake.clear()
             # A connection clears the run of failures, so the relay warning
             # counts consecutive drops rather than a lifetime total and a
             # relay that comes back can go quiet again and be reported afresh
