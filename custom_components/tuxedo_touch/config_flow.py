@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -904,7 +905,11 @@ class TuxedoTouchOptionsFlow(OptionsFlowWithReload):
             description_placeholders={
                 "subject": described.subject,
                 "fingerprint": described.fingerprint,
-                "download_url": download_url,
+                # An anchor with a target: the flow dialog treats a plain
+                # same-origin link as in-app navigation, closes itself and
+                # routes to the path, so a Markdown link never downloads.
+                "link_start": f'<a href="{html.escape(download_url)}" target="_blank">',
+                "link_end": "</a>",
             },
         )
 

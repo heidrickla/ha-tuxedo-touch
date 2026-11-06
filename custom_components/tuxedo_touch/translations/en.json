@@ -286,7 +286,7 @@
       },
       "trust_on_computer": {
         "title": "Trust the panel on a computer",
-        "description": "Home Assistant issued the panel its certificate from a certificate authority of this entry's own. A computer that trusts this authority connects to the panel over HTTPS without a certificate warning.\n\nSubject: {subject}\nSHA-256 fingerprint: {fingerprint}\n\n[Download the certificate authority]({download_url}). The link works for five minutes; open this page again for a new one.\n\nOn Windows, open the downloaded file, choose Install Certificate, and place it in the store named Trusted Root Certification Authorities. On macOS, open the file in Keychain Access and set it to Always Trust. Firefox keeps a list of its own: import the file in its certificate settings, under Authorities.\n\nSubmitting closes this and changes nothing."
+        "description": "Home Assistant issued the panel its certificate from a certificate authority of this entry's own. A computer that trusts this authority connects to the panel over HTTPS without a certificate warning.\n\nSubject: {subject}\nSHA-256 fingerprint: {fingerprint}\n\n{link_start}Download the certificate authority{link_end}. The link works for five minutes; open this page again for a new one.\n\nOn Windows, open the downloaded file, choose Install Certificate, and place it in the store named Trusted Root Certification Authorities. On macOS, open the file in Keychain Access and set it to Always Trust. Firefox keeps a list of its own: import the file in its certificate settings, under Authorities.\n\nSubmitting closes this and changes nothing."
       }
     },
     "error": {

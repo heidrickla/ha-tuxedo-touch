@@ -9,9 +9,11 @@ connection verifies against.
 import asyncio
 import datetime
 import hashlib
+import html
 import ipaddress
 import logging
 import os
+import re
 import ssl
 from http import HTTPStatus
 from unittest.mock import patch
@@ -1116,7 +1118,14 @@ async def test_the_trust_step_shows_the_authority_and_a_signed_link(
     assert placeholders["fingerprint"] == (
         authority.fingerprint(hashes.SHA256()).hex(":").upper()
     )
-    url = placeholders["download_url"]
+    # The frontend's flow dialog closes and routes in-app on a click on a
+    # same-origin link without a target, so the link must carry one.
+    link = re.fullmatch(
+        r'<a href="([^"]+)" target="_blank">', placeholders["link_start"]
+    )
+    assert link is not None
+    assert placeholders["link_end"] == "</a>"
+    url = html.unescape(link.group(1))
     assert url.startswith(f"/api/tuxedo_touch/{ENTRY_ID}/ca.crt?authSig=")
 
     anonymous = await hass_client_no_auth()
