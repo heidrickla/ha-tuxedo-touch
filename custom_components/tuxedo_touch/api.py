@@ -200,6 +200,15 @@ class TuxedoTouchConnectionError(TuxedoTouchError):
     """Could not reach the panel at all."""
 
 
+class TuxedoTouchUnreachable(TuxedoTouchConnectionError):
+    """The request failed below HTTP: nothing answered it.
+
+    Raised for a failed connection, handshake or timeout. Its parent alone
+    is a panel that answered HTTP with something unusable, such as a login
+    page that is not there.
+    """
+
+
 class TuxedoTouchInvalidCode(TuxedoTouchError):
     """The alarm code is not digits only. Raised before any request is built."""
 
@@ -342,7 +351,7 @@ def _transport_error(
             "The panel's TLS connection did not verify against the certificate "
             f"authority this entry trusts: {err}"
         )
-    return TuxedoTouchConnectionError(str(err))
+    return TuxedoTouchUnreachable(str(err))
 
 
 def _der_of(item: object) -> bytes | None:
@@ -433,6 +442,8 @@ class TuxedoTouchClient:
         password: str,
         tuxweb_token: str | None = None,
         panel_ca: str | None = None,
+        *,
+        trust_on_first_use: bool = True,
     ) -> None:
         self._session = session
         self._host = host
@@ -468,6 +479,10 @@ class TuxedoTouchClient:
         # What the panel presented to the probe that learnt (or failed to
         # learn) the pin, for the certificate repair to show.
         self._presented: PanelCertificate | None = None
+        # Whether a proven authority is pinned at once (a new entry) or only
+        # offered (an existing one, which pins after the user confirms).
+        self._trust_on_first_use = trust_on_first_use
+        self._trustable: PanelCertificate | None = None
 
     @property
     def base_url(self) -> str:
@@ -497,6 +512,15 @@ class TuxedoTouchClient:
     def presented_certificate(self) -> PanelCertificate | None:
         """What the panel presented to this client's first-use probe, if it ran."""
         return self._presented
+
+    @property
+    def trustable_certificate(self) -> PanelCertificate | None:
+        """An authority that proved itself but was not pinned, awaiting a yes.
+
+        Set only on a client built with trust_on_first_use off; see
+        _async_trust_on_first_use and async_look_for_tuxweb.
+        """
+        return self._trustable
 
     @property
     def tls(self) -> str:
@@ -586,10 +610,10 @@ class TuxedoTouchClient:
         login budget is the guard, and a move TO tuxweb takes a reload.
 
         Over HTTPS with no pinned authority, a tuxweb answer is also where
-        the pin is learnt: see _async_trust_on_first_use. With a pin, this
-        GET is made with the verifying context, and a certificate it does not
-        verify raises TuxedoTouchCertificateError, uncached, rather than
-        being asked again on the legacy context.
+        the pin is learnt, or offered: see _async_trust_on_first_use. With a
+        pin, this GET is made with the verifying context, and a certificate
+        it does not verify raises TuxedoTouchCertificateError, uncached,
+        rather than being asked again on the legacy context.
         """
         if self._tuxweb is not None:
             return self._tuxweb
@@ -738,18 +762,77 @@ class TuxedoTouchClient:
                 async with asyncio.timeout(_CHAIN_TIMEOUT):
                     await writer.wait_closed()
 
+    async def async_look_for_tuxweb(self) -> PanelCertificate | None:
+        """Ask a stock client's panel again whether it now runs tuxweb.
+
+        For a panel updated while Home Assistant runs: the coordinator calls
+        this once after it has lost the panel and got it back. The same
+        capability GET as the probe - no login, no session, the client's own
+        context and so its own pool key - and, if a list comes back over
+        HTTPS, the same chain read and proof as first use. The authority that
+        proves itself is returned and kept as trustable_certificate; nothing
+        is pinned, and the client stays stock until the entry is reloaded.
+        None for a panel still stock, a client that is not stock, plain HTTP,
+        or a pinned client. A connection failure is raised.
+        """
+        if (
+            self._tuxweb is not False
+            or self._scheme != "https"
+            or self._panel_ca is not None
+        ):
+            return None
+        _, capabilities = await self._async_ask_capabilities()
+        if capabilities is None:
+            return None
+        _LOGGER.debug(
+            "The panel at %s was stock and now declares %s",
+            self._host,
+            sorted(capabilities),
+        )
+        self._trustable = await self._async_prove_anchor()
+        return self._trustable
+
     async def _async_trust_on_first_use(self) -> None:
         """Pin the authority a tuxweb panel presented, once it has proved itself.
 
+        The proof is _async_prove_anchor. A client built with
+        trust_on_first_use off keeps the proven authority as
+        trustable_certificate instead and goes on with the legacy context:
+        an existing entry pins only once the user has confirmed it.
+        """
+        anchor = await self._async_prove_anchor()
+        if anchor is None:
+            return
+        if not self._trust_on_first_use:
+            self._trustable = anchor
+            _LOGGER.info(
+                "The panel at %s presents the certificate authority %s "
+                "(SHA-256 %s), which verifies its certificate; it is trusted "
+                "once accepted from the repair notification",
+                self._host,
+                anchor.subject,
+                anchor.fingerprint,
+            )
+            return
+        self._panel_ca = anchor.anchor_pem
+        _LOGGER.info(
+            "The panel at %s is trusted through the certificate authority %s "
+            "(SHA-256 %s), and every connection to it is verified from here on",
+            self._host,
+            anchor.subject,
+            anchor.fingerprint,
+        )
+
+    async def _async_prove_anchor(self) -> PanelCertificate | None:
+        """The authority a tuxweb panel presents, if it verifies the panel.
+
         The anchor is the last certificate of the chain the panel sends
-        (_async_read_chain). It is kept only if the probe, repeated once with
-        a context that verifies against it - hostname included - still
-        answers as tuxweb: that is the anchor verifying the certificate of the
-        panel answering HTTP, by effect. If it does
-        not, nothing is pinned and this client goes on with the legacy
-        context exactly as before, with one warning. A proof that could not
-        connect at all pins nothing and says nothing more than debug; the
-        next setup asks again.
+        (_async_read_chain). It is returned only if the capability GET,
+        repeated once with a context that verifies against it - hostname
+        included - still answers as tuxweb: that is the anchor verifying the
+        certificate of the panel answering HTTP, by effect. If it does not,
+        None, with one warning. A proof that could not connect at all is
+        None with nothing more than debug; the next setup asks again.
         """
         self._presented = presented_certificate(await self._async_read_chain())
         if self._presented is None:
@@ -758,7 +841,7 @@ class TuxedoTouchClient:
                 "could not be read, so its certificate is not verified",
                 self._host,
             )
-            return
+            return None
         anchor = self._presented
         try:
             context = _verified_ssl_context(anchor.anchor_pem)
@@ -774,7 +857,7 @@ class TuxedoTouchClient:
                 anchor.fingerprint,
                 err,
             )
-            return
+            return None
         except TuxedoTouchError as err:
             _LOGGER.debug(
                 "Could not repeat the capability probe at %s to prove its "
@@ -782,7 +865,7 @@ class TuxedoTouchClient:
                 self._host,
                 err,
             )
-            return
+            return None
         if capabilities is None:
             _LOGGER.warning(
                 "The panel at %s verified against the certificate authority it "
@@ -791,15 +874,8 @@ class TuxedoTouchClient:
                 self._host,
                 anchor.subject,
             )
-            return
-        self._panel_ca = anchor.anchor_pem
-        _LOGGER.info(
-            "The panel at %s is trusted through the certificate authority %s "
-            "(SHA-256 %s), and every connection to it is verified from here on",
-            self._host,
-            anchor.subject,
-            anchor.fingerprint,
-        )
+            return None
+        return anchor
 
     def _tuxweb_headers(self) -> dict[str, str]:
         """The whole of tuxweb's auth: the token, as a bearer header.

@@ -37,6 +37,7 @@ ISSUE_HTTPS_REDIRECT = "https_redirect"
 ISSUE_DUPLICATE_ENTRY = "duplicate_entry"
 ISSUE_CREDENTIALS_REJECTED = "credentials_rejected"
 ISSUE_PANEL_CERTIFICATE = "panel_certificate"
+ISSUE_TRUST_CERTIFICATE = "trust_certificate"
 
 DEFAULT_PARTITION = 1
 DEFAULT_PORT_HTTP = 80

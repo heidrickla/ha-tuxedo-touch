@@ -50,16 +50,25 @@ async def session():
     await made.close()
 
 
-def _client(panel, session, panel_ca=None):
+def _client(panel, session, panel_ca=None, *, trust_on_first_use=True, https=True):
     return api.TuxedoTouchClient(
         session=session,
         host="127.0.0.1",
         port=panel.port,
-        use_https=True,
+        use_https=https,
         username=panel.username,
         password=panel.password,
         tuxweb_token=panel.token,
         panel_ca=panel_ca,
+        trust_on_first_use=trust_on_first_use,
+    )
+
+
+def _warnings_of_the_client(caplog):
+    """The client's own warnings, not asyncio's about some other connection."""
+    return sum(
+        record.levelno == logging.WARNING and record.name.endswith("tuxedo_touch.api")
+        for record in caplog.records
     )
 
 
@@ -297,6 +306,137 @@ async def test_stock_over_tls_is_never_pinned(tls, session):
         assert panel.capability_probes == 1
     finally:
         await panel.close()
+
+
+async def test_a_client_that_only_offers_keeps_the_proven_authority_unpinned(
+    tls, session
+):
+    """An existing entry's client: the same proof, nothing pinned, legacy."""
+    panel = await _panel(tls.trusted)
+    try:
+        client = _client(panel, session, trust_on_first_use=False)
+        assert await client.async_probe_capabilities() is True
+        assert client.panel_ca is None
+        assert client.tls == "legacy"
+        assert client.ssl_arg is api._legacy_ssl_context()
+        offered = client.trustable_certificate
+        assert offered is not None
+        assert offered.fingerprint == tls.authority.fingerprint
+        assert same_certificate(offered.anchor_pem, tls.authority.pem)
+        assert panel.capability_probes == 2
+        assert panel.login_attempts == 0
+    finally:
+        await panel.close()
+
+
+async def test_a_client_that_only_offers_offers_nothing_unverifiable(
+    tls, session, caplog
+):
+    panel = await _panel(tls.broken)
+    try:
+        client = _client(panel, session, trust_on_first_use=False)
+        with caplog.at_level(logging.WARNING):
+            assert await client.async_probe_capabilities() is True
+        assert client.trustable_certificate is None
+        assert client.panel_ca is None
+        assert client.tls == "legacy"
+        assert _warnings_of_the_client(caplog) == 1
+    finally:
+        await panel.close()
+
+
+async def test_a_stock_client_looks_again_and_finds_tuxweb_without_logging_in(
+    tls, session
+):
+    """The look after a recovery: one GET, the proof, nothing pinned, and the
+    client goes on as stock until the entry is reloaded."""
+    panel = await _panel(tls.trusted, tuxweb=False)
+    try:
+        client = _client(panel, session, trust_on_first_use=False)
+        assert await client.async_probe_capabilities() is False
+        assert await client.async_look_for_tuxweb() is None
+        assert panel.capability_probes == 2
+
+        panel.tuxweb = True
+        found = await client.async_look_for_tuxweb()
+        assert found is not None
+        assert found.fingerprint == tls.authority.fingerprint
+        assert client.trustable_certificate is found
+        assert client.tuxweb is False
+        assert client.capabilities == frozenset()
+        assert client.panel_ca is None
+        assert client.tls == "legacy"
+        # The look's GET, then the proof's.
+        assert panel.capability_probes == 4
+        assert panel.login_page_requests == 0
+        assert panel.login_attempts == 0
+    finally:
+        await panel.close()
+
+
+async def test_a_look_at_an_unverifiable_panel_finds_nothing(tls, session, caplog):
+    panel = await _panel(tls.broken, tuxweb=False)
+    try:
+        client = _client(panel, session, trust_on_first_use=False)
+        assert await client.async_probe_capabilities() is False
+        panel.tuxweb = True
+        with caplog.at_level(logging.WARNING):
+            assert await client.async_look_for_tuxweb() is None
+        assert client.trustable_certificate is None
+        assert _warnings_of_the_client(caplog) == 1
+    finally:
+        await panel.close()
+
+
+async def test_the_look_asks_nothing_of_a_client_that_is_not_stock_over_https(
+    tls, session
+):
+    panel = await _panel(tls.trusted)
+    try:
+        unasked = _client(panel, session, trust_on_first_use=False)
+        assert await unasked.async_look_for_tuxweb() is None
+        tuxweb = _client(panel, session, trust_on_first_use=False)
+        assert await tuxweb.async_probe_capabilities() is True
+        probes = panel.capability_probes
+        assert await tuxweb.async_look_for_tuxweb() is None
+        assert panel.capability_probes == probes
+
+        panel.tuxweb = False
+        pinned = _client(panel, session, panel_ca=tls.authority.pem)
+        assert await pinned.async_probe_capabilities() is False
+        probes = panel.capability_probes
+        assert await pinned.async_look_for_tuxweb() is None
+        assert panel.capability_probes == probes
+    finally:
+        await panel.close()
+
+    plain = await _panel(None, tuxweb=False)
+    try:
+        client = _client(plain, session, https=False)
+        assert await client.async_probe_capabilities() is False
+        plain.tuxweb = True
+        assert await client.async_look_for_tuxweb() is None
+        assert plain.capability_probes == 1
+    finally:
+        await plain.close()
+
+
+async def test_a_stock_client_tells_an_answer_from_nothing_answering(tls, session):
+    """The coordinator's recovery signal: a stock client meeting tuxweb fails
+    on an answer (no login page), a closed panel on nothing answering."""
+    panel = await _panel(tls.trusted, tuxweb=False)
+    client = _client(panel, session, trust_on_first_use=False)
+    try:
+        assert await client.async_probe_capabilities() is False
+        await client.get_status()
+        panel.tuxweb = True
+        with pytest.raises(api.TuxedoTouchConnectionError) as answered:
+            await client.get_status()
+        assert not isinstance(answered.value, api.TuxedoTouchUnreachable)
+    finally:
+        await panel.close()
+    with pytest.raises(api.TuxedoTouchUnreachable):
+        await client.get_status()
 
 
 async def test_a_pinned_client_answered_stock_through_its_pin_uses_legacy(tls, session):

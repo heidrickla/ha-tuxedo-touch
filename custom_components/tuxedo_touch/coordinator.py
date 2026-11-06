@@ -26,6 +26,7 @@ from .api import (
     TuxedoTouchError,
     TuxedoTouchHttpsRequiredError,
     TuxedoTouchTokenRejected,
+    TuxedoTouchUnreachable,
 )
 from .const import (
     COMMAND_CONFIRM_TIMEOUT,
@@ -38,6 +39,7 @@ from .const import (
     ISSUE_CREDENTIALS_REJECTED,
     ISSUE_HTTPS_REDIRECT,
     ISSUE_PANEL_CERTIFICATE,
+    ISSUE_TRUST_CERTIFICATE,
     OPT_CREDENTIALS_REJECTED,
     OPT_PUSH_TOKEN,
     OPT_PUSH_URL,
@@ -163,7 +165,15 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             password=entry.data[CONF_PASSWORD],
             tuxweb_token=entry.data.get(CONF_TUXWEB_TOKEN),
             panel_ca=entry.data.get(CONF_PANEL_CA),
+            # An existing entry pins only once the user has accepted the
+            # authority from the trust_certificate repair.
+            trust_on_first_use=False,
         )
+        # Set when the panel is lost - a dropped stream, a poll that could
+        # not connect - and spent by the first sign it is back, which asks a
+        # stock panel once whether it was updated meanwhile.
+        self._panel_lost = False
+        self._look_task: asyncio.Task[None] | None = None
         self._last_command_monotonic = 0.0
         # One poll at a time, and a handle on the one in flight: see
         # async_wait_for_poll.
@@ -505,6 +515,12 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
     @callback
     def _async_push_connection_changed(self, connected: bool) -> None:
         """Availability follows the stream as well as the poll, so say so."""
+        # A relay's stream going up or down says nothing about the panel.
+        if not self.push.from_relay:
+            if connected:
+                self._async_look_after_recovery()
+            else:
+                self._panel_lost = True
         if connected:
             if self._push_loss_logged:
                 self._push_loss_logged = False
@@ -829,6 +845,81 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             )
             ir.async_delete_issue(self.hass, DOMAIN, self._certificate_issue_id)
 
+    @property
+    def _trust_issue_id(self) -> str:
+        return issue_id(ISSUE_TRUST_CERTIFICATE, self._entry.entry_id)
+
+    @property
+    def trust_pending(self) -> bool:
+        """Whether the trust_certificate repair stands for this entry."""
+        issue = ir.async_get(self.hass).async_get_issue(DOMAIN, self._trust_issue_id)
+        return issue is not None and issue.active
+
+    @callback
+    def _async_raise_trust_issue(self) -> None:
+        """Offer the authority a tuxweb panel proved, for the user to accept.
+
+        The entry works meanwhile, unverified, as it did on stock firmware;
+        the repair's fix flow shows the certificate and pins it on a yes.
+        """
+        if not self.trust_pending:
+            _LOGGER.info(
+                "The panel at %s runs tuxweb and its certificate can be "
+                "verified; accept it from the repair notification",
+                self._entry.data[CONF_HOST],
+            )
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._trust_issue_id,
+            data={"entry_id": self._entry.entry_id},
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_TRUST_CERTIFICATE,
+            translation_placeholders={"title": self._entry.title},
+        )
+
+    @callback
+    def _async_clear_trust_issue(self) -> None:
+        ir.async_delete_issue(self.hass, DOMAIN, self._trust_issue_id)
+
+    @callback
+    def _async_look_after_recovery(self) -> None:
+        """Ask a stock panel once, after it was lost and is back, if it is tuxweb.
+
+        A firmware update reboots the panel, which drops the stream and fails
+        polls with nothing answering. The first sign of it answering again -
+        the stream reconnecting, or a poll that got an HTTP answer, good or
+        not - spends the flag, so it is one capability GET per recovery and
+        never one per poll. A stock client meeting tuxweb never polls
+        successfully: the login page it asks for is not there. The
+        client decides whether there is anything to ask (stock, HTTPS, no
+        pin); a pending repair asks nothing more.
+        """
+        if not self._panel_lost:
+            return
+        self._panel_lost = False
+        if self.client.tuxweb or self.trust_pending:
+            return
+        self._look_task = self._entry.async_create_background_task(
+            self.hass,
+            self._async_look_for_tuxweb(),
+            f"{DOMAIN} firmware look {self._entry.entry_id}",
+        )
+
+    async def _async_look_for_tuxweb(self) -> None:
+        try:
+            found = await self.client.async_look_for_tuxweb()
+        except TuxedoTouchError as err:
+            _LOGGER.debug(
+                "Could not ask the panel at %s whether it now runs tuxweb: %s",
+                self._entry.data[CONF_HOST],
+                err,
+            )
+            return
+        if found is not None:
+            self._async_raise_trust_issue()
+
     async def _async_setup(self) -> None:
         """Ask the panel which firmware it runs, once, before the first poll.
 
@@ -845,13 +936,15 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         Nothing here can spend a login - the probe never touches the
         handshake - so a panel that is down costs nothing but the retry.
 
-        It is also where an existing entry learns its pin: a tuxweb panel
-        over HTTPS with none stored is trusted on first use by the probe, and
-        the authority it proved is written to the entry here, once. Writing
-        data reloads nothing, because this integration registers no update
-        listener. A pinned probe that does not verify raises the certificate
-        repair and fails setup, and is retried without a login.
+        An existing entry pins nothing here. A tuxweb panel over HTTPS with
+        no authority stored has the one it presents proved by the probe and,
+        if it verifies, offered through the trust_certificate repair; the
+        entry stays on the unverified context until the user accepts it. A
+        pinned probe that does not verify raises the certificate repair and
+        fails setup, and is retried without a login.
         """
+        if self._entry.data.get(CONF_PANEL_CA):
+            self._async_clear_trust_issue()
         try:
             await self.client.async_probe_capabilities()
         except TuxedoTouchCertificateError as err:
@@ -867,11 +960,11 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 translation_key="update_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
-        pin = self.client.panel_ca
-        if pin is not None and pin != self._entry.data.get(CONF_PANEL_CA):
-            self.hass.config_entries.async_update_entry(
-                self._entry, data={**self._entry.data, CONF_PANEL_CA: pin}
-            )
+        if self.client.trustable_certificate is not None:
+            self._async_raise_trust_issue()
+        elif not self.client.tuxweb:
+            # Stock again before the user said yes: nothing left to trust.
+            self._async_clear_trust_issue()
 
     async def _async_update_data(self) -> TuxedoStatus:
         """Poll the panel, one poll at a time.
@@ -938,6 +1031,13 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
                 translation_placeholders={"error": str(err)},
             ) from err
         except TuxedoTouchError as err:
+            # Nothing answered, or the panel answered with something this
+            # client cannot use - which is what a stock client meets once the
+            # panel it lost comes back running tuxweb.
+            if isinstance(err, TuxedoTouchUnreachable):
+                self._panel_lost = True
+            else:
+                self._async_look_after_recovery()
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="update_failed",
@@ -946,6 +1046,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
 
         self._async_clear_https_issue()
         self._async_clear_certificate_issue()
+        self._async_look_after_recovery()
 
         if self._last_command_monotonic > poll_started and self.data is not None:
             _LOGGER.debug(

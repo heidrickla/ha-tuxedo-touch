@@ -225,6 +225,29 @@
     "credentials_rejected": {
       "title": "Tuxedo Touch is refusing the stored credentials",
       "description": "{title} logged in with these web credentials before and the panel now refuses them, so Home Assistant has stopped trying: three failed web logins disable every web account on unpatched firmware, with no timeout, and only the touchscreen can re-enable them (Setup, then Users/Account, re-enable web access, Enable All, Apply). The likely cause is a web password changed at the keypad. Enter the current credentials on this entry's re-authentication card - one attempt, not a series of guesses. If the panel refuses credentials you are sure of, its accounts are already disabled and the touchscreen is the only way back."
+    },
+    "trust_certificate": {
+      "title": "{title} runs the updated firmware, and its certificate can be trusted",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Trust the certificate of {title}",
+            "description": "The panel now runs the updated tuxweb firmware, and the certificate authority it presents verifies its certificate. Until you accept it, Home Assistant connects to the panel without checking its certificate, as it did on stock firmware. This is the certificate authority it presents:\n\nSubject: {subject}\nIssuer: {issuer}\nSHA-256 fingerprint: {fingerprint}\nPanel certificate expires: {expires}\n\nCompare this fingerprint with the certificate authority installed on the panel. Submitting stores this authority for the entry, verifies every connection against it from then on, and reloads the integration.",
+            "data": {
+              "tuxweb_token": "tuxweb token"
+            },
+            "data_description": {
+              "tuxweb_token": "The token issued on the panel with 'tuxweb --issue-token', which the updated firmware needs. Shown only while the entry has none; if you leave it blank, Home Assistant asks for it after the reload."
+            }
+          }
+        },
+        "abort": {
+          "entry_gone": "That Tuxedo Touch entry no longer exists, so there is nothing left to fix.",
+          "cannot_connect": "The panel could not be reached to read its certificate. Check that it is on the network and try again.",
+          "not_tuxweb": "The panel no longer declares the tuxweb capability list, so it is not running the updated firmware and there is no certificate to trust.",
+          "certificate_unverifiable": "The certificate authority the panel presents does not verify the panel's own certificate, so there is nothing that can be trusted. Check the certificate installed on the panel, then try again."
+        }
+      }
     }
   },
   "options": {

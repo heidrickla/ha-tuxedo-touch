@@ -56,6 +56,10 @@ async def async_get_config_entry_diagnostics(
             if described is not None
             else None
         ),
+        # True while the trust_certificate repair stands: the panel runs
+        # tuxweb and presents an authority that verifies it, and the entry
+        # goes on unverified until the user accepts it.
+        "trust_pending": coordinator.trust_pending,
         # The partition this entry addresses on the REST poll and on every
         # arm/disarm command. NOT a filter on the push stream, which carries
         # no partition field and is scoped by the firmware to whichever

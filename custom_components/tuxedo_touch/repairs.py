@@ -1,9 +1,10 @@
 """Fix flows for the repair issues this integration raises.
 
-Two are fixable from here: the HTTPS redirect, and a tuxweb panel whose
-certificate no longer verifies against the authority the entry trusts. The
-other two carry their explanation and no flow, because neither is something
-Home Assistant can put right on its own:
+Three are fixable from here: the HTTPS redirect, a tuxweb panel whose
+certificate no longer verifies against the authority the entry trusts, and
+an existing entry's panel that now runs tuxweb and presents an authority
+that can be trusted. The other two carry their explanation and no flow,
+because neither is something Home Assistant can put right on its own:
 
 - a duplicate entry needs the user to choose which of the two to remove;
 - rejected credentials need credentials only the user has, and that issue
@@ -24,6 +25,7 @@ from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .api import PanelCertificate, TuxedoTouchClient, TuxedoTouchError
@@ -35,7 +37,52 @@ from .const import (
     DEFAULT_PORT_HTTPS,
     ISSUE_HTTPS_REDIRECT,
     ISSUE_PANEL_CERTIFICATE,
+    ISSUE_TRUST_CERTIFICATE,
 )
+
+_TOKEN_FIELD = selector.TextSelector(
+    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+)
+
+
+async def _async_probe_unpinned(
+    hass: HomeAssistant, entry: ConfigEntry[Any]
+) -> TuxedoTouchClient:
+    """Ask the panel which firmware it runs, as a client holding no pin would.
+
+    The capability GET on the legacy context with no login; over HTTPS a
+    tuxweb answer has the authority the panel presents read and proved, and
+    the client comes back pinned to it if it verified. Raises
+    TuxedoTouchError when the panel cannot be reached.
+    """
+    session = async_create_clientsession(hass, auto_cleanup=False)
+    try:
+        client = TuxedoTouchClient(
+            session=session,
+            host=entry.data[CONF_HOST],
+            port=entry.data[CONF_PORT],
+            use_https=entry.data[CONF_USE_HTTPS],
+            username=entry.data[CONF_USERNAME],
+            password=entry.data[CONF_PASSWORD],
+            tuxweb_token=entry.data.get(CONF_TUXWEB_TOKEN),
+        )
+        await client.async_probe_capabilities()
+    finally:
+        # detach(), not close(): see config_flow._validate_input.
+        session.detach()
+    return client
+
+
+def _certificate_placeholders(
+    entry: ConfigEntry[Any], found: PanelCertificate
+) -> dict[str, str]:
+    return {
+        "title": entry.title,
+        "subject": found.subject,
+        "issuer": found.issuer,
+        "fingerprint": found.fingerprint,
+        "expires": found.leaf_expires or "",
+    }
 
 
 class _EntryRepairFlow(RepairsFlow):
@@ -121,23 +168,10 @@ class PanelCertificateRepairFlow(_EntryRepairFlow):
         entry = self._entry()
         if entry is None:
             return self.async_abort(reason="entry_gone")
-        session = async_create_clientsession(self.hass, auto_cleanup=False)
         try:
-            client = TuxedoTouchClient(
-                session=session,
-                host=entry.data[CONF_HOST],
-                port=entry.data[CONF_PORT],
-                use_https=entry.data[CONF_USE_HTTPS],
-                username=entry.data[CONF_USERNAME],
-                password=entry.data[CONF_PASSWORD],
-                tuxweb_token=entry.data.get(CONF_TUXWEB_TOKEN),
-            )
-            await client.async_probe_capabilities()
+            client = await _async_probe_unpinned(self.hass, entry)
         except TuxedoTouchError:
             return self.async_abort(reason="cannot_connect")
-        finally:
-            # detach(), not close(): see config_flow._validate_input.
-            session.detach()
         if not client.tuxweb:
             return await self.async_step_remove_pin()
         found = client.presented_certificate
@@ -159,13 +193,7 @@ class PanelCertificateRepairFlow(_EntryRepairFlow):
         return self.async_show_form(
             step_id="accept",
             data_schema=vol.Schema({}),
-            description_placeholders={
-                "title": entry.title,
-                "subject": self._found.subject,
-                "issuer": self._found.issuer,
-                "fingerprint": self._found.fingerprint,
-                "expires": self._found.leaf_expires or "",
-            },
+            description_placeholders=_certificate_placeholders(entry, self._found),
         )
 
     async def async_step_remove_pin(
@@ -185,10 +213,65 @@ class PanelCertificateRepairFlow(_EntryRepairFlow):
         )
 
 
+class TrustCertificateRepairFlow(_EntryRepairFlow):
+    """Trust the authority of a panel that now runs tuxweb, on confirmation.
+
+    For an existing entry, which never pins on its own: the panel is asked
+    afresh - the capability GET on the legacy context, no login - and the
+    authority it presents is proved again before it is shown. Confirming
+    stores it and reloads the entry, which from then on verifies every
+    connection. An entry with no tuxweb token is offered the field here too,
+    since a tuxweb panel needs one; left blank, the entry asks for it on the
+    reauthentication card instead.
+    """
+
+    _found: PanelCertificate
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> RepairsFlowResult:
+        entry = self._entry()
+        if entry is None:
+            return self.async_abort(reason="entry_gone")
+        try:
+            client = await _async_probe_unpinned(self.hass, entry)
+        except TuxedoTouchError:
+            return self.async_abort(reason="cannot_connect")
+        if not client.tuxweb:
+            return self.async_abort(reason="not_tuxweb")
+        found = client.presented_certificate
+        if client.panel_ca is None or found is None:
+            return self.async_abort(reason="certificate_unverifiable")
+        self._found = found
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> RepairsFlowResult:
+        entry = self._entry()
+        if entry is None:
+            return self.async_abort(reason="entry_gone")
+        if user_input is not None:
+            data = {**entry.data, CONF_PANEL_CA: self._found.anchor_pem}
+            # Blank is no token, as on every other form.
+            if token := user_input.get(CONF_TUXWEB_TOKEN):
+                data[CONF_TUXWEB_TOKEN] = token
+            return await self._async_store_and_reload(entry, data)
+        fields: dict[vol.Marker, Any] = {}
+        if not entry.data.get(CONF_TUXWEB_TOKEN):
+            fields[vol.Optional(CONF_TUXWEB_TOKEN)] = _TOKEN_FIELD
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema(fields),
+            description_placeholders=_certificate_placeholders(entry, self._found),
+        )
+
+
 # Which flow fixes which issue. The issue id is the key, then the entry id.
 FIX_FLOWS: dict[str, Callable[[str | None], RepairsFlow]] = {
     ISSUE_HTTPS_REDIRECT: HttpsRedirectRepairFlow,
     ISSUE_PANEL_CERTIFICATE: PanelCertificateRepairFlow,
+    ISSUE_TRUST_CERTIFICATE: TrustCertificateRepairFlow,
 }
 
 

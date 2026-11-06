@@ -1,4 +1,5 @@
-"""A tuxweb panel over HTTPS, as Home Assistant sees it: trusted on first use,
+"""A tuxweb panel over HTTPS, as Home Assistant sees it: a new entry trusted
+on first use, an existing one only once the user accepts the certificate,
 verified after, and a changed certificate raised as a repair.
 
 The fake panel serves TLS with the chain a tuxweb panel serves (leaf naming
@@ -9,6 +10,7 @@ rather than hidden behind a pooled connection.
 """
 
 import asyncio
+import dataclasses
 import logging
 from unittest.mock import patch
 
@@ -37,6 +39,7 @@ from custom_components.tuxedo_touch.const import (
     CONF_USE_HTTPS,
     DOMAIN,
     ISSUE_PANEL_CERTIFICATE,
+    ISSUE_TRUST_CERTIFICATE,
     issue_id,
 )
 from custom_components.tuxedo_touch.diagnostics import (
@@ -66,6 +69,15 @@ async def tls_tuxweb(socket_enabled, tls):
     await panel.close()
 
 
+@pytest.fixture
+async def tls_stock(socket_enabled, tls):
+    """The fake stock panel over TLS, which an update turns into tuxweb."""
+    panel = FakePanel(tuxweb=False, ssl_context=tls.trusted)
+    await panel.start()
+    yield panel
+    await panel.close()
+
+
 @pytest.fixture(autouse=True)
 def _short_reconnect(monkeypatch):
     monkeypatch.setattr(push, "PUSH_BACKOFF_INITIAL", 0.01)
@@ -86,7 +98,7 @@ async def _quiet_server_handshakes():
     asyncio.get_running_loop().set_debug(False)
 
 
-def _entry(panel, panel_ca=None, *, use_https=True):
+def _entry(panel, panel_ca=None, *, use_https=True, token=TUXWEB_TOKEN):
     data = {
         CONF_HOST: "127.0.0.1",
         CONF_PORT: panel.port,
@@ -95,8 +107,9 @@ def _entry(panel, panel_ca=None, *, use_https=True):
         CONF_PASSWORD: panel.password,
         CONF_CODE: "1234",
         CONF_PARTITION: 1,
-        CONF_TUXWEB_TOKEN: TUXWEB_TOKEN,
     }
+    if token is not None:
+        data[CONF_TUXWEB_TOKEN] = token
     if panel_ca is not None:
         data[CONF_PANEL_CA] = panel_ca
     return MockConfigEntry(
@@ -116,6 +129,12 @@ async def _setup(hass, entry):
 def _issue(hass, entry):
     return ir.async_get(hass).async_get_issue(
         DOMAIN, issue_id(ISSUE_PANEL_CERTIFICATE, entry.entry_id)
+    )
+
+
+def _trust_issue(hass, entry):
+    return ir.async_get(hass).async_get_issue(
+        DOMAIN, issue_id(ISSUE_TRUST_CERTIFICATE, entry.entry_id)
     )
 
 
@@ -187,11 +206,12 @@ async def test_a_new_entry_is_created_pinned_and_shares_the_flows_context(
     assert tls_tuxweb.login_attempts == 0
 
 
-async def test_an_existing_entry_pins_on_its_first_setup_and_writes_once(
+async def test_an_existing_entry_pins_nothing_and_offers_the_certificate(
     hass, tls, tls_tuxweb
 ):
     """The live install's path: no pin stored, so the coordinator's probe
-    learns it and writes it to the entry, once, without a reload loop."""
+    proves the authority, writes nothing, stays unverified and raises the
+    trust repair - once, and again after a reload while it is unanswered."""
     entry = _entry(tls_tuxweb)
     entry.add_to_hass(hass)
     real_update = hass.config_entries.async_update_entry
@@ -201,9 +221,21 @@ async def test_an_existing_entry_pins_on_its_first_setup_and_writes_once(
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
         assert entry.state is ConfigEntryState.LOADED
-        assert same_certificate(entry.data.get(CONF_PANEL_CA), tls.authority.pem)
-        assert entry.runtime_data.client.tls == "verified"
-        await wait_until(lambda: entry.runtime_data.push.connected)
+        coordinator = entry.runtime_data
+        assert CONF_PANEL_CA not in entry.data
+        assert coordinator.client.tls == "legacy"
+        assert coordinator.client.tuxweb is True
+        issue = _trust_issue(hass, entry)
+        assert issue is not None
+        assert issue.is_fixable
+        assert issue.severity is ir.IssueSeverity.WARNING
+        assert issue.translation_key == ISSUE_TRUST_CERTIFICATE
+        assert coordinator.trust_pending
+        report = await async_get_config_entry_diagnostics(hass, entry)
+        assert report["trust_pending"] is True
+        assert report["tls"] == "legacy"
+        assert report["panel_ca"] is None
+        await wait_until(lambda: coordinator.push.connected)
 
         # The fake holds a stream open until told to let go; let this one go
         # so only the reloaded entry's stream is open at the end.
@@ -215,25 +247,97 @@ async def test_an_existing_entry_pins_on_its_first_setup_and_writes_once(
         # of streams before this one has started waiting to be let go of.
         await wait_until(lambda: entry.runtime_data.push.connected)
 
-    pin_writes = [
+    assert not [
         call
         for call in update.call_args_list
         if CONF_PANEL_CA in (call.kwargs.get("data") or {})
     ]
-    assert len(pin_writes) == 1
+    assert CONF_PANEL_CA not in entry.data
+    assert entry.runtime_data.client.tls == "legacy"
+    assert _trust_issue(hass, entry) is not None
+    assert tls_tuxweb.login_attempts == 0
+
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    assert _trust_issue(hass, entry) is None
+
+
+async def test_a_trust_repair_only_restored_from_storage_is_not_pending(
+    hass, tls, tls_tuxweb
+):
+    """An issue loaded at startup and not raised again is not this run's."""
+    entry = _entry(tls_tuxweb)
+    await _setup(hass, entry)
+    await wait_until(lambda: entry.runtime_data.push.connected)
+    registry = ir.async_get(hass)
+    key = (DOMAIN, issue_id(ISSUE_TRUST_CERTIFICATE, entry.entry_id))
+    registry.issues[key] = dataclasses.replace(registry.issues[key], active=False)
+    assert not entry.runtime_data.trust_pending
+
+
+async def test_a_pinned_entry_clears_a_trust_repair_left_standing(
+    hass, tls, tls_tuxweb
+):
+    entry = _entry(tls_tuxweb, tls.authority.pem)
+    entry.add_to_hass(hass)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id(ISSUE_TRUST_CERTIFICATE, entry.entry_id),
+        data={"entry_id": entry.entry_id},
+        is_fixable=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=ISSUE_TRUST_CERTIFICATE,
+        translation_placeholders={"title": entry.title},
+    )
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
-    assert entry.runtime_data.client.tls == "verified"
+    assert _trust_issue(hass, entry) is None
+    assert not entry.runtime_data.trust_pending
+    await wait_until(lambda: entry.runtime_data.push.connected)
+
+
+async def test_a_panel_back_on_stock_clears_an_unanswered_trust_repair(
+    hass, tls, tls_tuxweb
+):
+    entry = _entry(tls_tuxweb)
+    await _setup(hass, entry)
+    assert _trust_issue(hass, entry) is not None
+    await wait_until(lambda: entry.runtime_data.push.connected)
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    tls_tuxweb.drop_stream()
+    tls_tuxweb.tuxweb = False
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data.client.tuxweb is False
+    assert _trust_issue(hass, entry) is None
+    await wait_until(lambda: entry.runtime_data.push.connected)
 
 
 async def test_an_unverifiable_chain_pins_nothing_and_loads_as_before(
-    hass, tls, tls_tuxweb
+    hass, tls, tls_tuxweb, caplog
 ):
+    """Warned once, nothing offered: there is no authority that could be."""
     await tls_tuxweb.use_tls(tls.broken)
     entry = _entry(tls_tuxweb)
-    await _setup(hass, entry)
+    with caplog.at_level(logging.WARNING):
+        await _setup(hass, entry)
 
     assert entry.state is ConfigEntryState.LOADED
     assert CONF_PANEL_CA not in entry.data
+    assert _trust_issue(hass, entry) is None
+    assert not entry.runtime_data.trust_pending
+    assert (
+        sum(
+            record.levelno == logging.WARNING
+            and record.name.startswith("custom_components.tuxedo_touch")
+            and "does not verify its own certificate" in record.getMessage()
+            for record in caplog.records
+        )
+        == 1
+    )
     assert entry.runtime_data.client.tls == "legacy"
     await wait_until(lambda: entry.runtime_data.push.connected)
     report = await async_get_config_entry_diagnostics(hass, entry)
@@ -440,6 +544,266 @@ async def test_the_fix_aborts_for_an_entry_that_is_gone(hass, tls, tls_tuxweb):
         result = await manager.async_init(DOMAIN, data={"issue_id": flow_id})
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "entry_gone"
+
+
+# --------------------------------------------- trusting an updated panel
+
+
+async def _trust_flow(hass, entry):
+    manager = repairs_flow_manager(hass)
+    assert manager is not None
+    return manager, await manager.async_init(
+        DOMAIN,
+        data={"issue_id": issue_id(ISSUE_TRUST_CERTIFICATE, entry.entry_id)},
+    )
+
+
+async def test_the_trust_repair_shows_the_certificate_and_pins_it(
+    hass, tls, tls_tuxweb
+):
+    entry = _entry(tls_tuxweb)
+    await _setup(hass, entry)
+    await wait_until(lambda: entry.runtime_data.push.connected)
+    probes = tls_tuxweb.capability_probes
+
+    manager, form = await _trust_flow(hass, entry)
+    assert form["type"] is FlowResultType.FORM
+    assert form["step_id"] == "confirm"
+    shown = form["description_placeholders"]
+    assert shown["fingerprint"] == tls.authority.fingerprint
+    assert shown["subject"] == tls.authority.subject
+    assert shown["issuer"] == tls.authority.subject
+    assert shown["expires"] == tls.leaf.expires
+    # The entry has a token, so the form asks for nothing.
+    assert dict(form["data_schema"].schema) == {}
+    # The GET and the proof again, before anything is shown.
+    assert tls_tuxweb.capability_probes == probes + 2
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    tls_tuxweb.drop_stream()
+    done = await manager.async_configure(form["flow_id"], {})
+    await hass.async_block_till_done()
+    assert done["type"] is FlowResultType.CREATE_ENTRY
+    assert same_certificate(entry.data[CONF_PANEL_CA], tls.authority.pem)
+    assert entry.data[CONF_TUXWEB_TOKEN] == TUXWEB_TOKEN
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.client.tls == "verified"
+    assert _trust_issue(hass, entry) is None
+    assert not entry.runtime_data.trust_pending
+    assert tls_tuxweb.login_attempts == 0
+    await wait_until(lambda: entry.runtime_data.push.connected)
+
+
+async def test_the_trust_repair_takes_a_token_with_the_pin(hass, tls, tls_tuxweb):
+    """An entry with no token cannot poll tuxweb at all; the repair offers the
+    field, and what is typed is stored with the pin."""
+    entry = _entry(tls_tuxweb, token=None)
+    await _setup(hass, entry)
+    assert _trust_issue(hass, entry) is not None
+
+    manager, form = await _trust_flow(hass, entry)
+    assert form["step_id"] == "confirm"
+    assert [str(key) for key in form["data_schema"].schema] == [CONF_TUXWEB_TOKEN]
+    done = await manager.async_configure(
+        form["flow_id"], {CONF_TUXWEB_TOKEN: TUXWEB_TOKEN}
+    )
+    await hass.async_block_till_done()
+    assert done["type"] is FlowResultType.CREATE_ENTRY
+    assert same_certificate(entry.data[CONF_PANEL_CA], tls.authority.pem)
+    assert entry.data[CONF_TUXWEB_TOKEN] == TUXWEB_TOKEN
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.client.tls == "verified"
+    assert _trust_issue(hass, entry) is None
+    await wait_until(lambda: entry.runtime_data.push.connected)
+
+
+async def test_the_trust_repair_left_without_a_token_stores_none(hass, tls, tls_tuxweb):
+    entry = _entry(tls_tuxweb, token=None)
+    await _setup(hass, entry)
+
+    manager, form = await _trust_flow(hass, entry)
+    done = await manager.async_configure(form["flow_id"], {})
+    await hass.async_block_till_done()
+    assert done["type"] is FlowResultType.CREATE_ENTRY
+    assert same_certificate(entry.data[CONF_PANEL_CA], tls.authority.pem)
+    assert CONF_TUXWEB_TOKEN not in entry.data
+
+
+async def test_the_trust_repair_aborts_for_a_panel_back_on_stock(hass, tls, tls_tuxweb):
+    entry = _entry(tls_tuxweb, token=None)
+    await _setup(hass, entry)
+    tls_tuxweb.tuxweb = False
+
+    _, result = await _trust_flow(hass, entry)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "not_tuxweb"
+    assert CONF_PANEL_CA not in entry.data
+
+
+async def test_the_trust_repair_aborts_for_an_authority_that_does_not_verify(
+    hass, tls, tls_tuxweb
+):
+    entry = _entry(tls_tuxweb, token=None)
+    await _setup(hass, entry)
+    await tls_tuxweb.use_tls(tls.broken)
+
+    _, result = await _trust_flow(hass, entry)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "certificate_unverifiable"
+    assert CONF_PANEL_CA not in entry.data
+
+
+async def test_the_trust_repair_aborts_when_unreachable_or_gone(hass, tls, tls_tuxweb):
+    entry = _entry(tls_tuxweb, token=None)
+    await _setup(hass, entry)
+
+    tls_tuxweb.capability_probe_disconnects = 4
+    _, result = await _trust_flow(hass, entry)
+    assert result["reason"] == "cannot_connect"
+
+    with patch.object(hass.config_entries, "async_get_entry", return_value=None):
+        _, result = await _trust_flow(hass, entry)
+    assert result["reason"] == "entry_gone"
+
+
+# ------------------------------------------- an update while Home Assistant runs
+
+
+async def _stock_entry(hass, panel):
+    entry = _entry(panel, token=None)
+    await _setup(hass, entry)
+    coordinator = entry.runtime_data
+    await wait_until(lambda: coordinator.push.connected)
+    assert coordinator.client.tuxweb is False
+    assert coordinator.client.tls == "legacy"
+    return entry, coordinator
+
+
+async def _looked(hass, coordinator):
+    """Wait out a look in flight: a background task, which
+    async_block_till_done does not wait for."""
+    if coordinator._look_task is not None:
+        await coordinator._look_task
+    await hass.async_block_till_done()
+
+
+async def _lose_the_panel(coordinator):
+    """One poll that nothing answered, as while the panel reboots."""
+    with patch.object(
+        coordinator.client,
+        "get_status",
+        side_effect=api.TuxedoTouchUnreachable("rebooting"),
+    ):
+        await coordinator.async_refresh()
+    assert not coordinator.last_update_success
+
+
+async def test_a_stock_panel_updated_while_running_raises_the_trust_repair(
+    hass, tls, tls_stock
+):
+    """Lost, then back running tuxweb: the stock client's poll fails on an
+    answer, which asks once; the repair is raised, nothing is pinned, and the
+    client stays stock until the entry is reloaded."""
+    entry, coordinator = await _stock_entry(hass, tls_stock)
+    probes = tls_stock.capability_probes
+    logins = tls_stock.login_attempts
+
+    await _lose_the_panel(coordinator)
+    assert tls_stock.capability_probes == probes
+    tls_stock.tuxweb = True
+    await coordinator.async_refresh()
+    assert not coordinator.last_update_success
+    await _looked(hass, coordinator)
+    assert _trust_issue(hass, entry) is not None
+
+    # The look's GET and its proof, and no login of any kind.
+    assert tls_stock.capability_probes == probes + 2
+    assert tls_stock.login_attempts == logins
+    assert CONF_PANEL_CA not in entry.data
+    assert coordinator.client.tuxweb is False
+    assert coordinator.trust_pending
+    report = await async_get_config_entry_diagnostics(hass, entry)
+    assert report["trust_pending"] is True
+
+    # Never a look per poll, nor another while the repair stands.
+    for _ in range(3):
+        await coordinator.async_refresh()
+        await _looked(hass, coordinator)
+    await _lose_the_panel(coordinator)
+    await coordinator.async_refresh()
+    await _looked(hass, coordinator)
+    assert tls_stock.capability_probes == probes + 2
+    assert tls_stock.login_attempts == logins
+
+
+async def test_the_look_runs_once_per_recovery_and_never_per_poll(hass, tls, tls_stock):
+    entry, coordinator = await _stock_entry(hass, tls_stock)
+    probes = tls_stock.capability_probes
+    for _ in range(3):
+        await coordinator.async_refresh()
+        await _looked(hass, coordinator)
+    assert coordinator.last_update_success
+    assert tls_stock.capability_probes == probes
+
+    # The stream drops and comes back: one look, which finds stock.
+    tls_stock.drop_stream()
+    await wait_until(lambda: tls_stock.capability_probes == probes + 1)
+    await wait_until(lambda: coordinator.push.connected)
+    await _looked(hass, coordinator)
+    await coordinator.async_refresh()
+    await _looked(hass, coordinator)
+    assert tls_stock.capability_probes == probes + 1
+
+    # A poll nothing answered, then a good one: one more.
+    await _lose_the_panel(coordinator)
+    await coordinator.async_refresh()
+    await _looked(hass, coordinator)
+    assert tls_stock.capability_probes == probes + 2
+    for _ in range(2):
+        await coordinator.async_refresh()
+        await _looked(hass, coordinator)
+    assert tls_stock.capability_probes == probes + 2
+    assert _trust_issue(hass, entry) is None
+    assert not coordinator.trust_pending
+
+
+async def test_a_relay_stream_dropping_says_nothing_about_the_panel(
+    hass, tls, tls_stock
+):
+    _, coordinator = await _stock_entry(hass, tls_stock)
+    with patch.object(type(coordinator.push), "from_relay", True):
+        coordinator._async_push_connection_changed(False)
+        coordinator._async_push_connection_changed(True)
+    await coordinator.async_refresh()
+    await _looked(hass, coordinator)
+    assert coordinator._look_task is None
+    assert tls_stock.capability_probes == 1
+
+
+async def test_an_updated_panel_whose_chain_does_not_verify_raises_nothing(
+    hass, tls, tls_stock, caplog
+):
+    await tls_stock.use_tls(tls.broken)
+    entry, coordinator = await _stock_entry(hass, tls_stock)
+    probes = tls_stock.capability_probes
+
+    await _lose_the_panel(coordinator)
+    tls_stock.tuxweb = True
+    with caplog.at_level(logging.WARNING):
+        await coordinator.async_refresh()
+        await _looked(hass, coordinator)
+    # The look's GET; the proof is refused at its handshake.
+    assert tls_stock.capability_probes == probes + 1
+    assert _trust_issue(hass, entry) is None
+    assert (
+        sum(
+            record.levelno == logging.WARNING
+            and record.name.startswith("custom_components.tuxedo_touch")
+            and "does not verify its own certificate" in record.getMessage()
+            for record in caplog.records
+        )
+        == 1
+    )
 
 
 # ------------------------------------------------- reconfigure, diagnostics
