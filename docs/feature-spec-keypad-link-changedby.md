@@ -59,7 +59,7 @@ State plainly that **the condition has not been seen live on this panel** — th
 
 ## 0. Stock is the default, and a stale verdict must not outlive it
 
-Lewis, 2026-09-12: *"You should auto detect custom firmware so your default is standard firmware unless custom is detected."*
+Lewis, 2026-09-12: *"You should auto-detect custom firmware so your default is standard firmware unless custom is detected."*
 
 **At setup this is already right, and deliberately so.** `async_probe_capabilities` treats a capability list as the only thing that flips the verdict — a 404, a 302, an HTML 200, a body with no list, even a 401 ("which neither firmware does") all read as stock, and a connection failure is raised rather than cached, so the next setup asks again instead of remembering an answer it never got. Do not weaken any of that.
 
