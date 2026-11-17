@@ -421,6 +421,36 @@ def test_a_chain_is_read_for_its_expiry_and_whether_it_is_outdated(tls):
     assert certificate.leaf_names_host(no_san, "127.0.0.1") is False
 
 
+@pytest.mark.parametrize("ca", [True, None])
+def test_only_an_end_entity_certificate_is_our_leaf(tls, ca):
+    """The authority itself, or anything it issued that does not say CA:FALSE,
+    is never a leaf of ours to replace, however lapsed or misnamed."""
+    own = x509.load_pem_x509_certificate(tls["own_cert"].encode())
+    own_der = own.public_bytes(serialization.Encoding.DER)
+    assert (
+        certificate.outdated_own_leaf([own_der], tls["own_cert"], "127.0.0.1") is False
+    )
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    builder = (
+        x509.CertificateBuilder()
+        .issuer_name(own.subject)
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "sub")]))
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(own.not_valid_before_utc)
+        .not_valid_after(own.not_valid_after_utc)
+    )
+    if ca is not None:
+        builder = builder.add_extension(
+            x509.BasicConstraints(ca=ca, path_length=None), critical=True
+        )
+    signer = serialization.load_pem_private_key(tls["own_key"].encode(), None)
+    issued = builder.sign(signer, hashes.SHA256())
+    der = issued.public_bytes(serialization.Encoding.DER)
+    assert certificate.outdated_own_leaf([der], tls["own_cert"], "127.0.0.1") is False
+
+
 # ------------------------------------------------------------- the button
 
 
@@ -883,9 +913,33 @@ async def _renewal_fix_flow(hass):
     )
     assert form["type"] is FlowResultType.FORM
     assert form["step_id"] == "confirm"
+    issue = _renewal_issue(hass)
+    assert form["description_placeholders"] == {
+        "title": "Tuxedo Touch (127.0.0.1)",
+        "reason": issue.translation_placeholders["reason"],
+    }
     done = await manager.async_configure(form["flow_id"], {})
     assert done["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
+
+
+async def test_the_renewal_repair_names_the_refusal(hass, tls, tls_tuxweb):
+    """A fixable issue's own description is never shown, so the flow's is."""
+    await tls_tuxweb.use_tls(tls["moved"])
+    tls_tuxweb.install_error = (409, "tls_not_configured")
+    entry = _entry(tls_tuxweb, panel_ca=tls["own_cert"], own=_own(tls))
+    await _setup(hass, entry)
+    manager = repairs_flow_manager(hass)
+    assert manager is not None
+    form = await manager.async_init(
+        DOMAIN,
+        data={"issue_id": issue_id(ISSUE_CERTIFICATE_RENEWAL_FAILED, ENTRY_ID)},
+    )
+    assert form["step_id"] == "confirm"
+    assert form["description_placeholders"] == {
+        "title": "Tuxedo Touch (127.0.0.1)",
+        "reason": "tls_not_configured",
+    }
 
 
 async def test_a_refused_reissue_is_sent_again_only_from_the_repair(
@@ -906,7 +960,9 @@ async def test_a_refused_reissue_is_sent_again_only_from_the_repair(
     await hass.config_entries.async_reload(ENTRY_ID)
     await hass.async_block_till_done()
     assert tls_tuxweb.install_requests == 1
-    assert entry.state is not ConfigEntryState.LOADED
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    # Nothing went out, so the entry says a refusal stands, not an install failed.
+    assert "refused the certificate Home Assistant last sent" in entry.reason
     issue = _renewal_issue(hass)
     assert issue is not None
     assert issue.is_fixable

@@ -256,9 +256,11 @@ def leaf_expiry(chain: list[bytes]) -> datetime.datetime | None:
 def outdated_own_leaf(chain: list[bytes], own_ca_pem: str, host: str) -> bool:
     """Whether the panel serves a certificate of ours that no longer verifies.
 
-    The leaf it presents was issued by the entry's own authority, and fails
-    one of the two checks that are not its signature: it does not name
-    `host` (the panel's address changed), or it is outside its dates.
+    The leaf it presents was issued by the entry's own authority, says
+    CA:FALSE - so neither the authority nor anything that could issue is
+    taken for it - and fails one of the two checks that are not its
+    signature: it does not name `host` (the panel's address changed), or it
+    is outside its dates.
     """
     leaf = _leaf(chain)
     if leaf is None:
@@ -266,7 +268,10 @@ def outdated_own_leaf(chain: list[bytes], own_ca_pem: str, host: str) -> bool:
     try:
         authority = x509.load_pem_x509_certificate(own_ca_pem.encode("ascii"))
         leaf.verify_directly_issued_by(authority)
-    except (ValueError, TypeError, InvalidSignature):
+        constraints = leaf.extensions.get_extension_for_class(x509.BasicConstraints)
+    except (ValueError, TypeError, InvalidSignature, x509.ExtensionNotFound):
+        return False
+    if constraints.value.ca:
         return False
     in_date = leaf.not_valid_before_utc <= _now() <= leaf.not_valid_after_utc
     return not (in_date and leaf_names_host(leaf, host))

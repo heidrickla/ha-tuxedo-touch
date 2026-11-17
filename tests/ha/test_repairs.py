@@ -5,6 +5,8 @@ calling the flow object, so the platform really is discovered and the issue
 really is cleared when the flow finishes.
 """
 
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 from homeassistant.components.repairs import repairs_flow_manager
@@ -14,6 +16,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.tuxedo_touch import repairs
 from custom_components.tuxedo_touch.api import TuxedoTouchHttpsRequiredError
 from custom_components.tuxedo_touch.const import (
     CONF_USE_HTTPS,
@@ -156,3 +159,16 @@ async def test_the_flow_gives_up_when_the_entry_it_names_is_gone(hass, config_en
         result = await manager.async_init(DOMAIN, data={"issue_id": stale})
         assert result["type"] is FlowResultType.ABORT
         assert result["reason"] == "entry_gone"
+
+
+def test_a_fixable_issue_says_everything_in_its_fix_flow():
+    """The frontend shows a fixable issue's flow and never its description,
+    and hassfest refuses an issue with both: each flow has its text, and
+    every issue with a flow has no description."""
+    path = Path(repairs.__file__).parent / "translations" / "en.json"
+    issues = json.loads(path.read_text(encoding="utf-8"))["issues"]
+    for key in repairs.FIX_FLOWS:
+        assert "fix_flow" in issues[key], key
+    for key, issue in issues.items():
+        if "fix_flow" in issue:
+            assert "description" not in issue, key

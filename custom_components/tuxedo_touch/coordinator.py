@@ -1043,7 +1043,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         )
 
     def _renewal_refused(self) -> bool:
-        """Whether the panel refused the last automatic renewal (a 4xx)."""
+        """Whether the last automatic renewal was refused (a 4xx, or no token)."""
         return self._renewal_refusal() is not None
 
     def _renewal_refusal(self) -> str | None:
@@ -1137,7 +1137,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         if refusal is not None:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
-                translation_key="certificate_renewal_failed",
+                translation_key="certificate_renewal_refused",
                 translation_placeholders={"reason": refusal},
             )
         try:
@@ -1209,7 +1209,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         """Renew a panel certificate that expires within 30 days, if allowed.
 
         Not on a client that does not verify the panel, and not after the
-        panel refused an automatic renewal: then the button is the way. A
+        panel refused an automatic renewal: then the renewal repair or the
+        button asks again. A
         certificate that is not due ends a failed renewal's issue, whatever
         replaced the certificate it was about.
         """

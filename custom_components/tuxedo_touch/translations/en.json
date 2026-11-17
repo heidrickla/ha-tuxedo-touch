@@ -190,6 +190,9 @@
     },
     "certificate_renewal_failed": {
       "message": "Home Assistant could not install a new certificate on the panel ({reason}). The panel keeps the certificate it has, and the entry is unchanged."
+    },
+    "certificate_renewal_refused": {
+      "message": "The panel refused the certificate Home Assistant last sent it ({reason}), so nothing is sent to it again until the repair notification is submitted. The panel keeps the certificate it has."
     }
   },
   "issues": {
@@ -260,12 +263,11 @@
     },
     "certificate_renewal_failed": {
       "title": "Tuxedo Touch could not renew the panel's certificate",
-      "description": "Home Assistant could not renew the certificate it issued to {title} ({reason}). The panel keeps the certificate it has. After the panel refuses a certificate, Home Assistant does not send it one again on its own, across restarts too. Put the cause right, then open this notice and submit it to try again; this works whether or not the entry is loaded. Pressing Renew certificate on the panel's device also tries again while the entry is loaded. This notice goes away once a renewal succeeds.",
       "fix_flow": {
         "step": {
           "confirm": {
             "title": "Renew the certificate of {title}",
-            "description": "Submitting ends the refusal and reloads the entry, which asks the panel once more to take the certificate that is due. If the panel refuses again, this notice comes back with the reason."
+            "description": "Home Assistant could not renew the certificate it issued to {title} ({reason}). The panel keeps the certificate it has. After the panel refuses a certificate, Home Assistant does not send it one again on its own, across restarts too. Put the cause right, then submit: that ends the refusal and reloads the entry, which asks the panel once more, whether or not the entry is loaded now. If the panel refuses again, this notice comes back with the reason. Pressing Renew certificate on the panel's device also tries again while the entry is loaded."
           }
         },
         "abort": {

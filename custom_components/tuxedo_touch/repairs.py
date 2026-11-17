@@ -293,19 +293,21 @@ class CertificateRenewalRepairFlow(_EntryRepairFlow):
         if entry is None:
             return self.async_abort(reason="entry_gone")
         if user_input is not None:
-            # Deleted here rather than by the flow's end, which comes after:
-            # the reload must not meet the refusal it is ending.
-            ir.async_delete_issue(
-                self.hass,
-                DOMAIN,
-                issue_id(ISSUE_CERTIFICATE_RENEWAL_FAILED, entry.entry_id),
-            )
+            # The flow's end deletes the issue, and with it the refusal,
+            # before the reload's setup has read anything from the panel.
             self.hass.config_entries.async_schedule_reload(entry.entry_id)
             return self.async_create_entry(data={})
+        issue = ir.async_get(self.hass).async_get_issue(
+            DOMAIN, issue_id(ISSUE_CERTIFICATE_RENEWAL_FAILED, entry.entry_id)
+        )
+        shown = issue.translation_placeholders if issue is not None else None
         return self.async_show_form(
             step_id="confirm",
             data_schema=vol.Schema({}),
-            description_placeholders={"title": entry.title},
+            description_placeholders={
+                "title": entry.title,
+                "reason": (shown or {}).get("reason", ""),
+            },
         )
 
 
