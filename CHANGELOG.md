@@ -7,6 +7,7 @@ Notable changes to this integration, newest first. The format follows [Keep a Ch
 ### Fixed
 
 - A running entry whose panel came back from an outage asks whether it now runs tuxweb, and proves its certificate; when the panel did not answer that question, it is asked again at the next sign of the panel. It used to be spent unanswered, leaving an entry whose panel had been updated unavailable on the old firmware's login with no repair offered until Home Assistant restarted. Setup treats a proof the panel did not answer like the capability question itself and retries, and a new entry is not created unverified: the form says the panel could not be reached.
+- A renewal the panel refused stays refused across a Home Assistant restart: the **Tuxedo Touch could not renew the panel's certificate** repair is kept, and setup does not ask the panel again until **Renew certificate** succeeds. A restart used to forget the refusal and try once more. The repair goes when the panel no longer declares `certificate_install`.
 
 ## [0.10.0] - 2026-11-06
 

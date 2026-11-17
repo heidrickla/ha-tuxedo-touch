@@ -1013,7 +1013,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         """A renewal nobody asked for failed: warned once per episode, and raised.
 
         The issue records whether the panel refused it, which no automatic
-        path then retries until the button succeeds.
+        path then retries until the button succeeds. Persistent, because
+        that record has to outlive a restart and nothing re-detects it.
         """
         existing = ir.async_get(self.hass).async_get_issue(
             DOMAIN, self._renewal_issue_id
@@ -1032,6 +1033,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             self._renewal_issue_id,
             data={"entry_id": self._entry.entry_id, "refused": err.refused},
             is_fixable=False,
+            is_persistent=True,
             severity=ir.IssueSeverity.WARNING,
             translation_key=ISSUE_CERTIFICATE_RENEWAL_FAILED,
             translation_placeholders={"title": self._entry.title, "reason": err.reason},
@@ -1132,9 +1134,11 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         """Check the panel's certificate expiry now and then once a day.
 
         Under the gate only. Never per poll: the daily timer is the only
-        thing that asks again, and it is cancelled with the entry.
+        thing that asks again, and it is cancelled with the entry. Outside
+        the gate a failed renewal has nothing left to renew, so its issue goes.
         """
         if not self.client.certificate_install:
+            ir.async_delete_issue(self.hass, DOMAIN, self._renewal_issue_id)
             return
         self._entry.async_on_unload(
             async_track_time_interval(

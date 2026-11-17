@@ -985,6 +985,60 @@ async def test_a_refused_renewal_is_not_retried_until_pressed(hass, tls, tls_tux
     await hass.async_block_till_done()
 
 
+async def _restart_the_issue_registry(hass):
+    """Save the issue registry and load it back, as a restart does."""
+    registry = ir.async_get(hass)
+    saved = registry._data_to_save()
+    with patch.object(registry._store, "async_load", return_value=saved):
+        await registry._async_load()
+
+
+async def test_a_refusal_outlives_a_restart(hass, tls, tls_tuxweb):
+    """Home Assistant restarts with a refused renewal standing: setup does not
+    ask the panel again, and the issue still says why."""
+    await tls_tuxweb.use_tls(tls["expiring"])
+    tls_tuxweb.install_error = (409, "tls_not_configured")
+    entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem)
+    await _setup(hass, entry)
+    assert tls_tuxweb.install_requests == 1
+
+    assert await hass.config_entries.async_unload(ENTRY_ID)
+    await _restart_the_issue_registry(hass)
+    assert await hass.config_entries.async_setup(ENTRY_ID)
+    await hass.async_block_till_done()
+    await _settled(hass, entry)
+    assert tls_tuxweb.install_requests == 1
+    issue = _renewal_issue(hass)
+    assert issue is not None
+    assert issue.active
+    assert issue.translation_placeholders["reason"] == "tls_not_configured"
+
+    # The button still renews, and its success ends the refusal for good.
+    tls_tuxweb.install_error = None
+    await _press(hass)
+    await hass.async_block_till_done()
+    assert _renewal_issue(hass) is None
+    await _settled(hass, entry)
+
+
+async def test_a_refusal_goes_when_the_panel_stops_declaring_the_install(
+    hass, tls, tls_tuxweb
+):
+    """Kept across restarts, but not past the panel that could be renewed."""
+    await tls_tuxweb.use_tls(tls["expiring"])
+    tls_tuxweb.install_error = (409, "tls_not_configured")
+    entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem)
+    await _setup(hass, entry)
+    assert _renewal_issue(hass) is not None
+
+    tls_tuxweb.capabilities = list(TUXWEB_CAPABILITIES)
+    assert await hass.config_entries.async_reload(ENTRY_ID)
+    await hass.async_block_till_done()
+    await _settled(hass, entry)
+    assert entry.state is ConfigEntryState.LOADED
+    assert _renewal_issue(hass) is None
+
+
 async def test_the_issue_goes_with_the_entry(hass, tls, tls_tuxweb):
     await tls_tuxweb.use_tls(tls["expiring"])
     tls_tuxweb.install_error = (409, "tls_not_configured")
