@@ -17,7 +17,7 @@ from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.tuxedo_touch import push
-from custom_components.tuxedo_touch.api import TuxedoTouchError
+from custom_components.tuxedo_touch.api import TuxedoTouchError, TuxedoTouchUnreachable
 from custom_components.tuxedo_touch.const import OPT_CREDENTIALS_REJECTED
 from tests.fake_panel import COUNTDOWN_FRAME, status_frame, wait_until
 
@@ -854,13 +854,39 @@ async def test_the_first_good_poll_after_a_failed_one_ends_a_long_reconnect_wait
     await asyncio.sleep(0.2)
     assert coordinator.push.connected is False
 
-    # What the failed polls during the outage leave behind.
-    coordinator.last_update_success = False
+    # A poll during the outage, which nothing answered.
+    with patch.object(
+        coordinator.client, "get_status", side_effect=TuxedoTouchUnreachable("down")
+    ):
+        await coordinator.async_refresh()
+    assert coordinator.last_update_success is False
+    await asyncio.sleep(0.2)
+    assert coordinator.push.connected is False
+
     await coordinator.async_refresh()
     assert coordinator.last_update_success is True
-
     await wait_until(lambda: coordinator.push.connected, timeout=5)
     assert coordinator.push.reconnect_wait == push.PUSH_BACKOFF_INITIAL
+
+
+async def test_a_not_available_spell_leaves_the_reconnect_wait_alone(
+    hass, fake_panel, panel_entry
+):
+    """A poll answering "Not available" is the panel answering. A spell of
+    them is no outage, and each must not cut a failing stream's wait short."""
+    coordinator = await _setup(hass, panel_entry)
+    coordinator.push.reconnect_wait = push.PUSH_BACKOFF_MAX
+    fake_panel.drop_stream()
+    await wait_until(lambda: not coordinator.push.connected)
+    requests = fake_panel.stream_requests
+
+    fake_panel.status = "Not available"
+    for _ in range(3):
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is False
+    await asyncio.sleep(0.3)
+    assert fake_panel.stream_requests == requests
+    assert coordinator.push.connected is False
 
 
 async def test_a_good_poll_after_a_good_one_leaves_the_reconnect_wait_alone(

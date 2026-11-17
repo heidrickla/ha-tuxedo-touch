@@ -198,6 +198,10 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         # stock panel once whether it was updated meanwhile.
         self._panel_lost = False
         self._look_task: asyncio.Task[None] | None = None
+        # Set by a poll nothing answered and spent by the next good one, which
+        # wakes the stream. A poll the panel answered, "Not available" or
+        # not, is no outage, so it leaves the stream's reconnect wait alone.
+        self._poll_unanswered = False
         self._last_command_monotonic = 0.0
         # One poll at a time, and a handle on the one in flight: see
         # async_wait_for_poll.
@@ -1291,6 +1295,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             # panel it lost comes back running tuxweb.
             if isinstance(err, TuxedoTouchUnreachable):
                 self._panel_lost = True
+                self._poll_unanswered = True
             else:
                 self._async_look_after_recovery()
             raise UpdateFailed(
@@ -1302,9 +1307,10 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         self._async_clear_https_issue()
         self._async_clear_certificate_issue()
         self._async_look_after_recovery()
-        if not self.last_update_success:
-            # The panel answers again after a failed poll: the stream need not
-            # sit out a reconnect wait the outage grew.
+        if self._poll_unanswered:
+            # The panel answers again after polls that reached nothing: the
+            # stream need not sit out a reconnect wait the outage grew.
+            self._poll_unanswered = False
             self.push.wake()
 
         if self._last_command_monotonic > poll_started and self.data is not None:

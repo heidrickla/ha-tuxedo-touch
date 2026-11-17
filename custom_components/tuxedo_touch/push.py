@@ -536,8 +536,8 @@ class TuxedoPushStream:
     def wake(self) -> None:
         """Cut the reconnect wait short: the panel answers polls again.
 
-        Called by the coordinator on the first successful poll after a failed
-        one. A ten-minute outage otherwise leaves the stream waiting up to
+        Called by the coordinator on the first successful poll after one that
+        nothing answered. A ten-minute outage otherwise leaves the stream waiting up to
         PUSH_BACKOFF_MAX after the panel is back, with the entity on the poll
         alone. A connected stream, or one fed by a relay (whose host the poll
         says nothing about), ignores it.
