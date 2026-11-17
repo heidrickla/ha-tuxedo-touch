@@ -6,8 +6,13 @@ Notable changes to this integration, newest first. The format follows [Keep a Ch
 
 ## [0.10.1] - 2026-11-16
 
+### Changed
+
+- A certificate the entry's own authority issued is renewed after it has expired, as well as before: the panel at the entry's address proves it holds that certificate's key, and the new key and the tuxweb token are sent to it with only the old certificate's dates left uncompared. Whoever holds an expired certificate's key on the local network can therefore receive its replacement, which is accepted as a chained compromise.
+
 ### Fixed
 
+- Reconfigure and the reauthentication card no longer pin an existing entry to the authority its panel presents. Neither shows a fingerprint, so neither is the user's confirmation: they check the panel with what the entry already trusts, and an entry set up on stock firmware keeps its **runs the updated firmware, and its certificate can be trusted** repair until it is accepted. A reconfigure used to store the authority silently and drop the repair. Only a new entry and that repair pin.
 - A running entry whose panel came back from an outage asks whether it now runs tuxweb, and proves its certificate; when the panel did not answer that question, it is asked again at the next sign of the panel. It used to be spent unanswered, leaving an entry whose panel had been updated unavailable on the old firmware's login with no repair offered until Home Assistant restarted. Setup treats a proof the panel did not answer like the capability question itself and retries, and a new entry is not created unverified: the form says the panel could not be reached.
 - A renewal the panel refused stays refused across a Home Assistant restart: the **Tuxedo Touch could not renew the panel's certificate** repair is kept, and setup does not ask the panel again until **Renew certificate** succeeds. A restart used to forget the refusal and try once more. The repair goes when the panel no longer declares `certificate_install`, or once the daily check finds the certificate needs no renewal.
 - A certificate Home Assistant issued the panel that has already expired is renewed, at setup, by the daily check or with **Renew certificate**, the way a certificate naming the panel's old address is: the panel proves it holds that certificate's key and only its dates are not compared. It used to leave the entry failing setup with the certificate repair, whose fix could not trust an expired certificate either, and no way to renew it from Home Assistant.

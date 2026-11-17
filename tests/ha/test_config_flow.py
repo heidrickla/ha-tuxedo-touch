@@ -402,7 +402,7 @@ async def test_reconfigure_frees_the_panel_before_probing_it(hass, config_entry,
 
     seen: list[ConfigEntryState] = []
 
-    async def _probe(hass_, data):
+    async def _probe(hass_, data, *, trust_on_first_use):
         seen.append(config_entry.state)
 
     with (
@@ -445,7 +445,7 @@ async def test_the_probe_waits_for_a_poll_that_is_already_running(
         order.append("poll finished")
         return ready
 
-    async def _probe(hass_, data):
+    async def _probe(hass_, data, *, trust_on_first_use):
         order.append("probe")
 
     with (
@@ -529,7 +529,7 @@ async def test_reconfigure_frees_a_retrying_entry_too(hass, config_entry, ready)
 
     seen: list[ConfigEntryState] = []
 
-    async def _probe(hass_, data):
+    async def _probe(hass_, data, *, trust_on_first_use):
         seen.append(config_entry.state)
 
     with (

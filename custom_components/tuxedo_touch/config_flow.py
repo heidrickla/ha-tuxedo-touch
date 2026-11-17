@@ -217,9 +217,9 @@ def _without_blank_optionals(data: Mapping[str, Any]) -> dict[str, Any]:
 def _renewed(entry: ConfigEntry[Any], data: Mapping[str, Any]) -> dict[str, Any]:
     """The certificate data a validation renewed, to store with the credentials.
 
-    Only the expiry: the pin a reauthentication learns is not stored (an
-    existing entry pins from the trust repair), and a renewal for a moved
-    panel leaves the authority and the pin as they were.
+    Only the expiry: a reauthentication learns no pin (an existing entry
+    pins from the trust repair), and a renewal for a moved panel leaves the
+    authority and the pin as they were.
     """
     if data.get(CONF_CERT_NOT_AFTER) != entry.data.get(CONF_CERT_NOT_AFTER):
         return {CONF_CERT_NOT_AFTER: data[CONF_CERT_NOT_AFTER]}
@@ -231,7 +231,9 @@ def _needs_a_probe(entry: ConfigEntry[Any], data: Mapping[str, Any]) -> bool:
     return any(data.get(field) != entry.data.get(field) for field in PROBED)
 
 
-async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str | None:
+async def _validate_input(
+    hass: HomeAssistant, data: dict[str, Any], *, trust_on_first_use: bool
+) -> str | None:
     """Attempt a real login against the panel; raises on failure.
 
     A session of its own for its cookie jar, but on Home Assistant's shared
@@ -253,7 +255,9 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str | No
     changed is written into `data`.
 
     Returns the certificate authority the client is pinned to: the one in
-    `data`, or the one a tuxweb panel over HTTPS proved on this first use.
+    `data`, or, with trust_on_first_use, the one a tuxweb panel over HTTPS
+    proved on this first use. Only a new entry trusts on first use: an
+    existing one pins once the user accepts the trust repair's fingerprint.
     """
     session = async_create_clientsession(hass, auto_cleanup=False)
     try:
@@ -267,6 +271,7 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str | No
             tuxweb_token=data.get(CONF_TUXWEB_TOKEN),
             panel_ca=data.get(CONF_PANEL_CA),
             own_ca=data.get(CONF_CA_CERT),
+            trust_on_first_use=trust_on_first_use,
         )
         try:
             await client.async_check_credentials()
@@ -301,15 +306,19 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     _discovered_host: str
     _discovered_mac: str
 
-    async def _async_validate(self, data: dict[str, Any]) -> dict[str, str]:
+    async def _async_validate(
+        self, data: dict[str, Any], *, new_entry: bool
+    ) -> dict[str, str]:
         """Validate credentials against the panel, returning form errors.
 
-        A pin the probe learnt is written into `data`, so the entry created
-        or updated from it carries the authority it was proved against; so is
-        a certificate renewed for a panel whose address moved.
+        For a new entry, a pin the probe learnt is written into `data`, so
+        the entry carries the authority it was proved against. An existing
+        entry is probed with what it already trusts: its forms show no
+        fingerprint, so only the trust repair pins it. A certificate renewed
+        for a panel whose address moved is written into `data` either way.
         """
         try:
-            pin = await _validate_input(self.hass, data)
+            pin = await _validate_input(self.hass, data, trust_on_first_use=new_entry)
         except TuxedoTouchCertificateError as err:
             # A pinned entry meeting a certificate its authority did not
             # issue. Never retried unverified; the repair is where a new one
@@ -386,12 +395,12 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         if not _needs_a_probe(entry, data):
             return {}
         if not _holds_the_panel(entry.state):
-            return await self._async_validate(data)
+            return await self._async_validate(data, new_entry=False)
 
         unloaded = await self.hass.config_entries.async_unload(entry.entry_id)
         restore = True
         try:
-            errors = await self._async_validate(data)
+            errors = await self._async_validate(data, new_entry=False)
             restore = bool(errors)
             return errors
         finally:
@@ -416,7 +425,7 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_PARTITION: data[CONF_PARTITION],
                 }
             )
-            errors = await self._async_validate(data)
+            errors = await self._async_validate(data, new_entry=True)
             if not errors:
                 # A panel typed in by hand carries no MAC: the panel reports
                 # none over its API and only a DHCP lease has one. The entry
@@ -574,7 +583,7 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         mac = self._discovered_mac
         if user_input is not None:
             data = {**_from_setup_form(user_input), CONF_HOST: host, CONF_MAC: mac}
-            errors = await self._async_validate(data)
+            errors = await self._async_validate(data, new_entry=True)
             if not errors:
                 await self.async_set_unique_id(
                     build_unique_id(mac, host, data[CONF_PORT], data[CONF_PARTITION])
@@ -762,7 +771,7 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                     errors = {"base": "invalid_auth"}
             else:
                 candidate = {**reauth_entry.data, **merged}
-                errors = await self._async_validate(candidate)
+                errors = await self._async_validate(candidate, new_entry=False)
                 if not errors:
                     return self._async_credentials_accepted(
                         reauth_entry, {**merged, **_renewed(reauth_entry, candidate)}
@@ -803,7 +812,7 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
                 description_placeholders={"host": reauth_entry.data[CONF_HOST]},
             )
         candidate = dict(reauth_entry.data)
-        errors = await self._async_validate(candidate)
+        errors = await self._async_validate(candidate, new_entry=False)
         if not errors:
             return self._async_credentials_accepted(
                 reauth_entry, _renewed(reauth_entry, candidate)

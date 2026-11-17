@@ -959,6 +959,65 @@ async def test_reconfigure_keeps_the_pin_and_names_a_certificate_failure(
     assert tls_tuxweb.login_attempts == 0
 
 
+async def test_reconfigure_of_an_unpinned_entry_pins_nothing(hass, tls, tls_tuxweb):
+    """A reconfigure shows no fingerprint, so it is not the user's confirmation:
+    the probe uses what the entry trusts and the trust repair stays."""
+    entry = _entry(tls_tuxweb)
+    await _setup(hass, entry)
+    await wait_until(lambda: entry.runtime_data.push.connected)
+    assert _trust_issue(hass, entry) is not None
+    tls_tuxweb.drop_stream()
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": entry.entry_id},
+        data={
+            CONF_HOST: "127.0.0.1",
+            CONF_PORT: tls_tuxweb.port,
+            CONF_USE_HTTPS: True,
+            CONF_USERNAME: tls_tuxweb.username,
+            CONF_PASSWORD: "changed",
+            CONF_PARTITION: 1,
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_PASSWORD] == "changed"
+    assert CONF_PANEL_CA not in entry.data
+    assert entry.runtime_data.client.tls == "legacy"
+    assert _trust_issue(hass, entry) is not None
+    await wait_until(lambda: entry.runtime_data.push.connected)
+
+
+async def test_reauth_of_an_unpinned_entry_pins_nothing(hass, tls, tls_tuxweb):
+    """The reauthentication card shows no fingerprint either."""
+    entry = _entry(tls_tuxweb)
+    await _setup(hass, entry)
+    await wait_until(lambda: entry.runtime_data.push.connected)
+    tls_tuxweb.drop_stream()
+
+    result = await entry.start_reauth_flow(hass)
+    assert result["step_id"] == "reauth_confirm"
+    # A changed password is a new guess, so the card probes the panel.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_USERNAME: tls_tuxweb.username,
+            CONF_PASSWORD: "changed",
+            CONF_TUXWEB_TOKEN: TUXWEB_TOKEN,
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_PASSWORD] == "changed"
+    assert CONF_PANEL_CA not in entry.data
+    assert entry.runtime_data.client.tls == "legacy"
+    assert _trust_issue(hass, entry) is not None
+    await wait_until(lambda: entry.runtime_data.push.connected)
+
+
 async def test_diagnostics_report_a_verified_connection_and_its_authority(
     hass, tls, tls_tuxweb
 ):
