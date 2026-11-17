@@ -14,11 +14,7 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import (
-    ConfigEntryAuthFailed,
-    ConfigEntryError,
-    HomeAssistantError,
-)
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.event import async_track_time_interval
@@ -37,6 +33,7 @@ from .api import (
 )
 from .certificate import (
     CertificateRenewalFailed,
+    async_identify_outdated,
     async_issue_and_install,
     async_reissue_outdated,
     generate_authority,
@@ -1017,8 +1014,10 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         """A renewal nobody asked for failed: warned once per episode, and raised.
 
         The issue records whether the panel refused it, which no automatic
-        path then retries until the button succeeds. Persistent, because
-        that record has to outlive a restart and nothing re-detects it.
+        path then retries. Its fix flow, which works whether or not the
+        entry is loaded, ends the refusal and tries again; so does a Renew
+        certificate press that succeeds. Persistent, because that record has
+        to outlive a restart and nothing re-detects it.
         """
         existing = ir.async_get(self.hass).async_get_issue(
             DOMAIN, self._renewal_issue_id
@@ -1026,8 +1025,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         if existing is None or not existing.active:
             _LOGGER.warning(
                 "Home Assistant could not renew the certificate of the panel at "
-                "%s (%s); the panel keeps the certificate it has. Press Renew "
-                "certificate on the panel's device to try again",
+                "%s (%s); the panel keeps the certificate it has. Open the "
+                "repair notification to try again",
                 self._entry.data[CONF_HOST],
                 err.reason,
             )
@@ -1036,7 +1035,7 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             DOMAIN,
             self._renewal_issue_id,
             data={"entry_id": self._entry.entry_id, "refused": err.refused},
-            is_fixable=False,
+            is_fixable=True,
             is_persistent=True,
             severity=ir.IssueSeverity.WARNING,
             translation_key=ISSUE_CERTIFICATE_RENEWAL_FAILED,
@@ -1045,8 +1044,14 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
 
     def _renewal_refused(self) -> bool:
         """Whether the panel refused the last automatic renewal (a 4xx)."""
+        return self._renewal_refusal() is not None
+
+    def _renewal_refusal(self) -> str | None:
+        """Why the panel refused the last automatic renewal, or None."""
         issue = ir.async_get(self.hass).async_get_issue(DOMAIN, self._renewal_issue_id)
-        return issue is not None and bool((issue.data or {}).get("refused"))
+        if issue is None or not (issue.data or {}).get("refused"):
+            return None
+        return (issue.translation_placeholders or {}).get("reason") or "refused"
 
     @callback
     def _async_store_certificate(self, updates: dict[str, Any]) -> None:
@@ -1120,28 +1125,32 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         It names an address the panel no longer has, or is past its dates.
         True when it was re-issued and the probe can be asked again; False
         when the failure is not that, for the certificate repair. A refusal
-        fails setup without a retry; a panel that could not be reached is
-        retried with setup.
+        standing from before sends nothing: the renewal repair is the way to
+        ask again. Every failure retries setup, which reads the certificate
+        again and sends nothing while the refusal stands, so an entry whose
+        cause went away by itself loads without the user.
         """
+        leaf = await async_identify_outdated(self.client, self._entry.data)
+        if leaf is None:
+            return False
+        refusal = self._renewal_refusal()
+        if refusal is not None:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="certificate_renewal_failed",
+                translation_placeholders={"reason": refusal},
+            )
         try:
-            updates = await async_reissue_outdated(
-                self.hass, self.client, self._entry.data
+            updates = await async_issue_and_install(
+                self.hass, self.client, self._entry.data, outdated_leaf=leaf
             )
         except CertificateRenewalFailed as err:
             self._async_raise_renewal_issue(err)
-            if err.refused:
-                raise ConfigEntryError(
-                    translation_domain=DOMAIN,
-                    translation_key="certificate_renewal_failed",
-                    translation_placeholders={"reason": err.reason},
-                ) from err
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="certificate_renewal_failed",
                 translation_placeholders={"reason": err.reason},
             ) from err
-        if updates is None:
-            return False
         _LOGGER.info(
             "The panel at %s served a certificate of ours for another address "
             "or past its dates, and has been issued a new one",

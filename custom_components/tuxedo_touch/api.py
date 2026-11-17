@@ -375,30 +375,6 @@ def _verified_ssl_context(pem: str) -> ssl.SSLContext:
     return ctx
 
 
-# OpenSSL's X509_V_FLAG_NO_CHECK_TIME, which the ssl module has no name for.
-_VERIFY_NO_CHECK_TIME = 0x200000
-
-
-@cache
-def _install_ssl_context(pem: str) -> ssl.SSLContext:
-    """The verifying context without the name and date checks, for InstallCertificate.
-
-    The chain is verified against the same authorities as
-    _verified_ssl_context(pem), so only a panel holding a certificate they
-    issued completes the handshake; the name and the dates it carries are
-    not compared. That is what lets a panel whose certificate of ours names
-    an old address, or has lapsed, be issued a new one. Cached per cadata
-    string like the others, and never used for status, commands or the stream.
-    """
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_REQUIRED
-    ctx.verify_flags |= _VERIFY_NO_CHECK_TIME
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    ctx.load_verify_locations(cadata=pem)
-    return ctx
-
-
 def _verifies(ssl_arg: ssl.SSLContext | bool) -> bool:
     """Whether a request made with this ssl argument verifies the panel."""
     return isinstance(ssl_arg, ssl.SSLContext) and ssl_arg.verify_mode in (
@@ -888,19 +864,21 @@ class TuxedoTouchClient:
         return await self._async_read_chain()
 
     async def async_install_certificate(
-        self, chain_pem: str, key_pem: str, *, outdated: bool = False
+        self, chain_pem: str, key_pem: str, *, outdated_leaf: bytes | None = None
     ) -> InstalledCertificate:
         """Install a certificate pair on the panel with tuxweb's InstallCertificate.
 
         Over HTTPS on the verifying context only, with the bearer token as
-        every tuxweb call carries it; with `outdated`, on the context that
-        verifies the chain against the same authorities without the name or
-        date checks (_install_ssl_context), for a panel whose certificate of
-        ours names an old address or has lapsed. One
-        POST: no login, no capability re-check, never retried. A status other
-        than 200 is TuxedoTouchInstallRefused with tuxweb's reason; a 200 is
-        checked to say installed. A failure below HTTP raises as any request
-        does, as a certificate error on the verifying context.
+        every tuxweb call carries it. With `outdated_leaf` - the DER of a
+        certificate of ours that names an old address or has lapsed, already
+        checked as issued by the entry's own authority - the connection is
+        pinned to that exact certificate instead: it completes only with a
+        peer that presents it and holds its key, so neither its name nor its
+        dates are compared and no other certificate is accepted. One POST: no
+        login, no capability re-check, never retried. A status other than 200
+        is TuxedoTouchInstallRefused with tuxweb's reason; a 200 is checked to
+        say installed. A failure below HTTP raises as any request does, and a
+        peer that is not the one verified or identified as a certificate error.
         """
         anchors = self._anchors
         if self._scheme != "https" or anchors is None or self._tuxweb is False:
@@ -912,10 +890,10 @@ class TuxedoTouchClient:
         body = json.dumps({"chain": chain_pem, "key": key_pem}).encode("utf-8")
         if len(body) > INSTALL_BODY_LIMIT:
             raise TuxedoTouchInstallRefused("too_large")
-        ssl_arg = (
-            _install_ssl_context(anchors)
-            if outdated
-            else _verified_ssl_context(anchors)
+        ssl_arg: ssl.SSLContext | aiohttp.Fingerprint = (
+            _verified_ssl_context(anchors)
+            if outdated_leaf is None
+            else aiohttp.Fingerprint(hashlib.sha256(outdated_leaf).digest())
         )
         url = f"{self.base_url}{API_BASE_PATH}{INSTALL_CERTIFICATE_PATH}"
         try:
@@ -932,8 +910,16 @@ class TuxedoTouchClient:
                     payload = await resp.json(content_type=None)
                 except ValueError:
                     payload = None
+        except aiohttp.ServerFingerprintMismatch as err:
+            # aiohttp checks the peer before writing the request.
+            raise TuxedoTouchCertificateError(
+                "The panel answered the install with a certificate other than "
+                "the one Home Assistant identified as its own"
+            ) from err
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise _transport_error(err, ssl_arg) from err
+            raise _transport_error(
+                err, ssl_arg if isinstance(ssl_arg, ssl.SSLContext) else False
+            ) from err
         if status != 200:
             raise TuxedoTouchInstallRefused(_install_reason(status, payload), status)
         if (

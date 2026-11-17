@@ -31,7 +31,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.tuxedo_touch import api, push
+from custom_components.tuxedo_touch import api, config_flow, push
 from custom_components.tuxedo_touch.const import (
     CONF_PANEL_CA,
     CONF_PARTITION,
@@ -999,18 +999,25 @@ async def test_reauth_of_an_unpinned_entry_pins_nothing(hass, tls, tls_tuxweb):
 
     result = await entry.start_reauth_flow(hass)
     assert result["step_id"] == "reauth_confirm"
-    # A changed password is a new guess, so the card probes the panel.
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {
-            CONF_USERNAME: tls_tuxweb.username,
-            CONF_PASSWORD: "changed",
-            CONF_TUXWEB_TOKEN: TUXWEB_TOKEN,
-        },
-    )
-    await hass.async_block_till_done()
+    # A changed password is a new guess, so the card probes the panel. The
+    # stored data never kept a pin a reauthentication learnt, so the probe's
+    # own client is what shows it learnt none.
+    with patch.object(
+        config_flow, "TuxedoTouchClient", wraps=api.TuxedoTouchClient
+    ) as built:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_USERNAME: tls_tuxweb.username,
+                CONF_PASSWORD: "changed",
+                CONF_TUXWEB_TOKEN: TUXWEB_TOKEN,
+            },
+        )
+        await hass.async_block_till_done()
 
     assert result["reason"] == "reauth_successful"
+    assert built.call_count == 1
+    assert built.call_args.kwargs["trust_on_first_use"] is False
     assert entry.data[CONF_PASSWORD] == "changed"
     assert CONF_PANEL_CA not in entry.data
     assert entry.runtime_data.client.tls == "legacy"

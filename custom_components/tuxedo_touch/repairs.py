@@ -25,6 +25,7 @@ from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
@@ -35,9 +36,12 @@ from .const import (
     CONF_USE_HTTPS,
     DEFAULT_PORT_HTTP,
     DEFAULT_PORT_HTTPS,
+    DOMAIN,
+    ISSUE_CERTIFICATE_RENEWAL_FAILED,
     ISSUE_HTTPS_REDIRECT,
     ISSUE_PANEL_CERTIFICATE,
     ISSUE_TRUST_CERTIFICATE,
+    issue_id,
 )
 
 _TOKEN_FIELD = selector.TextSelector(
@@ -267,11 +271,50 @@ class TrustCertificateRepairFlow(_EntryRepairFlow):
         )
 
 
+class CertificateRenewalRepairFlow(_EntryRepairFlow):
+    """End a failed renewal's episode and try once more, by reloading the entry.
+
+    The refusal the issue records stops every automatic path from asking the
+    panel again. Submitting is the user saying the cause is put right: the
+    issue goes, and the reload's setup and certificate check send the renewal
+    that is due once. A renewal that fails again raises the issue again. It
+    works whether or not the entry is loaded, where the button needs it loaded.
+    """
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> RepairsFlowResult:
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> RepairsFlowResult:
+        entry = self._entry()
+        if entry is None:
+            return self.async_abort(reason="entry_gone")
+        if user_input is not None:
+            # Deleted here rather than by the flow's end, which comes after:
+            # the reload must not meet the refusal it is ending.
+            ir.async_delete_issue(
+                self.hass,
+                DOMAIN,
+                issue_id(ISSUE_CERTIFICATE_RENEWAL_FAILED, entry.entry_id),
+            )
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
+            return self.async_create_entry(data={})
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            description_placeholders={"title": entry.title},
+        )
+
+
 # Which flow fixes which issue. The issue id is the key, then the entry id.
 FIX_FLOWS: dict[str, Callable[[str | None], RepairsFlow]] = {
     ISSUE_HTTPS_REDIRECT: HttpsRedirectRepairFlow,
     ISSUE_PANEL_CERTIFICATE: PanelCertificateRepairFlow,
     ISSUE_TRUST_CERTIFICATE: TrustCertificateRepairFlow,
+    ISSUE_CERTIFICATE_RENEWAL_FAILED: CertificateRenewalRepairFlow,
 }
 
 

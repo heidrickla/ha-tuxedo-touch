@@ -6,7 +6,7 @@ again while one exists, and the certificate is installed on the panel with
 one InstallCertificate call. The key generation and signing here are
 blocking work and run in the executor; the install goes over the client's
 verifying context, or, for a certificate of ours that names an old address
-or has lapsed, over the context that skips the name and date checks.
+or has lapsed, over a connection pinned to that exact certificate.
 """
 
 from __future__ import annotations
@@ -298,7 +298,7 @@ async def async_issue_and_install(
     client: TuxedoTouchClient,
     data: Mapping[str, Any],
     *,
-    outdated: bool = False,
+    outdated_leaf: bytes | None = None,
 ) -> dict[str, Any]:
     """Issue the panel a certificate from the entry's stored authority and install it.
 
@@ -323,7 +323,7 @@ async def async_issue_and_install(
     client.trust_own_ca(ca_cert)
     try:
         answer = await client.async_install_certificate(
-            leaf.chain_pem, leaf.key_pem, outdated=outdated
+            leaf.chain_pem, leaf.key_pem, outdated_leaf=outdated_leaf
         )
         if answer.sha256 != leaf.sha256:
             raise TuxedoTouchInstallRefused("unexpected_answer", 200)
@@ -344,9 +344,24 @@ async def async_reissue_outdated(
     only to an entry holding its own authority, over HTTPS, whose panel
     presents a certificate of that authority that names another address or
     is outside its dates (outdated_own_leaf) - which also proves the panel
-    took one, whether or not its answer arrived. The install then goes over
-    the context that skips the name and date checks. None when it does not
-    apply. Raises CertificateRenewalFailed when it applied and failed.
+    took one, whether or not its answer arrived. The install then goes on a
+    connection pinned to that exact certificate, so the key and the token
+    reach nothing else. None when it does not apply. Raises
+    CertificateRenewalFailed when it applied and failed.
+    """
+    leaf = await async_identify_outdated(client, data)
+    if leaf is None:
+        return None
+    return await async_issue_and_install(hass, client, data, outdated_leaf=leaf)
+
+
+async def async_identify_outdated(
+    client: TuxedoTouchClient, data: Mapping[str, Any]
+) -> bytes | None:
+    """The DER of a certificate of ours the panel serves that no longer verifies.
+
+    One handshake on the legacy context and nothing sent. None for an entry
+    without its own authority or HTTPS, and for any other certificate.
     """
     own = data.get(CONF_CA_CERT)
     if not own or not data.get(CONF_CA_KEY) or not data.get(CONF_USE_HTTPS):
@@ -354,4 +369,4 @@ async def async_reissue_outdated(
     chain = await client.async_read_presented_chain()
     if not outdated_own_leaf(chain, own, data[CONF_HOST]):
         return None
-    return await async_issue_and_install(hass, client, data, outdated=True)
+    return chain[0]

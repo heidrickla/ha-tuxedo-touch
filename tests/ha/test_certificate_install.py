@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from homeassistant.components.http.auth import async_sign_path
+from homeassistant.components.repairs import repairs_flow_manager
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import (
     CONF_CODE,
@@ -119,6 +120,9 @@ def tls(tmp_path_factory):
         "own_key": own_key,
         # A certificate of the entry's own CA for the address the panel had.
         "moved": _context_from_pem(directory, moved.chain_pem, moved.key_pem),
+        "moved_der": x509.load_pem_x509_certificates(moved.chain_pem.encode())[
+            0
+        ].public_bytes(serialization.Encoding.DER),
         # The owner's certificate, ten days from expiry.
         "expiring": server_context(
             os.path.join(directory, "soon"), soon, [panel.authority.cert]
@@ -669,11 +673,11 @@ async def test_a_move_after_an_unanswered_install_is_followed(hass, tls, tls_tux
     assert entry.runtime_data.client.tls == "verified"
 
 
-async def test_a_moved_panel_is_reissued_on_the_no_hostname_context(
+async def test_a_moved_panel_is_reissued_to_the_certificate_it_serves(
     hass, tls, tls_tuxweb
 ):
     """The panel serves our certificate for the address it had; setup issues
-    one for the new address over the context that skips only the name check,
+    one for the new address over a connection pinned to that certificate,
     then verifies the panel by name as always."""
     await tls_tuxweb.use_tls(tls["moved"])
     entry = _entry(
@@ -682,19 +686,11 @@ async def test_a_moved_panel_is_reissued_on_the_no_hostname_context(
         own=_own(tls),
         **{CONF_CERT_NOT_AFTER: _not_after(300)},
     )
-    real = api._install_ssl_context
-    handed_out = []
-
-    def spy(pem):
-        made = real(pem)
-        handed_out.append(made)
-        return made
-
-    with patch.object(api, "_install_ssl_context", spy):
+    with patch.object(api.aiohttp, "Fingerprint", wraps=aiohttp.Fingerprint) as pin:
         await _setup(hass, entry)
 
     assert entry.state is ConfigEntryState.LOADED
-    assert handed_out == [real(tls["own_cert"])]
+    pin.assert_called_once_with(hashlib.sha256(tls["moved_der"]).digest())
     assert tls_tuxweb.install_requests == 1
     installed = tls_tuxweb.installed[0]
     assert certificate.leaf_names_host(installed, "127.0.0.1")
@@ -742,7 +738,7 @@ async def test_a_certificate_of_ours_that_lapsed_while_running_is_renewed(
     hass, tls, tls_tuxweb
 ):
     """Lapsed under a running entry, as after renewals that failed for a
-    month: the daily check renews it over the context that skips the dates."""
+    month: the daily check renews it over a connection pinned to it."""
     entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem, own=_own(tls))
     await _setup(hass, entry)
     await _press(hass)
@@ -785,44 +781,148 @@ async def test_a_lapsed_foreign_certificate_is_not_reissued(hass, tls, tls_tuxwe
     )
 
 
+@pytest.mark.parametrize("swapped_in", ["lapsed_owner", "moved"])
+async def test_a_reissue_goes_only_to_the_certificate_it_identified(
+    hass, tls, tls_tuxweb, swapped_in
+):
+    """Our lapsed certificate is read, then another one answers the install:
+    the owner's lapsed one, which the pin would verify without its dates, or
+    another of ours. Neither is the leaf identified, so no key or token goes."""
+    await tls_tuxweb.use_tls(tls["lapsed"])
+    entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem, own=_own(tls))
+    real_read = api.TuxedoTouchClient.async_read_presented_chain
+
+    async def read_then_swap(client):
+        chain = await real_read(client)
+        await tls_tuxweb.use_tls(tls[swapped_in])
+        return chain
+
+    with patch.object(
+        api.TuxedoTouchClient, "async_read_presented_chain", read_then_swap
+    ):
+        await _setup(hass, entry)
+
+    assert tls_tuxweb.install_requests == 0
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert entry.data[CONF_PANEL_CA] == tls["panel"].authority.pem
+
+
+async def test_a_clock_ahead_rotates_nothing_the_panel_judges_invalid(
+    hass, tls, tls_tuxweb
+):
+    """Home Assistant's clock two years ahead makes a current certificate of
+    ours look lapsed. The leaf issued then starts in the panel's future, and
+    the panel judges dates on its own clock, so it refuses and keeps its own."""
+    entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem, own=_own(tls))
+    await _setup(hass, entry)
+    await _press(hass)
+    await hass.async_block_till_done()
+    await _settled(hass, entry)
+    assert tls_tuxweb.install_requests == 1
+    served = tls_tuxweb.installed[0]
+
+    ahead = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=730)
+    client = entry.runtime_data.client
+    with (
+        patch.object(certificate, "_now", return_value=ahead),
+        pytest.raises(certificate.CertificateRenewalFailed) as failed,
+    ):
+        await certificate.async_reissue_outdated(hass, client, entry.data)
+    assert failed.value.reason == "not_yet_valid"
+    assert failed.value.refused
+    assert tls_tuxweb.install_requests == 2
+    assert len(tls_tuxweb.installed) == 1
+    assert tls_tuxweb.installed[0] == served
+
+
 @pytest.mark.parametrize("served", ["lapsed_owner", "other"])
 async def test_a_press_on_a_certificate_not_of_ours_sends_no_key(
     hass, tls, tls_tuxweb, served
 ):
     """A running entry whose panel now serves a certificate the entry's own
     authority did not issue: the press fails on the certificate, and nothing
-    is sent on the context that skips the name and dates."""
+    is sent on a connection pinned to a certificate of ours."""
     entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem, own=_own(tls))
     await _setup(hass, entry)
     await tls_tuxweb.use_tls(
         tls["lapsed_owner"] if served == "lapsed_owner" else tls["panel"].other
     )
     with (
-        patch.object(
-            api, "_install_ssl_context", wraps=api._install_ssl_context
-        ) as ctx,
+        patch.object(api.aiohttp, "Fingerprint", wraps=aiohttp.Fingerprint) as pin,
         pytest.raises(HomeAssistantError) as raised,
     ):
         await _press(hass)
     assert raised.value.translation_placeholders == {"reason": "certificate_untrusted"}
-    ctx.assert_not_called()
+    pin.assert_not_called()
     assert tls_tuxweb.install_requests == 0
     assert entry.data[CONF_PANEL_CA] == tls["panel"].authority.pem
 
 
-async def test_a_refused_move_fails_setup_without_a_retry(hass, tls, tls_tuxweb):
+async def test_a_refused_move_fails_setup_with_a_fixable_issue(hass, tls, tls_tuxweb):
+    """Setup is retried, but reads the certificate only: the refusal holds."""
     await tls_tuxweb.use_tls(tls["moved"])
     tls_tuxweb.install_error = (409, "tls_not_configured")
     entry = _entry(tls_tuxweb, panel_ca=tls["own_cert"], own=_own(tls))
     before = dict(entry.data)
     await _setup(hass, entry)
-    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.state is ConfigEntryState.SETUP_RETRY
     assert tls_tuxweb.install_requests == 1
     assert dict(entry.data) == before
     issue = _renewal_issue(hass)
     assert issue is not None
     assert issue.translation_placeholders["reason"] == "tls_not_configured"
-    assert not issue.is_fixable
+    assert issue.is_fixable
+
+
+async def _renewal_fix_flow(hass):
+    manager = repairs_flow_manager(hass)
+    assert manager is not None
+    form = await manager.async_init(
+        DOMAIN,
+        data={"issue_id": issue_id(ISSUE_CERTIFICATE_RENEWAL_FAILED, ENTRY_ID)},
+    )
+    assert form["type"] is FlowResultType.FORM
+    assert form["step_id"] == "confirm"
+    done = await manager.async_configure(form["flow_id"], {})
+    assert done["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+
+
+async def test_a_refused_reissue_is_sent_again_only_from_the_repair(
+    hass, tls, tls_tuxweb
+):
+    """A reload or a restart after a refusal sends nothing; the repair, which
+    works with the entry not loaded, asks the panel once more."""
+    await tls_tuxweb.use_tls(tls["moved"])
+    tls_tuxweb.install_error = (409, "tls_not_configured")
+    entry = _entry(tls_tuxweb, panel_ca=tls["own_cert"], own=_own(tls))
+    await _setup(hass, entry)
+    assert tls_tuxweb.install_requests == 1
+
+    assert await hass.config_entries.async_unload(ENTRY_ID)
+    await _restart_the_issue_registry(hass)
+    await hass.config_entries.async_setup(ENTRY_ID)
+    await hass.async_block_till_done()
+    await hass.config_entries.async_reload(ENTRY_ID)
+    await hass.async_block_till_done()
+    assert tls_tuxweb.install_requests == 1
+    assert entry.state is not ConfigEntryState.LOADED
+    issue = _renewal_issue(hass)
+    assert issue is not None
+    assert issue.is_fixable
+
+    # Still refused: asked once, and the refusal stands again.
+    await _renewal_fix_flow(hass)
+    assert tls_tuxweb.install_requests == 2
+    assert _renewal_issue(hass) is not None
+
+    tls_tuxweb.install_error = None
+    await _renewal_fix_flow(hass)
+    await _settled(hass, entry)
+    assert tls_tuxweb.install_requests == 3
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.client.tls == "verified"
+    assert _renewal_issue(hass) is None
 
 
 async def test_an_unreachable_move_is_retried_with_setup(hass, tls, tls_tuxweb):
@@ -1051,7 +1151,7 @@ async def test_a_failed_renewal_raises_the_issue_once_and_success_clears_it(
         await coordinator._certificate_task
     issue = _renewal_issue(hass)
     assert issue is not None
-    assert not issue.is_fixable
+    assert issue.is_fixable
     assert issue.translation_key == ISSUE_CERTIFICATE_RENEWAL_FAILED
     assert issue.translation_placeholders["reason"] == "write_failed"
     # The authority is kept for the retry; the pin stays on the owner's.
@@ -1204,14 +1304,6 @@ def test_one_context_per_cadata(tls):
         api.trust_anchors(owner, own)
     )
     assert api._verified_ssl_context(both) is not api._verified_ssl_context(owner)
-    assert api._install_ssl_context(both) is api._install_ssl_context(both)
-    assert api._install_ssl_context(both) is not api._verified_ssl_context(both)
-    assert api._install_ssl_context(both).check_hostname is False
-    assert api._install_ssl_context(both).verify_mode is ssl.CERT_REQUIRED
-    assert api._install_ssl_context(both).verify_flags & api._VERIFY_NO_CHECK_TIME
-    assert not api._verified_ssl_context(both).verify_flags & (
-        api._VERIFY_NO_CHECK_TIME
-    )
 
 
 async def test_every_client_of_the_entry_shares_the_context(hass, tls):
