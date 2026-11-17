@@ -534,6 +534,27 @@ async def test_the_fix_aborts_when_the_panel_cannot_be_reached(hass, tls, tls_tu
     assert result["reason"] == "cannot_connect"
 
 
+@pytest.mark.parametrize("repair", ["panel_certificate", "trust_certificate"])
+async def test_a_repair_says_a_lost_chain_is_no_connection(
+    hass, tls, tls_tuxweb, repair
+):
+    """A chain the panel did not hand over is not an authority that fails to
+    verify: either fix says the panel could not be reached."""
+    if repair == "panel_certificate":
+        await tls_tuxweb.use_tls(tls.other)
+        entry = _entry(tls_tuxweb, tls.authority.pem)
+    else:
+        entry = _entry(tls_tuxweb)
+    await _setup(hass, entry)
+    flow = _fix_flow if repair == "panel_certificate" else _trust_flow
+    with patch.object(api.TuxedoTouchClient, "_async_read_chain", return_value=[]):
+        _, result = await flow(hass, entry)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_connect"
+    if repair == "trust_certificate":
+        await wait_until(lambda: entry.runtime_data.push.connected)
+
+
 async def test_the_fix_aborts_for_an_entry_that_is_gone(hass, tls, tls_tuxweb):
     await tls_tuxweb.use_tls(tls.other)
     entry = _entry(tls_tuxweb, tls.authority.pem)

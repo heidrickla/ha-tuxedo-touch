@@ -1017,15 +1017,24 @@ class TuxedoTouchClient:
         repeated once with a context that verifies against it - hostname
         included - still answers as tuxweb: that is the anchor verifying the
         certificate of the panel answering HTTP, by effect. If it does not,
-        None, with one warning. A chain that could not be read, or a proof
-        the panel did not answer, is no verdict and raises
-        TuxedoTouchConnectionError: every caller asks again only on a raise.
+        None, with one warning, as for a chain that does not parse. A chain
+        the panel did not hand over, or a proof it did not answer, is no
+        verdict and raises TuxedoTouchConnectionError: every caller asks
+        again only on a raise.
         """
-        self._presented = presented_certificate(await self._async_read_chain())
-        if self._presented is None:
+        chain = await self._async_read_chain()
+        self._presented = presented_certificate(chain)
+        if not chain:
             raise TuxedoTouchUnreachable(
                 f"The certificate chain of the panel at {self._host} could not be read"
             )
+        if self._presented is None:
+            _LOGGER.warning(
+                "The panel at %s runs tuxweb over HTTPS but its certificate chain "
+                "does not parse, so its certificate is not verified",
+                self._host,
+            )
+            return None
         anchor = self._presented
         try:
             context = _verified_ssl_context(anchor.anchor_pem)

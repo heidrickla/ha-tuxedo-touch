@@ -304,6 +304,21 @@ async def test_a_chain_that_cannot_be_read_is_no_verdict(tls, session, monkeypat
         await panel.close()
 
 
+async def test_a_chain_that_does_not_parse_is_a_verdict(tls, session, monkeypatch):
+    """Read but not certificates: nothing to trust, said once, and the panel
+    is tuxweb on the legacy context as before rather than asked again."""
+    panel = await _panel(tls.trusted)
+    try:
+        client = _client(panel, session)
+        monkeypatch.setattr(api, "_chain_of", lambda ssl_object: [b"not der"])
+        assert await client.async_probe_capabilities() is True
+        assert client.panel_ca is None
+        assert client.presented_certificate is None
+        assert client.tls == "legacy"
+    finally:
+        await panel.close()
+
+
 async def test_stock_over_tls_is_never_pinned(tls, session):
     """Stock is reached as it always was: legacy context, no chain read, no pin."""
     panel = await _panel(tls.trusted, tuxweb=False)
