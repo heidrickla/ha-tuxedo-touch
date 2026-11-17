@@ -785,6 +785,31 @@ async def test_a_lapsed_foreign_certificate_is_not_reissued(hass, tls, tls_tuxwe
     )
 
 
+@pytest.mark.parametrize("served", ["lapsed_owner", "other"])
+async def test_a_press_on_a_certificate_not_of_ours_sends_no_key(
+    hass, tls, tls_tuxweb, served
+):
+    """A running entry whose panel now serves a certificate the entry's own
+    authority did not issue: the press fails on the certificate, and nothing
+    is sent on the context that skips the name and dates."""
+    entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem, own=_own(tls))
+    await _setup(hass, entry)
+    await tls_tuxweb.use_tls(
+        tls["lapsed_owner"] if served == "lapsed_owner" else tls["panel"].other
+    )
+    with (
+        patch.object(
+            api, "_install_ssl_context", wraps=api._install_ssl_context
+        ) as ctx,
+        pytest.raises(HomeAssistantError) as raised,
+    ):
+        await _press(hass)
+    assert raised.value.translation_placeholders == {"reason": "certificate_untrusted"}
+    ctx.assert_not_called()
+    assert tls_tuxweb.install_requests == 0
+    assert entry.data[CONF_PANEL_CA] == tls["panel"].authority.pem
+
+
 async def test_a_refused_move_fails_setup_without_a_retry(hass, tls, tls_tuxweb):
     await tls_tuxweb.use_tls(tls["moved"])
     tls_tuxweb.install_error = (409, "tls_not_configured")
@@ -1130,6 +1155,25 @@ async def test_a_refusal_goes_when_the_panel_stops_declaring_the_install(
     await _settled(hass, entry)
     assert entry.state is ConfigEntryState.LOADED
     assert _renewal_issue(hass) is None
+
+
+async def test_a_refusal_goes_once_nothing_is_due(hass, tls, tls_tuxweb):
+    """The certificate was replaced another way - by hand on the panel here,
+    or by a reconfigure, a reauthentication or an accepted repair - and is
+    not due: the next check ends the refusal rather than letting it hold back
+    the renewal of a certificate it was never about."""
+    await tls_tuxweb.use_tls(tls["expiring"])
+    tls_tuxweb.install_error = (409, "tls_not_configured")
+    entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem)
+    await _setup(hass, entry)
+    assert _renewal_issue(hass).data["refused"] is True
+
+    await tls_tuxweb.use_tls(tls["panel"].trusted)
+    assert await hass.config_entries.async_reload(ENTRY_ID)
+    await hass.async_block_till_done()
+    await _settled(hass, entry)
+    assert _renewal_issue(hass) is None
+    assert tls_tuxweb.install_requests == 1
 
 
 async def test_the_issue_goes_with_the_entry(hass, tls, tls_tuxweb):

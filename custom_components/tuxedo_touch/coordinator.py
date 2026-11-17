@@ -1200,11 +1200,11 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         """Renew a panel certificate that expires within 30 days, if allowed.
 
         Not on a client that does not verify the panel, and not after the
-        panel refused an automatic renewal: then the button is the way.
+        panel refused an automatic renewal: then the button is the way. A
+        certificate that is not due ends a failed renewal's issue, whatever
+        replaced the certificate it was about.
         """
         if not self.client.certificate_install or self.client.tls != "verified":
-            return
-        if self._renewal_refused():
             return
         expires = await self._async_certificate_expiry()
         if expires is None:
@@ -1214,6 +1214,9 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             )
             return
         if expires - dt_util.utcnow() > CERTIFICATE_RENEW_BEFORE:
+            ir.async_delete_issue(self.hass, DOMAIN, self._renewal_issue_id)
+            return
+        if self._renewal_refused():
             return
         _LOGGER.info(
             "The certificate of the panel at %s expires %s; renewing it",
