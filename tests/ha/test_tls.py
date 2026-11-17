@@ -767,6 +767,96 @@ async def test_the_look_runs_once_per_recovery_and_never_per_poll(hass, tls, tls
     assert not coordinator.trust_pending
 
 
+@pytest.mark.parametrize("lost", ["question", "chain", "proof"])
+async def test_a_look_the_panel_did_not_answer_is_asked_again(
+    hass, tls, tls_stock, lost
+):
+    """No answer to the look's question, its chain read or its proof is no
+    verdict: the next sign of the panel asks again and the repair comes."""
+    entry, coordinator = await _stock_entry(hass, tls_stock)
+    await _lose_the_panel(coordinator)
+    tls_stock.tuxweb = True
+    real_ask = api.TuxedoTouchClient._async_ask_capabilities
+    real_chain = api.TuxedoTouchClient._async_read_chain
+
+    async def ask(self, *, ssl_ctx=None):
+        if lost == "proof" and ssl_ctx is not None:
+            raise api.TuxedoTouchUnreachable("no answer")
+        return await real_ask(self, ssl_ctx=ssl_ctx)
+
+    async def chain(self):
+        return [] if lost == "chain" else await real_chain(self)
+
+    if lost == "question":
+        # aiohttp retries a dropped GET once, so two hang-ups reach the client.
+        tls_stock.capability_probe_disconnects = 2
+    with (
+        patch.object(api.TuxedoTouchClient, "_async_ask_capabilities", ask),
+        patch.object(api.TuxedoTouchClient, "_async_read_chain", chain),
+    ):
+        await coordinator.async_refresh()
+        await _looked(hass, coordinator)
+    assert _trust_issue(hass, entry) is None
+
+    await coordinator.async_refresh()
+    await _looked(hass, coordinator)
+    assert _trust_issue(hass, entry) is not None
+    # Answered: the repair stands and nothing asks again.
+    probes = tls_stock.capability_probes
+    await coordinator.async_refresh()
+    await _looked(hass, coordinator)
+    assert tls_stock.capability_probes == probes
+
+
+async def test_a_proof_the_panel_did_not_answer_at_setup_is_asked_again(
+    hass, tls, tls_tuxweb
+):
+    """An existing entry whose setup could not read the chain to prove the
+    authority does not load as if there were nothing to trust: setup is
+    retried like any unanswered question, and the retry offers it."""
+    entry = _entry(tls_tuxweb)
+    with patch.object(api.TuxedoTouchClient, "_async_read_chain", return_value=[]):
+        await _setup(hass, entry)
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert _trust_issue(hass, entry) is None
+
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert _trust_issue(hass, entry) is not None
+    assert tls_tuxweb.login_attempts == 0
+    await wait_until(lambda: entry.runtime_data.push.connected)
+
+
+async def test_a_new_entry_whose_proof_got_no_answer_is_not_created(
+    hass, tls, tls_tuxweb
+):
+    """A new entry is created pinned or not at all: a proof the panel did not
+    answer is a connection failure on the form, not an unverified entry."""
+    form = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    with patch.object(api.TuxedoTouchClient, "_async_read_chain", return_value=[]):
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"],
+            setup_form(
+                {
+                    CONF_HOST: "127.0.0.1",
+                    CONF_PORT: tls_tuxweb.port,
+                    CONF_USE_HTTPS: True,
+                    CONF_USERNAME: tls_tuxweb.username,
+                    CONF_PASSWORD: tls_tuxweb.password,
+                    CONF_CODE: "1234",
+                    CONF_PARTITION: 1,
+                    CONF_TUXWEB_TOKEN: TUXWEB_TOKEN,
+                }
+            ),
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+
 async def test_a_relay_stream_dropping_says_nothing_about_the_panel(
     hass, tls, tls_stock
 ):

@@ -723,16 +723,18 @@ class TuxedoTouchClient:
         the pin is learnt, or offered: see _async_trust_on_first_use. With a
         pin, this GET is made with the verifying context, and a certificate
         it does not verify raises TuxedoTouchCertificateError, uncached,
-        rather than being asked again on the legacy context.
+        rather than being asked again on the legacy context. A proof the
+        panel did not answer is raised uncached too: it is part of the
+        question.
         """
         if self._tuxweb is not None:
             return self._tuxweb
         learning = self._scheme == "https" and self._panel_ca is None
         status, capabilities = await self._async_ask_capabilities()
+        if capabilities is not None and learning:
+            await self._async_trust_on_first_use()
         self._tuxweb = capabilities is not None
         self._capabilities = capabilities or frozenset()
-        if self._tuxweb and learning:
-            await self._async_trust_on_first_use()
         if self._tuxweb:
             _LOGGER.debug(
                 "The panel at %s runs tuxweb, declaring %s",
@@ -950,7 +952,8 @@ class TuxedoTouchClient:
         proves itself is returned and kept as trustable_certificate; nothing
         is pinned, and the client stays stock until the entry is reloaded.
         None for a panel still stock, a client that is not stock, plain HTTP,
-        or a pinned client. A connection failure is raised.
+        or a pinned client. A question or proof the panel did not answer is
+        raised, so the caller can ask again.
         """
         if (
             self._tuxweb is not False
@@ -1008,17 +1011,15 @@ class TuxedoTouchClient:
         repeated once with a context that verifies against it - hostname
         included - still answers as tuxweb: that is the anchor verifying the
         certificate of the panel answering HTTP, by effect. If it does not,
-        None, with one warning. A proof that could not connect at all is
-        None with nothing more than debug; the next setup asks again.
+        None, with one warning. A chain that could not be read, or a proof
+        the panel did not answer, is no verdict and raises
+        TuxedoTouchConnectionError: every caller asks again only on a raise.
         """
         self._presented = presented_certificate(await self._async_read_chain())
         if self._presented is None:
-            _LOGGER.warning(
-                "The panel at %s runs tuxweb over HTTPS but its certificate chain "
-                "could not be read, so its certificate is not verified",
-                self._host,
+            raise TuxedoTouchUnreachable(
+                f"The certificate chain of the panel at {self._host} could not be read"
             )
-            return None
         anchor = self._presented
         try:
             context = _verified_ssl_context(anchor.anchor_pem)
@@ -1032,14 +1033,6 @@ class TuxedoTouchClient:
                 self._host,
                 anchor.subject,
                 anchor.fingerprint,
-                err,
-            )
-            return None
-        except TuxedoTouchError as err:
-            _LOGGER.debug(
-                "Could not repeat the capability probe at %s to prove its "
-                "certificate (%s); nothing is pinned this time",
-                self._host,
                 err,
             )
             return None

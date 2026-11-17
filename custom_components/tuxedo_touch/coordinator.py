@@ -915,7 +915,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         polls with nothing answering. The first sign of it answering again -
         the stream reconnecting, or a poll that got an HTTP answer, good or
         not - spends the flag, so it is one capability GET per recovery and
-        never one per poll. A stock client meeting tuxweb never polls
+        never one per poll; a look the panel did not answer sets it again. A
+        stock client meeting tuxweb never polls
         successfully: the login page it asks for is not there. The
         client decides whether there is anything to ask (stock, HTTPS, no
         pin); a pending repair asks nothing more.
@@ -935,6 +936,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         try:
             found = await self.client.async_look_for_tuxweb()
         except TuxedoTouchError as err:
+            # No answer is no verdict: the next sign of the panel asks again.
+            self._panel_lost = True
             _LOGGER.debug(
                 "Could not ask the panel at %s whether it now runs tuxweb: %s",
                 self._entry.data[CONF_HOST],
@@ -963,7 +966,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         An existing entry pins nothing here. A tuxweb panel over HTTPS with
         no authority stored has the one it presents proved by the probe and,
         if it verifies, offered through the trust_certificate repair; the
-        entry stays on the unverified context until the user accepts it. A
+        entry stays on the unverified context until the user accepts it; a
+        proof the panel did not answer fails setup as the probe would. A
         pinned probe that does not verify raises the certificate repair and
         fails setup, and is retried without a login.
         """

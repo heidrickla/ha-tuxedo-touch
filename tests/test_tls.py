@@ -245,7 +245,9 @@ async def test_an_anchor_that_does_not_verify_the_leaf_pins_nothing(
         await panel.close()
 
 
-async def test_a_proof_that_cannot_connect_pins_nothing(tls, session, monkeypatch):
+async def test_a_proof_that_cannot_connect_is_no_verdict(tls, session, monkeypatch):
+    """Raised as the connection failure it is, nothing cached and nothing
+    pinned, so the next probe asks the whole question again and pins."""
     panel = await _panel(tls.trusted)
     try:
         client = _client(panel, session)
@@ -257,9 +259,14 @@ async def test_a_proof_that_cannot_connect_pins_nothing(tls, session, monkeypatc
             return await real(**kwargs)
 
         monkeypatch.setattr(client, "_async_ask_capabilities", proof_fails)
-        assert await client.async_probe_capabilities() is True
+        with pytest.raises(api.TuxedoTouchConnectionError):
+            await client.async_probe_capabilities()
         assert client.panel_ca is None
         assert client.presented_certificate is not None
+
+        monkeypatch.setattr(client, "_async_ask_capabilities", real)
+        assert await client.async_probe_capabilities() is True
+        assert same_certificate(client.panel_ca, tls.authority.pem)
     finally:
         await panel.close()
 
@@ -283,14 +290,16 @@ async def test_a_proof_that_declares_no_capabilities_pins_nothing(tls, session):
         await panel.close()
 
 
-async def test_a_chain_that_cannot_be_read_pins_nothing(tls, session, monkeypatch):
+async def test_a_chain_that_cannot_be_read_is_no_verdict(tls, session, monkeypatch):
     panel = await _panel(tls.trusted)
     try:
         client = _client(panel, session)
         monkeypatch.setattr(api, "_chain_of", lambda ssl_object: [])
-        assert await client.async_probe_capabilities() is True
+        with pytest.raises(api.TuxedoTouchConnectionError):
+            await client.async_probe_capabilities()
         assert client.panel_ca is None
         assert client.presented_certificate is None
+        assert not client.tuxweb
     finally:
         await panel.close()
 
