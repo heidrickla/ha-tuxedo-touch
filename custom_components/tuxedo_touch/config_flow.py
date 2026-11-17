@@ -42,7 +42,7 @@ from .api import (
     TuxedoTouchTokenRejected,
     describe_certificate,
 )
-from .certificate import CertificateRenewalFailed, async_follow_move
+from .certificate import CertificateRenewalFailed, async_reissue_outdated
 from .const import (
     CA_DOWNLOAD_EXPIRY,
     CA_DOWNLOAD_URL,
@@ -247,10 +247,10 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str | No
     read on tuxweb. A tuxweb panel with no token entered fails here with the
     token named rather than with a login the panel does not serve.
 
-    A panel whose address moved, and which still serves a certificate the
-    entry's own authority issued for the old one, is issued one for the new
-    address first (certificate.async_follow_move) and then checked; what the
-    renewal changed is written into `data`.
+    A panel that still serves a certificate the entry's own authority issued
+    for an old address, or one past its dates, is issued a new one first
+    (certificate.async_reissue_outdated) and then checked; what the renewal
+    changed is written into `data`.
 
     Returns the certificate authority the client is pinned to: the one in
     `data`, or the one a tuxweb panel over HTTPS proved on this first use.
@@ -271,7 +271,7 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str | No
         try:
             await client.async_check_credentials()
         except TuxedoTouchCertificateError:
-            renewed = await async_follow_move(hass, client, data)
+            renewed = await async_reissue_outdated(hass, client, data)
             if renewed is None:
                 raise
             data.update(renewed)
@@ -317,8 +317,8 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.debug("Tuxedo Touch check refused on the certificate: %s", err)
             return {"base": "certificate_untrusted"}
         except CertificateRenewalFailed as err:
-            # The panel moved and could not be issued a certificate for its
-            # new address; the entry is left as it was.
+            # The panel's certificate of ours named an old address or had
+            # lapsed, and issuing a new one failed; the entry is left as it was.
             _LOGGER.warning("Tuxedo Touch certificate not renewed: %s", err.reason)
             return {"base": "certificate_renewal_failed"}
         except TuxedoTouchTokenRejected as err:

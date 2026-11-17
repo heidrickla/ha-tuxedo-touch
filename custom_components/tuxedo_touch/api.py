@@ -375,20 +375,25 @@ def _verified_ssl_context(pem: str) -> ssl.SSLContext:
     return ctx
 
 
+# OpenSSL's X509_V_FLAG_NO_CHECK_TIME, which the ssl module has no name for.
+_VERIFY_NO_CHECK_TIME = 0x200000
+
+
 @cache
 def _install_ssl_context(pem: str) -> ssl.SSLContext:
-    """The verifying context without the name check, for InstallCertificate only.
+    """The verifying context without the name and date checks, for InstallCertificate.
 
     The chain is verified against the same authorities as
     _verified_ssl_context(pem), so only a panel holding a certificate they
-    issued completes the handshake; the name it carries is not compared.
-    That is what lets a panel whose address moved be issued a certificate for
-    the new one. Cached per cadata string like the others, and never used for
-    status, commands or the stream.
+    issued completes the handshake; the name and the dates it carries are
+    not compared. That is what lets a panel whose certificate of ours names
+    an old address, or has lapsed, be issued a new one. Cached per cadata
+    string like the others, and never used for status, commands or the stream.
     """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.verify_flags |= _VERIFY_NO_CHECK_TIME
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_verify_locations(cadata=pem)
     return ctx
@@ -883,14 +888,15 @@ class TuxedoTouchClient:
         return await self._async_read_chain()
 
     async def async_install_certificate(
-        self, chain_pem: str, key_pem: str, *, ignore_hostname: bool = False
+        self, chain_pem: str, key_pem: str, *, outdated: bool = False
     ) -> InstalledCertificate:
         """Install a certificate pair on the panel with tuxweb's InstallCertificate.
 
         Over HTTPS on the verifying context only, with the bearer token as
-        every tuxweb call carries it; with `ignore_hostname`, on the context
-        that verifies the chain against the same authorities without the name
-        check (_install_ssl_context), for a panel whose address moved. One
+        every tuxweb call carries it; with `outdated`, on the context that
+        verifies the chain against the same authorities without the name or
+        date checks (_install_ssl_context), for a panel whose certificate of
+        ours names an old address or has lapsed. One
         POST: no login, no capability re-check, never retried. A status other
         than 200 is TuxedoTouchInstallRefused with tuxweb's reason; a 200 is
         checked to say installed. A failure below HTTP raises as any request
@@ -908,7 +914,7 @@ class TuxedoTouchClient:
             raise TuxedoTouchInstallRefused("too_large")
         ssl_arg = (
             _install_ssl_context(anchors)
-            if ignore_hostname
+            if outdated
             else _verified_ssl_context(anchors)
         )
         url = f"{self.base_url}{API_BASE_PATH}{INSTALL_CERTIFICATE_PATH}"

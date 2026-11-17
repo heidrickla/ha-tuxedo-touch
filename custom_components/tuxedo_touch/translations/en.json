@@ -120,7 +120,7 @@
       "panel_error": "The panel answered but the response could not be used. See the Home Assistant log for the specific reason.",
       "certificate_untrusted": "The panel presented a certificate that does not verify against the certificate authority this entry trusts. Open the certificate repair for this entry under Settings, then System, then Repairs, check the new certificate there and accept it, then try again.",
       "unknown": "Unexpected error - see the Home Assistant log for the traceback",
-      "certificate_renewal_failed": "The panel at this address presents the certificate Home Assistant issued it for its old address, and issuing it one for the new address failed. The entry is unchanged; see the Home Assistant log for the reason."
+      "certificate_renewal_failed": "The panel at this address presents a certificate Home Assistant issued it for its old address, or one that has expired, and issuing it a new one failed. The entry is unchanged; see the Home Assistant log for the reason."
     },
     "abort": {
       "already_configured": "This panel/partition is already configured",

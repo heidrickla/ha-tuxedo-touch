@@ -5,8 +5,8 @@ from an authority of the entry's own, generated the first time and never
 again while one exists, and the certificate is installed on the panel with
 one InstallCertificate call. The key generation and signing here are
 blocking work and run in the executor; the install goes over the client's
-verifying context, or for a panel whose address moved over the context that
-skips only the name check.
+verifying context, or, for a certificate of ours that names an old address
+or has lapsed, over the context that skips the name and date checks.
 """
 
 from __future__ import annotations
@@ -253,12 +253,12 @@ def leaf_expiry(chain: list[bytes]) -> datetime.datetime | None:
     return leaf.not_valid_after_utc if leaf is not None else None
 
 
-def moved_from(chain: list[bytes], own_ca_pem: str, host: str) -> bool:
-    """Whether the panel serves a certificate of ours that names another address.
+def outdated_own_leaf(chain: list[bytes], own_ca_pem: str, host: str) -> bool:
+    """Whether the panel serves a certificate of ours that no longer verifies.
 
-    The panel's address changed and its certificate still names the old one:
-    the leaf it presents was issued by the entry's own authority and does not
-    name `host`.
+    The leaf it presents was issued by the entry's own authority, and fails
+    one of the two checks that are not its signature: it does not name
+    `host` (the panel's address changed), or it is outside its dates.
     """
     leaf = _leaf(chain)
     if leaf is None:
@@ -268,7 +268,8 @@ def moved_from(chain: list[bytes], own_ca_pem: str, host: str) -> bool:
         leaf.verify_directly_issued_by(authority)
     except (ValueError, TypeError, InvalidSignature):
         return False
-    return not leaf_names_host(leaf, host)
+    in_date = leaf.not_valid_before_utc <= _now() <= leaf.not_valid_after_utc
+    return not (in_date and leaf_names_host(leaf, host))
 
 
 def failure_reason(err: Exception) -> str:
@@ -297,7 +298,7 @@ async def async_issue_and_install(
     client: TuxedoTouchClient,
     data: Mapping[str, Any],
     *,
-    ignore_hostname: bool = False,
+    outdated: bool = False,
 ) -> dict[str, Any]:
     """Issue the panel a certificate from the entry's stored authority and install it.
 
@@ -322,7 +323,7 @@ async def async_issue_and_install(
     client.trust_own_ca(ca_cert)
     try:
         answer = await client.async_install_certificate(
-            leaf.chain_pem, leaf.key_pem, ignore_hostname=ignore_hostname
+            leaf.chain_pem, leaf.key_pem, outdated=outdated
         )
         if answer.sha256 != leaf.sha256:
             raise TuxedoTouchInstallRefused("unexpected_answer", 200)
@@ -334,22 +335,23 @@ async def async_issue_and_install(
     return {CONF_PANEL_CA: ca_cert, CONF_CERT_NOT_AFTER: leaf.not_after}
 
 
-async def async_follow_move(
+async def async_reissue_outdated(
     hass: HomeAssistant, client: TuxedoTouchClient, data: Mapping[str, Any]
 ) -> dict[str, Any] | None:
-    """Re-issue the certificate of a panel whose address moved, if that is the case.
+    """Re-issue a certificate of ours the panel serves that no longer verifies.
 
-    For a request that failed on the certificate. Applies only to an entry
-    holding its own authority, over HTTPS, whose panel presents a certificate
-    of that authority naming another address - which also proves the panel
+    For a request that failed on the certificate, and for a renewal. Applies
+    only to an entry holding its own authority, over HTTPS, whose panel
+    presents a certificate of that authority that names another address or
+    is outside its dates (outdated_own_leaf) - which also proves the panel
     took one, whether or not its answer arrived. The install then goes over
-    the context that skips the name check. None when it does not
+    the context that skips the name and date checks. None when it does not
     apply. Raises CertificateRenewalFailed when it applied and failed.
     """
     own = data.get(CONF_CA_CERT)
     if not own or not data.get(CONF_CA_KEY) or not data.get(CONF_USE_HTTPS):
         return None
     chain = await client.async_read_presented_chain()
-    if not moved_from(chain, own, data[CONF_HOST]):
+    if not outdated_own_leaf(chain, own, data[CONF_HOST]):
         return None
-    return await async_issue_and_install(hass, client, data, ignore_hostname=True)
+    return await async_issue_and_install(hass, client, data, outdated=True)

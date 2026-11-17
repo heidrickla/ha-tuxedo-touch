@@ -101,7 +101,19 @@ def tls(tmp_path_factory):
     own_cert, own_key = certificate.generate_authority(ENTRY_ID)
     moved = certificate.issue_leaf(own_cert, own_key, "127.0.0.2")
     soon = make_leaf(panel.authority, days=10)
+    # A certificate of the entry's own CA for this address, past its date.
+    issued_then = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=400)
+    with patch.object(certificate, "_now", return_value=issued_then):
+        lapsed = certificate.issue_leaf(own_cert, own_key, "127.0.0.1")
     return {
+        "lapsed": _context_from_pem(directory, lapsed.chain_pem, lapsed.key_pem),
+        "lapsed_not_after": lapsed.not_after,
+        # The owner's certificate, past its date.
+        "lapsed_owner": server_context(
+            os.path.join(directory, "lapsed-owner"),
+            make_leaf(panel.authority, days=-1),
+            [panel.authority.cert],
+        ),
         "panel": panel,
         "own_cert": own_cert,
         "own_key": own_key,
@@ -373,20 +385,26 @@ def test_a_long_host_goes_in_the_san_only():
     assert san.value.get_values_for_type(x509.DNSName) == [host]
 
 
-def test_a_chain_is_read_for_its_expiry_and_its_move(tls):
+def test_a_chain_is_read_for_its_expiry_and_whether_it_is_outdated(tls):
+    outdated = certificate.outdated_own_leaf
     assert certificate.leaf_expiry([]) is None
     assert certificate.leaf_expiry([b"not der"]) is None
-    assert certificate.moved_from([], tls["own_cert"], "127.0.0.1") is False
+    assert outdated([], tls["own_cert"], "127.0.0.1") is False
     own_leaf = certificate.issue_leaf(tls["own_cert"], tls["own_key"], "127.0.0.2")
     der = [
         cert.public_bytes(serialization.Encoding.DER)
         for cert in x509.load_pem_x509_certificates(own_leaf.chain_pem.encode())
     ]
-    assert certificate.moved_from(der, tls["own_cert"], "127.0.0.1") is True
-    assert certificate.moved_from(der, tls["own_cert"], "127.0.0.2") is False
-    # A certificate another authority issued is no move of ours.
+    assert outdated(der, tls["own_cert"], "127.0.0.1") is True
+    assert outdated(der, tls["own_cert"], "127.0.0.2") is False
+    # Past its dates, or before them, it is outdated at its own address too.
+    now = datetime.datetime.now(datetime.UTC)
+    for then in (now + datetime.timedelta(days=398), now - datetime.timedelta(1)):
+        with patch.object(certificate, "_now", return_value=then):
+            assert outdated(der, tls["own_cert"], "127.0.0.2") is True
+    # A certificate another authority issued is never ours to re-issue.
     owner = tls["panel"].leaf.cert.public_bytes(serialization.Encoding.DER)
-    assert certificate.moved_from([owner], tls["own_cert"], "127.0.0.9") is False
+    assert outdated([owner], tls["own_cert"], "127.0.0.9") is False
     leaf = x509.load_der_x509_certificate(owner)
     no_san = x509.CertificateBuilder(
         issuer_name=leaf.issuer,
@@ -689,6 +707,81 @@ async def test_a_moved_panel_is_reissued_on_the_no_hostname_context(
             DOMAIN, issue_id("panel_certificate", ENTRY_ID)
         )
         is None
+    )
+
+
+async def test_a_lapsed_certificate_of_our_own_is_reissued(hass, tls, tls_tuxweb):
+    """The panel still serves the certificate Home Assistant issued it, past
+    its date: setup issues a new one over the context that does not compare
+    the name or the dates, then verifies the panel as always."""
+    await tls_tuxweb.use_tls(tls["lapsed"])
+    entry = _entry(
+        tls_tuxweb,
+        panel_ca=tls["own_cert"],
+        own=_own(tls),
+        **{CONF_CERT_NOT_AFTER: tls["lapsed_not_after"]},
+    )
+    await _setup(hass, entry)
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert tls_tuxweb.install_requests == 1
+    installed = tls_tuxweb.installed[0]
+    assert certificate.leaf_names_host(installed, "127.0.0.1")
+    assert installed.not_valid_after_utc > dt_util.utcnow()
+    assert entry.data[CONF_CERT_NOT_AFTER] == installed.not_valid_after_utc.isoformat()
+    assert entry.runtime_data.client.tls == "verified"
+    assert (
+        ir.async_get(hass).async_get_issue(
+            DOMAIN, issue_id("panel_certificate", ENTRY_ID)
+        )
+        is None
+    )
+
+
+async def test_a_certificate_of_ours_that_lapsed_while_running_is_renewed(
+    hass, tls, tls_tuxweb
+):
+    """Lapsed under a running entry, as after renewals that failed for a
+    month: the daily check renews it over the context that skips the dates."""
+    entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem, own=_own(tls))
+    await _setup(hass, entry)
+    await _press(hass)
+    await hass.async_block_till_done()
+    await _settled(hass, entry)
+    assert entry.data[CONF_PANEL_CA] == tls["own_cert"]
+
+    await tls_tuxweb.use_tls(tls["lapsed"])
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_CERT_NOT_AFTER: tls["lapsed_not_after"]}
+    )
+    coordinator = entry.runtime_data
+    coordinator._async_certificate_tick()
+    await coordinator._certificate_task
+    await hass.async_block_till_done()
+    await _settled(hass, entry)
+
+    assert tls_tuxweb.install_requests == 2
+    installed = tls_tuxweb.installed[1]
+    installed.verify_directly_issued_by(
+        x509.load_pem_x509_certificate(tls["own_cert"].encode())
+    )
+    assert installed.not_valid_after_utc > dt_util.utcnow()
+    assert _renewal_issue(hass) is None
+    assert entry.runtime_data.client.tls == "verified"
+    await entry.runtime_data.async_refresh()
+    assert entry.runtime_data.last_update_success
+
+
+async def test_a_lapsed_foreign_certificate_is_not_reissued(hass, tls, tls_tuxweb):
+    """Past its date but not issued by the entry's own authority: the
+    certificate repair, and no key goes out."""
+    await tls_tuxweb.use_tls(tls["lapsed_owner"])
+    entry = _entry(tls_tuxweb, panel_ca=tls["panel"].authority.pem, own=_own(tls))
+    await _setup(hass, entry)
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert tls_tuxweb.install_requests == 0
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, issue_id("panel_certificate", ENTRY_ID)
     )
 
 
@@ -1071,6 +1164,10 @@ def test_one_context_per_cadata(tls):
     assert api._install_ssl_context(both) is not api._verified_ssl_context(both)
     assert api._install_ssl_context(both).check_hostname is False
     assert api._install_ssl_context(both).verify_mode is ssl.CERT_REQUIRED
+    assert api._install_ssl_context(both).verify_flags & api._VERIFY_NO_CHECK_TIME
+    assert not api._verified_ssl_context(both).verify_flags & (
+        api._VERIFY_NO_CHECK_TIME
+    )
 
 
 async def test_every_client_of_the_entry_shares_the_context(hass, tls):

@@ -37,8 +37,8 @@ from .api import (
 )
 from .certificate import (
     CertificateRenewalFailed,
-    async_follow_move,
     async_issue_and_install,
+    async_reissue_outdated,
     generate_authority,
     leaf_expiry,
 )
@@ -977,9 +977,9 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             try:
                 await self.client.async_probe_capabilities()
             except TuxedoTouchCertificateError:
-                # A panel whose address moved still serves our certificate
-                # for the old one; it is re-issued, then asked again.
-                if not await self._async_follow_moved_certificate():
+                # A certificate of ours naming an old address or past its
+                # dates is re-issued, then the panel is asked again.
+                if not await self._async_reissue_outdated_certificate():
                     raise
                 await self.client.async_probe_capabilities()
         except TuxedoTouchCertificateError as err:
@@ -1075,9 +1075,12 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
 
         Under the gate only - tuxweb over HTTPS declaring certificate_install
         - and only on a verified connection, because the new private key goes
-        out on it. On success the entry stores the authority and the pin
-        moved to it, and is reloaded so every connection opens on the new
-        pin. Raises CertificateRenewalFailed with the pin and expiry unchanged.
+        out on it. One that fails on the certificate is tried again as a
+        re-issue, which renews a certificate of ours past its dates
+        (async_reissue_outdated). On success the entry stores the authority
+        and the pin moved to it, and is reloaded so every connection opens on
+        the new pin. Raises CertificateRenewalFailed with the pin and expiry
+        unchanged.
         """
         async with self._renew_lock:
             if not self.client.certificate_install:
@@ -1085,9 +1088,19 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             if self.client.tls != "verified":
                 raise CertificateRenewalFailed("not_verified", refused=True)
             await self._async_store_authority()
-            updates = await async_issue_and_install(
-                self.hass, self.client, self._entry.data
-            )
+            try:
+                updates = await async_issue_and_install(
+                    self.hass, self.client, self._entry.data
+                )
+            except CertificateRenewalFailed as err:
+                if not isinstance(err.__cause__, TuxedoTouchCertificateError):
+                    raise
+                reissued = await async_reissue_outdated(
+                    self.hass, self.client, self._entry.data
+                )
+                if reissued is None:
+                    raise
+                updates = reissued
             _LOGGER.info(
                 "The panel at %s now serves a certificate issued by Home "
                 "Assistant, expiring %s",
@@ -1097,16 +1110,19 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
             self._async_store_certificate(updates)
             self.hass.config_entries.async_schedule_reload(self._entry.entry_id)
 
-    async def _async_follow_moved_certificate(self) -> bool:
-        """Re-issue the certificate of a panel whose address moved, during setup.
+    async def _async_reissue_outdated_certificate(self) -> bool:
+        """Re-issue a certificate of ours that no longer verifies, during setup.
 
+        It names an address the panel no longer has, or is past its dates.
         True when it was re-issued and the probe can be asked again; False
         when the failure is not that, for the certificate repair. A refusal
         fails setup without a retry; a panel that could not be reached is
         retried with setup.
         """
         try:
-            updates = await async_follow_move(self.hass, self.client, self._entry.data)
+            updates = await async_reissue_outdated(
+                self.hass, self.client, self._entry.data
+            )
         except CertificateRenewalFailed as err:
             self._async_raise_renewal_issue(err)
             if err.refused:
@@ -1123,7 +1139,8 @@ class TuxedoTouchCoordinator(DataUpdateCoordinator[TuxedoStatus]):
         if updates is None:
             return False
         _LOGGER.info(
-            "The panel moved to %s and has been issued a certificate for it",
+            "The panel at %s served a certificate of ours for another address "
+            "or past its dates, and has been issued a new one",
             self._entry.data[CONF_HOST],
         )
         self._async_store_certificate(updates)
