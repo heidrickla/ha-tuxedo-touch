@@ -12,11 +12,16 @@ Runs without Home Assistant, via `tests.no_ha`.
 
 import asyncio
 import contextlib
+import datetime
 import logging
 import ssl
 
 import aiohttp
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 from tests.fake_panel import FakePanel, wait_until
 from tests.no_ha import load
@@ -87,6 +92,7 @@ async def test_the_first_probe_pins_the_authority_and_the_next_request_verifies(
         presented = client.presented_certificate
         assert presented.fingerprint == tls.authority.fingerprint
         assert presented.subject == tls.authority.subject
+        assert presented.common_name == "Tuxedo Owner CA"
         assert presented.leaf_expires == tls.leaf.expires
         # The probe, then the proof on the verifying context.
         assert panel.capability_probes == 2
@@ -567,6 +573,27 @@ def test_unreadable_certificates_describe_as_nothing():
     described = api.describe_certificate(tls.authority.pem)
     assert described.fingerprint == tls.authority.fingerprint
     assert described.leaf_expires is None
+    assert described.common_name == "Tuxedo Owner CA"
+
+
+def test_an_authority_without_a_common_name_describes_with_none():
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Tuxedo Touch")])
+    now = datetime.datetime.now(datetime.UTC)
+    authority = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    pem = authority.public_bytes(serialization.Encoding.PEM).decode()
+    described = api.describe_certificate(pem)
+    assert described is not None
+    assert described.common_name is None
 
 
 def test_only_a_verifying_client_turns_a_tls_failure_into_a_certificate_error():

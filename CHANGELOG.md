@@ -4,6 +4,10 @@ Notable changes to this integration, newest first. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Changed
+
+- The diagnostics report gives the common name of the pinned certificate authority and of the entry's own authority as a field of its own, beside the subject.
+
 ## [0.10.1] - 2026-11-16
 
 ### Changed

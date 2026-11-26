@@ -1036,6 +1036,7 @@ async def test_diagnostics_report_a_verified_connection_and_its_authority(
     assert report["tls"] == "verified"
     assert report["panel_ca"] == {
         "subject": tls.authority.subject,
+        "common_name": "Tuxedo Owner CA",
         "sha256": tls.authority.fingerprint,
     }
     assert CONF_PANEL_CA not in report["config"]

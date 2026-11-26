@@ -57,6 +57,7 @@ import aiohttp
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.x509.oid import NameOID
 
 from .const import (
     API_BASE_PATH,
@@ -273,7 +274,8 @@ class PanelCertificate:
 
     `fingerprint` is the SHA-256 of the authority's DER encoding in colon
     hex, `leaf_expires` the expiry of the certificate the panel serves (None
-    when only the authority is known, as for a stored pin).
+    when only the authority is known, as for a stored pin). `common_name` is
+    the authority's CN, None if its subject has none.
     """
 
     anchor_pem: str
@@ -281,6 +283,7 @@ class PanelCertificate:
     issuer: str
     fingerprint: str
     leaf_expires: str | None = None
+    common_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -434,6 +437,11 @@ def _chain_of(ssl_object: object) -> list[bytes]:
     return [der for item in chain_of() or [] if (der := _der_of(item)) is not None]
 
 
+def _common_name(certificate: x509.Certificate) -> str | None:
+    names = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    return str(names[0].value) if names else None
+
+
 def _fingerprint(certificate: x509.Certificate) -> str:
     return certificate.fingerprint(hashes.SHA256()).hex(":").upper()
 
@@ -456,11 +464,12 @@ def presented_certificate(chain: list[bytes]) -> PanelCertificate | None:
         issuer=anchor.issuer.rfc4514_string(),
         fingerprint=_fingerprint(anchor),
         leaf_expires=leaf.not_valid_after_utc.isoformat(),
+        common_name=_common_name(anchor),
     )
 
 
 def describe_certificate(pem: str) -> PanelCertificate | None:
-    """A stored authority in readable form, for diagnostics.
+    """A stored authority in readable form, for diagnostics and the download.
 
     None if it does not parse.
     """
@@ -473,6 +482,7 @@ def describe_certificate(pem: str) -> PanelCertificate | None:
         subject=certificate.subject.rfc4514_string(),
         issuer=certificate.issuer.rfc4514_string(),
         fingerprint=_fingerprint(certificate),
+        common_name=_common_name(certificate),
     )
 
 

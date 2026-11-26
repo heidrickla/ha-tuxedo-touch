@@ -65,7 +65,11 @@ async def async_get_config_entry_diagnostics(
         # fingerprint, which a certificate repair shows the same way.
         "tls": coordinator.client.tls,
         "panel_ca": (
-            {"subject": described.subject, "sha256": described.fingerprint}
+            {
+                "subject": described.subject,
+                "common_name": described.common_name,
+                "sha256": described.fingerprint,
+            }
             if described is not None
             else None
         ),
@@ -80,7 +84,11 @@ async def async_get_config_entry_diagnostics(
         in coordinator.client.capabilities,
         "ca_issued_by_home_assistant": own_described is not None,
         "home_assistant_ca": (
-            {"subject": own_described.subject, "sha256": own_described.fingerprint}
+            {
+                "subject": own_described.subject,
+                "common_name": own_described.common_name,
+                "sha256": own_described.fingerprint,
+            }
             if own_described is not None
             else None
         ),

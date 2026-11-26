@@ -1595,6 +1595,9 @@ async def test_diagnostics_never_carry_the_authority_key(hass, tls, tls_tuxweb):
     authority = x509.load_pem_x509_certificate(entry.data[CONF_CA_CERT].encode())
     assert report["home_assistant_ca"] == {
         "subject": authority.subject.rfc4514_string(),
+        "common_name": authority.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[
+            0
+        ].value,
         "sha256": authority.fingerprint(hashes.SHA256()).hex(":").upper(),
     }
     assert report["cert_not_after"] == entry.data[CONF_CERT_NOT_AFTER]
