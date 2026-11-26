@@ -305,6 +305,34 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     # taking over ConfigFlow's construction.
     _discovered_host: str
     _discovered_mac: str
+    # The client's own words for the last failure, shown in the cannot_connect
+    # and panel_error messages: firmwares differ, so "could not connect" alone
+    # cannot be acted on by the person at the form.
+    _reason: str = ""
+
+    @callback
+    def async_show_form(
+        self,
+        *,
+        step_id: str | None = None,
+        data_schema: vol.Schema | None = None,
+        errors: dict[str, str] | None = None,
+        description_placeholders: Mapping[str, str] | None = None,
+        last_step: bool | None = None,
+        preview: str | None = None,
+    ) -> ConfigFlowResult:
+        """Every form of this flow; one showing an error gets the reason."""
+        placeholders = dict(description_placeholders or {})
+        if errors:
+            placeholders.setdefault("reason", self._reason or "none given")
+        return super().async_show_form(
+            step_id=step_id,
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders=placeholders,
+            last_step=last_step,
+            preview=preview,
+        )
 
     async def _async_validate(
         self, data: dict[str, Any], *, new_entry: bool
@@ -340,9 +368,12 @@ class TuxedoTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             return {"base": "tuxweb_token_required"}
         except TuxedoTouchAuthError:
             return {"base": "invalid_auth"}
-        except TuxedoTouchConnectionError:
+        except TuxedoTouchConnectionError as err:
+            self._reason = str(err)
+            _LOGGER.warning("Tuxedo Touch at %s not reached: %s", data[CONF_HOST], err)
             return {"base": "cannot_connect"}
         except TuxedoTouchError as err:
+            self._reason = str(err)
             # The panel answered, but not usefully - e.g. the login page came
             # back without the Random/RandomID headers, or the key blob was
             # short. That is neither "wrong password" nor "unreachable", and

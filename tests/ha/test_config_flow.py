@@ -206,6 +206,30 @@ async def test_each_failure_maps_to_its_own_message(hass, raised, expected):
     assert result["errors"] == {"base": expected}
 
 
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [
+        (TuxedoTouchConnectionError("Login page returned HTTP 404"), "cannot_connect"),
+        (
+            TuxedoTouchError("Login page did not return Random/RandomID headers"),
+            "panel_error",
+        ),
+    ],
+)
+async def test_the_form_shows_why_the_panel_failed(hass, raised, expected):
+    """The person at the form sees the client's reason, not only its class.
+
+    Stock firmwares differ, and a reachable panel that answers the login page
+    with something else read only "Failed to connect" (issue #10).
+    """
+    with patch(LOGIN, side_effect=raised):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}, data=setup_form(ENTRY_DATA)
+        )
+    assert result["errors"] == {"base": expected}
+    assert result["description_placeholders"]["reason"] == str(raised)
+
+
 async def test_the_form_is_offered_again_after_a_failure(hass):
     """A rejected password must be correctable without restarting the flow."""
     with patch(LOGIN, side_effect=TuxedoTouchAuthError("no")):
