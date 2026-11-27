@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Merges with the central configuration in heidrickla/coderabbit: entries here come
+# first, and central rules whose path or name is not repeated here still apply.
+inheritance: true
+
+reviews:
+  path_instructions:
+    - path: "custom_components/**"
+      instructions: >-
+        This integration controls an alarm panel. Never log, expose in diagnostics or store in entity attributes any user
+        code, PIN, installer code or password; redact them in diagnostics. Arm,
+        disarm, bypass and programming actions are admin-only and must check the
+        user. A failed command leaves the last known state and raises an error;
+        it never reports success it did not observe. The panel's TLS
+        certificate is pinned: flag any path that disables or skips verification.
