@@ -4,6 +4,8 @@ Notable changes to this integration, newest first. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-26
+
 ### Fixed
 
 - The setup, reconfigure and reauthentication forms say why the panel could not be used when they show "Failed to connect" or "the response could not be used" (for example the HTTP status the login page answered, or the TLS error), and the reason is logged as a warning. Before, a reachable panel on another stock firmware read only "Failed to connect" (issue #10).
